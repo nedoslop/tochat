@@ -1,0 +1,98 @@
+# ---------- OS ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+Desktop.ini
+
+# ---------- editors / IDEs ----------
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.ipr
+*.iws
+.vs/
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+*.sublime-workspace
+*.sublime-project
+
+# ---------- Rust / Cargo ----------
+target/
+**/target/
+Cargo.lock.orig
+*.rs.bk
+*.pdb
+
+# ---------- Tauri ----------
+src-tauri/target/
+src-tauri/gen/
+src-tauri/gen/schemas/
+
+# ---------- Node / frontend ----------
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ---------- env / secrets ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# ---------- build artifacts ----------
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.lib
+*.a
+*.rlib
+*.rmeta
+
+# ---------- databases / logs ----------
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.log
+logs/
+
+# ---------- coverage / profiling ----------
+*.profraw
+*.profdata
+coverage/
+lcov.info
+tarpaulin-report.*
+
+# ---------- misc ----------
+*.bak
+*.tmp
+*.temp
+.crash
+tmp/
+temp/
