@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{handshake::client::Request, Message};
 
 // ---------- state ----------
 
@@ -35,22 +35,49 @@ struct StoredMsg {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    Auth { username: String, password: String },
-    Send { to: String, payload: String },
-    HistoryRequest { from: String, since: i64 },
-    HistoryResponse { to: String, messages: Vec<StoredMsg> },
+    Send {
+        to: String,
+        payload: String,
+    },
+    HistoryRequest {
+        from: String,
+        since: i64,
+    },
+    HistoryResponse {
+        to: String,
+        messages: Vec<StoredMsg>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
-    AuthOk { username: String, last_seen: i64 },
-    Peers { peers: Vec<String> },
-    PeerOnline { username: String },
-    Message { from: String, payload: String, ts: i64 },
-    HistoryRequest { from: String, since: i64 },
-    HistoryResponse { from: String, messages: Vec<StoredMsg> },
-    Error { msg: String },
+    AuthOk {
+        username: String,
+        last_seen: i64,
+    },
+    Peers {
+        peers: Vec<String>,
+    },
+    PeerOnline {
+        username: String,
+    },
+    Message {
+        from: String,
+        payload: String,
+        ts: i64,
+    },
+    HistoryRequest {
+        from: String,
+        since: i64,
+    },
+    HistoryResponse {
+        from: String,
+        messages: Vec<StoredMsg>,
+    },
+    Error {
+        msg: String,
+    },
 }
 
 #[derive(Serialize, Clone)]
@@ -101,9 +128,11 @@ fn decrypt(pw: &str, payload: &str) -> Option<String> {
 
 async fn get_peer_pw(state: &AppState, peer: &str) -> Option<String> {
     let db = state.db.lock().await;
-    db.query_row("SELECT password FROM peer_settings WHERE peer=?1", [peer], |r| {
-        r.get::<_, String>(0)
-    })
+    db.query_row(
+        "SELECT password FROM peer_settings WHERE peer=?1",
+        [peer],
+        |r| r.get::<_, String>(0),
+    )
     .ok()
 }
 
@@ -116,22 +145,20 @@ async fn connect(
     username: String,
     password: String,
 ) -> Result<(), String> {
-    let (ws, _) = tokio_tungstenite::connect_async(&url)
+    let concat_str = format!("{}:{}", username, password);
+    let request = Request::builder()
+        .uri(url)
+        .header("Authorization", concat_str)
+        .body(()) // The body must be empty (unit type `()`) for a WebSocket handshake
+        .map_err(|e| e.to_string())?;
+
+    // 2. Pass the request instead of the plain URL
+    let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| e.to_string())?;
+
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
-
-    write
-        .send(Message::Text(
-            serde_json::to_string(&ClientMsg::Auth {
-                username: username.clone(),
-                password,
-            })
-            .unwrap(),
-        ))
-        .await
-        .map_err(|e| e.to_string())?;
 
     {
         let state = app.state::<AppState>();
@@ -168,7 +195,10 @@ async fn connect(
 async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
     let state = app.state::<AppState>();
     match sm {
-        ServerMsg::AuthOk { username, last_seen } => {
+        ServerMsg::AuthOk {
+            username,
+            last_seen,
+        } => {
             *state.last_seen.lock().await = last_seen;
             let _ = app.emit(
                 "auth-ok",
@@ -312,11 +342,7 @@ async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
 }
 
 #[tauri::command]
-async fn send_message(
-    app: AppHandle,
-    to: String,
-    text: String,
-) -> Result<(), String> {
+async fn send_message(app: AppHandle, to: String, text: String) -> Result<(), String> {
     let state = app.state::<AppState>();
     let pw = get_peer_pw(&state, &to)
         .await
@@ -337,12 +363,7 @@ async fn send_message(
         .map_err(|e| e.to_string())?;
     }
 
-    let tx = state
-        .ws_tx
-        .lock()
-        .await
-        .clone()
-        .ok_or("not connected")?;
+    let tx = state.ws_tx.lock().await.clone().ok_or("not connected")?;
     tx.send(ClientMsg::Send {
         to: to.clone(),
         payload,
@@ -378,15 +399,14 @@ async fn set_peer_password(
 }
 
 #[tauri::command]
-async fn get_messages(
-    state: State<'_, AppState>,
-    peer: String,
-) -> Result<Vec<UiMsg>, String> {
+async fn get_messages(state: State<'_, AppState>, peer: String) -> Result<Vec<UiMsg>, String> {
     let pw: Option<String> = {
         let db = state.db.lock().await;
-        db.query_row("SELECT password FROM peer_settings WHERE peer=?1", [&peer], |r| {
-            r.get::<_, String>(0)
-        })
+        db.query_row(
+            "SELECT password FROM peer_settings WHERE peer=?1",
+            [&peer],
+            |r| r.get::<_, String>(0),
+        )
         .ok()
     };
     let db = state.db.lock().await;

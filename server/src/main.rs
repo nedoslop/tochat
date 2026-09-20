@@ -1,11 +1,12 @@
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use dashmap::DashMap;
 use futures_util::{sink::SinkExt, stream::StreamExt};
@@ -13,7 +14,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Clone)]
 struct AppState {
@@ -24,10 +25,18 @@ struct AppState {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    Auth { username: String, password: String },
-    Send { to: String, payload: String },
-    HistoryRequest { from: String, since: i64 },
-    HistoryResponse { to: String, messages: Vec<StoredMsg> },
+    Send {
+        to: String,
+        payload: String,
+    },
+    HistoryRequest {
+        from: String,
+        since: i64,
+    },
+    HistoryResponse {
+        to: String,
+        messages: Vec<StoredMsg>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -41,13 +50,38 @@ struct StoredMsg {
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
-    AuthOk { username: String, last_seen: i64 },
-    Peers { peers: Vec<String> },
-    PeerOnline { username: String },
-    Message { from: String, payload: String, ts: i64 },
-    HistoryRequest { from: String, since: i64 },
-    HistoryResponse { from: String, messages: Vec<StoredMsg> },
-    Error { msg: String },
+    AuthOk {
+        username: String,
+        last_seen: i64,
+    },
+    Peers {
+        peers: Vec<String>,
+    },
+    PeerOnline {
+        username: String,
+    },
+    Message {
+        from: String,
+        payload: String,
+        ts: i64,
+    },
+    HistoryRequest {
+        from: String,
+        since: i64,
+    },
+    HistoryResponse {
+        from: String,
+        messages: Vec<StoredMsg>,
+    },
+    Error {
+        msg: String,
+    },
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+    message: String,
 }
 
 fn hash(pw: &str) -> String {
@@ -87,40 +121,36 @@ async fn main() {
         online: Arc::new(DashMap::new()),
     };
 
-    let app = Router::new().route("/ws", get(ws_handler)).with_state(state);
+    let app = Router::new()
+        .route("/auth", get(auth_handler))
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
     println!("server listening on 0.0.0.0:8080");
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(|s| handle_socket(s, state))
-}
-
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    let (mut sender, mut receiver) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
-
-    // --- auth ---
-    let auth = match receiver.next().await {
-        Some(Ok(Message::Text(t))) => serde_json::from_str::<ClientMsg>(&t).ok(),
-        _ => None,
+async fn auth_handler(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let Some(auth_str) = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+    else {
+        let error_body = Json(ErrorResponse {
+            error: "Unauthorized".to_string(),
+            message: "Missing Authorization header.".to_string(),
+        });
+        return (StatusCode::UNAUTHORIZED, error_body).into_response();
     };
-    let (username, password) = match auth {
-        Some(ClientMsg::Auth { username, password }) => (username, password),
-        _ => {
-            let _ = sender
-                .send(Message::Text(
-                    serde_json::to_string(&ServerMsg::Error {
-                        msg: "auth required".into(),
-                    })
-                    .unwrap()
-                    .into(),
-                ))
-                .await;
-            return;
-        }
+    let Some((username, password)) = auth_str.split_once(':') else {
+        let error_body = Json(ErrorResponse {
+            error: "Unauthorized".to_string(),
+            message: "Invalid Authorization header.".to_string(),
+        });
+        return (StatusCode::UNAUTHORIZED, error_body).into_response();
     };
 
     let last_seen: i64 = {
@@ -135,10 +165,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         match existing {
             Some((h, ls)) => {
                 if h != hash(&password) {
-                    let _ = tx.send(ServerMsg::Error {
-                        msg: "invalid credentials".into(),
+                    let error_body = Json(ErrorResponse {
+                        error: "Unauthorized".to_string(),
+                        message: "Invalid credentials.".to_string(),
                     });
-                    return;
+                    return (StatusCode::UNAUTHORIZED, error_body).into_response();
                 }
                 ls
             }
@@ -152,6 +183,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             }
         }
     };
+
+    let username_str = username.to_string();
+    println!("HELLO {}!", username_str);
+    ws.on_upgrade(move |s| handle_socket(s, state, username_str, last_seen))
+}
+
+async fn handle_socket(socket: WebSocket, state: AppState, username: String, last_seen: i64) {
+    let (mut sender, mut receiver) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
 
     state.online.insert(username.clone(), tx.clone());
     let _ = tx.send(ServerMsg::AuthOk {
@@ -173,7 +213,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             .unwrap();
         rows.filter_map(|r| r.ok()).collect()
     };
-    let _ = tx.send(ServerMsg::Peers { peers: peers.clone() });
+    let _ = tx.send(ServerMsg::Peers {
+        peers: peers.clone(),
+    });
 
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
@@ -235,8 +277,6 @@ async fn handle_client(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     match cm {
-        ClientMsg::Auth { .. } => {}
-
         ClientMsg::Send { to, payload } => {
             let ts = now();
             // Первое сообщение создаёт relationship. Дальше она уже есть.
