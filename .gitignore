@@ -79,6 +79,8 @@ credentials.*
 *.sqlite3
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.log
 logs/
 
@@ -88,6 +90,10 @@ logs/
 coverage/
 lcov.info
 tarpaulin-report.*
+
+# python
+__pycache__
+.pytest_cache
 
 # ---------- misc ----------
 *.bak

@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use dashmap::mapref::entry::Entry;
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -48,8 +49,31 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
 
-    // Register the connection (last login wins).
-    state.online.insert(username.clone(), tx.clone());
+    // --- single session per user (atomic) ---------------------------
+    //
+    // `DashMap::entry` locks the shard for the duration of this match,
+    // so two concurrent upgrades for the same username can never both
+    // observe a vacant slot. The second one gets `Occupied` and is
+    // rejected; the already-connected session is left untouched.
+    let already_connected = match state.online.entry(username.clone()) {
+        Entry::Occupied(_) => true,
+        Entry::Vacant(v) => {
+            v.insert(tx.clone());
+            false
+        }
+    };
+
+    if already_connected {
+        let msg = serde_json::to_string(&ServerMsg::Error {
+            msg: "another session is already connected for this user".into(),
+        })
+        .unwrap();
+        let _ = sender.send(Message::Text(msg.into())).await;
+        let _ = sender.send(Message::Close(None)).await;
+        // NOTE: do *not* fall through to the cleanup block below — we
+        // must not remove the existing session's entry from `online`.
+        return;
+    }
 
     // Send the initial snapshot.
     let _ = tx.send(ServerMsg::AuthOk {
@@ -116,6 +140,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
     }
 
     // ---- cleanup ----------------------------------------------------
+    //
+    // Only reached by the session that actually owns the slot. A rejected
+    // duplicate returned above, so it can never erase a live session.
     state.online.remove(&username);
     state.db.update_last_seen(&username, now()).await;
 
