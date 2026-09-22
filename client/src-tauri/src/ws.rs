@@ -40,6 +40,17 @@ pub async fn connect(
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
+    // Mark ourselves as the current session FIRST so any stale reader/writer
+    // from a previous connect in this same process will see it is no longer
+    // current and stop emitting UI events / mutating state.
+    state.current_session.store(session_id, Ordering::Relaxed);
+
+    // Set the owner *before* the socket starts exchanging messages, so any
+    // DB access triggered by incoming frames is already correctly scoped.
+    {
+        let mut u = state.username.lock().await;
+        *u = Some(username.clone());
+    }
     {
         let mut ws = state.ws.lock().await;
         *ws = Some(WsHandle {
@@ -48,6 +59,7 @@ pub async fn connect(
         });
     }
 
+    // Writer task: pumps outgoing ClientMsg into the socket.
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let text = match serde_json::to_string(&msg) {
@@ -60,6 +72,7 @@ pub async fn connect(
         }
     });
 
+    // Reader task: pumps incoming ServerMsg into UI events + DB.
     let app_recv = app.clone();
     let state_recv = state.clone();
     let username_clone = username.clone();
@@ -74,22 +87,50 @@ pub async fn connect(
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            handle_server_msg(&app_recv, &state_recv, &username_clone, server_msg).await;
-        }
-        // cleanup
-        let mut ws = state_recv.ws.lock().await;
-        if let Some(handle) = ws.as_ref() {
-            if handle.session_id == session_id {
-                *ws = None;
-                let _ = app_recv.emit("disconnected", ());
+
+            // Guard: a stale reader (its session was taken over by a newer
+            // login) must NOT emit events like "session-closed", nor clear
+            // the live WsHandle, nor touch the DB. Just drop its input.
+            if !state_recv.is_current_session(session_id) {
+                if matches!(server_msg, ServerMsg::Close) {
+                    break;
+                }
+                continue;
             }
+
+            handle_server_msg(
+                &app_recv,
+                &state_recv,
+                session_id,
+                &username_clone,
+                server_msg,
+            )
+            .await;
+        }
+
+        // Cleanup — only if we are still the current session.
+        if state_recv.is_current_session(session_id) {
+            let mut ws = state_recv.ws.lock().await;
+            if let Some(handle) = ws.as_ref() {
+                if handle.session_id == session_id {
+                    *ws = None;
+                }
+            }
+            drop(ws);
+            let _ = app_recv.emit("disconnected", ());
         }
     });
 
     Ok(())
 }
 
-async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: ServerMsg) {
+async fn handle_server_msg(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: u64,
+    me: &str,
+    msg: ServerMsg,
+) {
     match msg {
         ServerMsg::AuthOk { username, .. } => {
             let mut u = state.username.lock().await;
@@ -109,7 +150,7 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
             let _ = app.emit("peer-offline", username);
         }
         ServerMsg::Message { from, payload, ts } => {
-            let (method, pw) = state.db.get_peer_encryption(&from).await;
+            let (method, pw) = state.db.get_peer_encryption(me, &from).await;
             let text = if method == "aes-gcm" {
                 if let Some(pw) = pw {
                     crypto::decrypt(&pw, &payload)
@@ -120,7 +161,7 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
             } else {
                 payload
             };
-            state.db.insert_message(&from, "in", ts, &text).await;
+            state.db.insert_message(me, &from, "in", ts, &text).await;
             let _ = app.emit(
                 "message",
                 serde_json::json!({
@@ -132,8 +173,7 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
             );
         }
         ServerMsg::PullHistoryRequest { from, since } => {
-            // Peer requests our history with them since `since`.
-            let messages = state.db.get_messages(&from).await;
+            let messages = state.db.get_messages(me, &from).await;
             let stored: Vec<StoredMsg> = messages
                 .into_iter()
                 .filter(|m| m.ts > since)
@@ -153,7 +193,7 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
                 .collect();
 
             // Encrypt payloads if encryption is enabled for this peer.
-            let (method, pw) = state.db.get_peer_encryption(&from).await;
+            let (method, pw) = state.db.get_peer_encryption(me, &from).await;
             let stored: Vec<StoredMsg> = if method == "aes-gcm" {
                 if let Some(pw) = pw {
                     stored
@@ -182,7 +222,7 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
         ServerMsg::HistoryResponse { from, messages } => {
             for m in messages {
                 let direction = if m.from == me { "out" } else { "in" };
-                let (method, pw) = state.db.get_peer_encryption(&from).await;
+                let (method, pw) = state.db.get_peer_encryption(me, &from).await;
                 let text = if method == "aes-gcm" {
                     if let Some(pw) = pw {
                         crypto::decrypt(&pw, &m.payload)
@@ -193,7 +233,10 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
                 } else {
                     m.payload
                 };
-                state.db.insert_message(&from, direction, m.ts, &text).await;
+                state
+                    .db
+                    .insert_message(me, &from, direction, m.ts, &text)
+                    .await;
             }
             let _ = app.emit("history-received", from);
         }
@@ -201,9 +244,19 @@ async fn handle_server_msg(app: &AppHandle, state: &AppState, me: &str, msg: Ser
             let _ = app.emit("error", msg);
         }
         ServerMsg::Close => {
-            let _ = app.emit("session-closed", ());
-            let mut ws = state.ws.lock().await;
-            *ws = None;
+            // Only honour Close if we're the current session. A stale reader
+            // receiving a takeover-Close from the server must not pop the
+            // "session-closed" alert on the fresh page, and must not clear
+            // the live WsHandle.
+            if state.is_current_session(session_id) {
+                let _ = app.emit("session-closed", ());
+                let mut ws = state.ws.lock().await;
+                if let Some(handle) = ws.as_ref() {
+                    if handle.session_id == session_id {
+                        *ws = None;
+                    }
+                }
+            }
         }
     }
 }

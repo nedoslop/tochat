@@ -77,15 +77,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         last_seen,
     });
 
-    let peers = state.db.list_peers(&username).await;
+    // Snapshot for the login-time exchange below. This is fresh (queried
+    // just now), so it correctly reflects all peers established so far.
+    let peers_at_login = state.db.list_peers(&username).await;
     let pending = state.db.list_pending_chats(&username).await;
     let _ = tx.send(ServerMsg::Peers {
-        peers: peers.clone(),
+        peers: peers_at_login.clone(),
     });
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
 
     // Send initial online status for peers that are already online.
-    for p in &peers {
+    for p in &peers_at_login {
         if state.online.contains_key(p) {
             let _ = tx.send(ServerMsg::PeerOnline {
                 username: p.clone(),
@@ -94,7 +96,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
     }
 
     // Notify peers that we are online.
-    for p in &peers {
+    for p in &peers_at_login {
         if let Some(peer) = state.online.get(p) {
             let _ = peer.tx.send(ServerMsg::PeerOnline {
                 username: username.clone(),
@@ -153,7 +155,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         state.online.remove(&username);
         state.db.update_last_seen(&username, now()).await;
 
-        for p in &peers {
+        // IMPORTANT: re-query peers from the DB instead of using the
+        // login-time snapshot. New relationships may have been established
+        // during this session (e.g. via implicit-accept or history exchange),
+        // and those peers must still be told we went offline.
+        let current_peers = state.db.list_peers(&username).await;
+        for p in &current_peers {
             if let Some(peer) = state.online.get(p) {
                 let _ = peer.tx.send(ServerMsg::PeerOffline {
                     username: username.clone(),
@@ -212,17 +219,47 @@ async fn handle_send(
 
     match state.db.get_relationship(me, to).await {
         None => {
-            // First message → register pending relationship. Sender stores
-            // message locally; we do not deliver anything to `to`.
+            // First contact ever. Create a pending relationship. Do NOT
+            // deliver: the other side must explicitly accept (pull) first.
             state.db.ensure_relationship_initiated(me, to).await;
-            // Notify receiver if online that they have a new pending chat.
-            if let Some(peer) = state.online.get(to) {
-                let pending = state.db.list_pending_chats(to).await;
-                let _ = peer.tx.send(ServerMsg::PendingChats { users: pending });
-            }
         }
         Some((initiator, established)) => {
-            if established {
+            let is_implicit_accept = !established && initiator != me;
+
+            if is_implicit_accept {
+                // The non-initiator is replying before explicitly pulling
+                // history. Treat it as an implicit acceptance: establish
+                // the relationship and notify both sides they're now peers.
+                state.db.establish_relationship(me, to).await;
+
+                let to_online = state.online.contains_key(to);
+                let me_online = state.online.contains_key(me);
+
+                if to_online {
+                    // Tell `to` that `me` is now their peer and online.
+                    if let Some(peer) = state.online.get(to) {
+                        let _ = peer.tx.send(ServerMsg::PeerOnline {
+                            username: me.to_string(),
+                        });
+                    }
+                    // Tell `me` that `to` is online. We only do this if
+                    // `to` really is online — otherwise the UI would mark
+                    // them as online when they aren't.
+                    if me_online {
+                        if let Some(my) = state.online.get(me) {
+                            let _ = my.tx.send(ServerMsg::PeerOnline {
+                                username: to.to_string(),
+                            });
+                        }
+                    }
+                }
+                // If `to` is offline, don't say anything about them: `me`'s
+                // client defaults unknown peers to "offline", which is right.
+            }
+
+            if established || is_implicit_accept {
+                // Deliver if peer is online. If not, they'll pull history
+                // from us when they come online and see us as a peer.
                 if let Some(peer) = state.online.get(to) {
                     let _ = peer.tx.send(ServerMsg::Message {
                         from: me.to_string(),
@@ -230,15 +267,9 @@ async fn handle_send(
                         ts,
                     });
                 }
-                // If peer offline → sender stores locally, peer will pull later.
-            } else if initiator == me {
-                // We initiated, other side hasn't pulled yet → store locally only.
-            } else {
-                // We are the receiver of a pending init → we must pull first.
-                let _ = tx.send(ServerMsg::Error {
-                    msg: format!("pull history from {} first", to),
-                });
             }
+            // else: we're the initiator in a pending relationship. Our
+            // message stays local until the peer accepts (pulls).
         }
     }
 }
@@ -303,20 +334,23 @@ async fn handle_history_response(me: &str, to: &str, messages: Vec<StoredMsg>, s
     if let Some((_initiator, established)) = state.db.get_relationship(me, to).await {
         if !established {
             state.db.establish_relationship(me, to).await;
-            // Notify both sides that they are now peers.
-            if let Some(peer) = state.online.get(to) {
-                let _ = peer.tx.send(ServerMsg::PeerOnline {
-                    username: me.to_string(),
-                });
-                let pending = state.db.list_pending_chats(to).await;
-                let _ = peer.tx.send(ServerMsg::PendingChats { users: pending });
+
+            let to_online = state.online.contains_key(to);
+            let me_online = state.online.contains_key(me);
+
+            if to_online {
+                if let Some(peer) = state.online.get(to) {
+                    let _ = peer.tx.send(ServerMsg::PeerOnline {
+                        username: me.to_string(),
+                    });
+                }
             }
-            if let Some(my_tx) = state.online.get(me) {
-                let _ = my_tx.tx.send(ServerMsg::PeerOnline {
-                    username: to.to_string(),
-                });
-                let pending = state.db.list_pending_chats(me).await;
-                let _ = my_tx.tx.send(ServerMsg::PendingChats { users: pending });
+            if to_online && me_online {
+                if let Some(my_tx) = state.online.get(me) {
+                    let _ = my_tx.tx.send(ServerMsg::PeerOnline {
+                        username: to.to_string(),
+                    });
+                }
             }
         }
     }
@@ -348,6 +382,7 @@ async fn handle_delete_account(
         return;
     }
 
+    // Notify everyone we ever had an established relationship with.
     let peers = state.db.list_peers(me).await;
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {

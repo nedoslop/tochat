@@ -256,6 +256,8 @@
       const pending = new Set();
       const online = new Set();
       const msgCache = {};
+      // Tracks peers for which a pull_history is currently in flight.
+      const pulling = new Set();
 
       // ---------- helpers ----------
 
@@ -283,6 +285,43 @@
         const div = document.createElement("div");
         div.textContent = text;
         return div.innerHTML;
+      }
+
+      // Compute the newest *received* message timestamp from a peer.
+      //
+      // IMPORTANT: this must only look at incoming messages. If we included
+      // our own outgoing messages, then any peer message older than our own
+      // most recent send would be excluded by the `m.ts > since` filter on
+      // the peer's side — which is exactly the "sent something, then my
+      // peer's earlier messages never show up" bug.
+      function lastReceivedTs(peer) {
+        const msgs = msgCache[peer] || [];
+        let max = 0;
+        for (const m of msgs) {
+          if (m.direction === "in" && m.ts > max) max = m.ts;
+        }
+        return max;
+      }
+
+      // Pull only new history since the last message we received from the
+      // peer. Safe to call repeatedly: the `pulling` guard prevents
+      // overlapping requests for the same peer, and the DB has a UNIQUE
+      // index that deduplicates any accidental re-inserts.
+      async function autoPull(peer) {
+        if (!peer || peer === me) return;
+        if (pulling.has(peer)) return;
+        pulling.add(peer);
+        try {
+          if (!msgCache[peer]) {
+            msgCache[peer] = await invoke("get_messages", { peer });
+          }
+          const since = lastReceivedTs(peer);
+          await invoke("pull_history", { from: peer, since });
+        } catch (_) {
+          /* silent — auto-pull is best-effort */
+        }
+        // Safety net in case no response ever arrives.
+        setTimeout(() => pulling.delete(peer), 8000);
       }
 
       // ---------- actions ----------
@@ -337,30 +376,17 @@
         } catch (_) {
           document.getElementById("enc-method").value = "none";
         }
-        // Pull only new history since our latest local message for this peer.
-        const msgs = msgCache[peer] || [];
-        const lastTs =
-          msgs.length > 0 ? Math.max(...msgs.map((m) => m.ts)) : 0;
-        try {
-          await invoke("pull_history", { from: peer, since: lastTs });
-        } catch (e) {
-          /* ignore, often just "peer offline" or "no chat yet" */
-        }
+        await autoPull(peer);
       }
 
       async function acceptPending(peer) {
-        const msgs = msgCache[peer] || [];
-        const lastTs =
-          msgs.length > 0 ? Math.max(...msgs.map((m) => m.ts)) : 0;
-        try {
-          await invoke("pull_history", { from: peer, since: lastTs });
-        } catch (e) {
-          toast("pull failed: " + e);
-          return;
-        }
+        // Do NOT pull here — openPeer() already pulls, and issuing two
+        // pulls with the same `since` before either response lands causes
+        // every message to be inserted twice into the local DB.
         pending.delete(peer);
         peers.add(peer);
         renderSidebar();
+        renderPendingList();
         await openPeer(peer);
       }
 
@@ -372,9 +398,15 @@
         try {
           await invoke("send_message", { to: currentPeer, text });
           input.value = "";
+          // Sending to a pending peer implicitly accepts the chat — the
+          // server establishes the relationship on our behalf.
+          if (pending.has(currentPeer)) {
+            pending.delete(currentPeer);
+          }
           msgCache[currentPeer] = await invoke("get_messages", {
             peer: currentPeer,
           });
+          renderSidebar();
           renderMessages();
         } catch (e) {
           toast("send error: " + e);
@@ -520,6 +552,7 @@
         peers.clear();
         pending.clear();
         online.clear();
+        pulling.clear();
         for (const k of Object.keys(msgCache)) delete msgCache[k];
         document.getElementById("app").style.display = "none";
         document.getElementById("login").style.display = "flex";
@@ -570,6 +603,9 @@
         await listen("peers", (e) => {
           for (const p of e.payload) peers.add(p);
           renderSidebar();
+          // Auto-pull from every established peer at login so any messages
+          // sent to us while we were offline show up immediately.
+          for (const p of e.payload) autoPull(p);
         });
 
         await listen("pending-chats", (e) => {
@@ -590,6 +626,9 @@
             peers.add(name);
           }
           renderSidebar();
+          // Peer just came online — sync in case they have messages we
+          // didn't receive while they were offline.
+          if (!pending.has(name)) autoPull(name);
         });
 
         await listen("peer-offline", (e) => {
@@ -599,6 +638,10 @@
 
         await listen("message", (e) => {
           const m = e.payload;
+          // Receiving a message from a pending peer means the relationship
+          // is now established (server marks it as implicit accept when the
+          // non-initiator replies). Drop the pending badge.
+          pending.delete(m.peer);
           peers.add(m.peer);
           if (!msgCache[m.peer]) msgCache[m.peer] = [];
           msgCache[m.peer].push({
@@ -607,11 +650,13 @@
             text: m.text,
           });
           renderSidebar();
+          renderPendingList();
           if (currentPeer === m.peer) renderMessages();
         });
 
         await listen("history-received", async (e) => {
           const peer = e.payload;
+          pulling.delete(peer);
           msgCache[peer] = await invoke("get_messages", { peer });
           if (pending.has(peer)) {
             pending.delete(peer);
@@ -623,7 +668,11 @@
         });
 
         await listen("error", (e) => {
-          toast(String(e.payload));
+          const msg = String(e.payload);
+          // Auto-pull from an offline peer is expected and shouldn't be
+          // surfaced to the user (would just spam the toast).
+          if (msg.includes("is offline")) return;
+          toast(msg);
         });
 
         await listen("session-closed", async () => {

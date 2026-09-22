@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -27,6 +28,11 @@ pub async fn connect(
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    // Invalidate the current session id so any still-running reader/writer
+    // tasks from the old connection immediately stop emitting events into
+    // the UI. Their sockets will close on their own once their tx / rx
+    // halves are dropped.
+    state.current_session.store(0, Ordering::Relaxed);
     let mut ws = state.ws.lock().await;
     *ws = None;
     Ok(())
@@ -38,8 +44,9 @@ pub async fn send_message(
     to: String,
     text: String,
 ) -> Result<(), String> {
+    let owner = state.owner().await?;
     let ts = now();
-    let (method, pw) = state.db.get_peer_encryption(&to).await;
+    let (method, pw) = state.db.get_peer_encryption(&owner, &to).await;
     let payload = if method == "aes-gcm" {
         if let Some(pw) = pw {
             crypto::encrypt(&pw, &text)
@@ -49,7 +56,7 @@ pub async fn send_message(
     } else {
         text.clone()
     };
-    state.db.insert_message(&to, "out", ts, &text).await;
+    state.db.insert_message(&owner, &to, "out", ts, &text).await;
 
     let ws = state.ws.lock().await;
     if let Some(handle) = ws.as_ref() {
@@ -69,7 +76,7 @@ pub async fn pull_history(
     from: String,
     since: Option<i64>,
 ) -> Result<(), String> {
-    let since = since.unwrap_or_else(|| 0);
+    let since = since.unwrap_or(0);
     let ws = state.ws.lock().await;
     if let Some(handle) = ws.as_ref() {
         handle
@@ -116,9 +123,10 @@ pub async fn set_peer_encryption(
     method: String,
     password: Option<String>,
 ) -> Result<(), String> {
+    let owner = state.owner().await?;
     state
         .db
-        .set_peer_encryption(&peer, &method, password.as_deref())
+        .set_peer_encryption(&owner, &peer, &method, password.as_deref())
         .await;
     Ok(())
 }
@@ -128,7 +136,8 @@ pub async fn get_peer_encryption(
     state: State<'_, Arc<AppState>>,
     peer: String,
 ) -> Result<serde_json::Value, String> {
-    let (method, _) = state.db.get_peer_encryption(&peer).await;
+    let owner = state.owner().await?;
+    let (method, _) = state.db.get_peer_encryption(&owner, &peer).await;
     Ok(serde_json::json!({ "method": method }))
 }
 
@@ -137,11 +146,17 @@ pub async fn get_messages(
     state: State<'_, Arc<AppState>>,
     peer: String,
 ) -> Result<Vec<crate::db::Message>, String> {
-    Ok(state.db.get_messages(&peer).await)
+    let owner = state.owner().await?;
+    Ok(state.db.get_messages(&owner, &peer).await)
 }
 
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.db.wipe().await;
+    // Only wipe the currently logged-in account's local data. Any other
+    // account that happens to share this SQLite file (e.g. a second app
+    // instance) keeps its own rows untouched.
+    if let Ok(owner) = state.owner().await {
+        state.db.wipe_owner(&owner).await;
+    }
     Ok(())
 }
