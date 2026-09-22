@@ -9,11 +9,7 @@ use crate::util::now;
 use crate::ws;
 
 #[tauri::command]
-pub async fn register(
-    base_url: String,
-    username: String,
-    password: String,
-) -> Result<(), String> {
+pub async fn register(base_url: String, username: String, password: String) -> Result<(), String> {
     http_auth::register(&base_url, &username, &password).await
 }
 
@@ -92,8 +88,11 @@ pub async fn send_message(
         return Err("cannot send to yourself".into());
     }
     let payload = encrypt_for(&state, &to, &text);
-    tx.send(ClientMsg::Send { to: to.clone(), payload })
-        .map_err(|_| "connection closed".to_string())?;
+    tx.send(ClientMsg::Send {
+        to: to.clone(),
+        payload,
+    })
+    .map_err(|_| "connection closed".to_string())?;
     if let Some(db) = db {
         db.insert_message(&to, "out", now(), &text).await;
     }
@@ -183,7 +182,9 @@ pub async fn get_peer_encryption(
         let (m, _pw) = db.get_peer_enc(&peer).await;
         return Ok(EncInfo { method: m });
     }
-    Ok(EncInfo { method: "none".into() })
+    Ok(EncInfo {
+        method: "none".into(),
+    })
 }
 
 #[derive(Serialize)]
@@ -194,16 +195,19 @@ pub struct MsgRow {
 }
 
 #[tauri::command]
-pub async fn get_messages(
-    state: State<'_, AppState>,
-    peer: String,
-) -> Result<Vec<MsgRow>, String> {
+pub async fn get_messages(state: State<'_, AppState>, peer: String) -> Result<Vec<MsgRow>, String> {
     let db = state.db.lock().unwrap().clone();
-    let Some(db) = db else { return Ok(Vec::new()); };
+    let Some(db) = db else {
+        return Ok(Vec::new());
+    };
     let rows = db.get_messages(&peer).await;
     Ok(rows
         .into_iter()
-        .map(|(direction, ts, text)| MsgRow { direction, ts, text })
+        .map(|(direction, ts, text)| MsgRow {
+            direction,
+            ts,
+            text,
+        })
         .collect())
 }
 

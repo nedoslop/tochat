@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use rusqlite::{params, Connection};
@@ -7,7 +7,6 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct LocalDb {
     conn: Arc<Mutex<Connection>>,
-    path: PathBuf,
 }
 
 impl LocalDb {
@@ -35,10 +34,10 @@ CREATE TABLE IF NOT EXISTS peer_enc (
 );
 "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)), path })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
-
-    pub fn path(&self) -> &Path { &self.path }
 
     pub async fn insert_message(&self, peer: &str, direction: &str, ts: i64, text: &str) {
         let conn = self.conn.lock().await;
@@ -75,9 +74,9 @@ CREATE TABLE IF NOT EXISTS peer_enc (
 
     pub async fn get_messages(&self, peer: &str) -> Vec<(String, i64, String)> {
         let conn = self.conn.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT direction, ts, text FROM messages WHERE peer=?1 ORDER BY ts, id",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT direction, ts, text FROM messages WHERE peer=?1 ORDER BY ts, id")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -140,6 +139,12 @@ CREATE TABLE IF NOT EXISTS peer_enc (
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

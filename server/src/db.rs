@@ -9,7 +9,11 @@ pub struct Database {
 }
 
 fn order<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 impl Database {
@@ -34,7 +38,9 @@ CREATE TABLE IF NOT EXISTS relationships (
 );
 "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     // ---- users --------------------------------------------------------
@@ -51,8 +57,12 @@ CREATE TABLE IF NOT EXISTS relationships (
 
     pub async fn user_exists(&self, username: &str) -> bool {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT 1 FROM users WHERE username = ?1", [username], |_| Ok(()))
-            .is_ok()
+        conn.query_row(
+            "SELECT 1 FROM users WHERE username = ?1",
+            [username],
+            |_| Ok(()),
+        )
+        .is_ok()
     }
 
     pub async fn create_user(&self, username: &str, password_hash: &str) -> bool {

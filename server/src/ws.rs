@@ -74,12 +74,16 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
 
     let peers = state.db.list_peers(&username).await;
     let pending = state.db.list_pending_chats(&username).await;
-    let _ = tx.send(ServerMsg::Peers { peers: peers.clone() });
+    let _ = tx.send(ServerMsg::Peers {
+        peers: peers.clone(),
+    });
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
 
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOnline { username: username.clone() });
+            let _ = peer_tx.send(ServerMsg::PeerOnline {
+                username: username.clone(),
+            });
         }
     }
 
@@ -128,7 +132,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
 
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline { username: username.clone() });
+            let _ = peer_tx.send(ServerMsg::PeerOffline {
+                username: username.clone(),
+            });
         }
     }
 }
@@ -258,12 +264,7 @@ async fn handle_pull_history(
     }
 }
 
-async fn handle_history_response(
-    me: &str,
-    to: &str,
-    messages: Vec<StoredMsg>,
-    state: &AppState,
-) {
+async fn handle_history_response(me: &str, to: &str, messages: Vec<StoredMsg>, state: &AppState) {
     if me == to {
         return;
     }
@@ -274,10 +275,14 @@ async fn handle_history_response(
         if !established {
             state.db.establish_relationship(me, to).await;
             if let Some(peer) = state.online.get(to) {
-                let _ = peer.send(ServerMsg::PeerOnline { username: me.to_string() });
+                let _ = peer.send(ServerMsg::PeerOnline {
+                    username: me.to_string(),
+                });
             }
             if let Some(my_tx) = state.online.get(me) {
-                let _ = my_tx.send(ServerMsg::PeerOnline { username: to.to_string() });
+                let _ = my_tx.send(ServerMsg::PeerOnline {
+                    username: to.to_string(),
+                });
             }
         }
     }
@@ -297,18 +302,24 @@ async fn handle_delete_account(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     let Some((h, _)) = state.db.get_user(me).await else {
-        let _ = tx.send(ServerMsg::Error { msg: "unknown user".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "unknown user".into(),
+        });
         return;
     };
     if h != hash_password(password) {
-        let _ = tx.send(ServerMsg::Error { msg: "invalid password".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "invalid password".into(),
+        });
         return;
     }
 
     let peers = state.db.list_peers(me).await;
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline { username: me.to_string() });
+            let _ = peer_tx.send(ServerMsg::PeerOffline {
+                username: me.to_string(),
+            });
         }
     }
 

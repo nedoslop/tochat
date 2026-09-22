@@ -19,7 +19,9 @@ pub fn encrypt(plaintext: &[u8], password: &str) -> Result<String, String> {
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct = cipher.encrypt(nonce, plaintext).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| e.to_string())?;
     let mut combined = Vec::with_capacity(12 + ct.len());
     combined.extend_from_slice(&nonce_bytes);
     combined.extend_from_slice(&ct);

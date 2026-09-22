@@ -109,7 +109,10 @@ async fn handle_server_msg(
     msg: ServerMsg,
 ) {
     match msg {
-        ServerMsg::AuthOk { username, last_seen } => {
+        ServerMsg::AuthOk {
+            username,
+            last_seen,
+        } => {
             let _ = app.emit(
                 "auth-ok",
                 json!({ "username": username, "lastSeen": last_seen }),
@@ -147,14 +150,28 @@ async fn handle_server_msg(
             let stored: Vec<StoredMsg> = msgs
                 .into_iter()
                 .map(|(direction, ts, text)| StoredMsg {
-                    from: if direction == "out" { me.to_string() } else { from.clone() },
-                    to: if direction == "out" { from.clone() } else { me.to_string() },
+                    from: if direction == "out" {
+                        me.to_string()
+                    } else {
+                        from.clone()
+                    },
+                    to: if direction == "out" {
+                        from.clone()
+                    } else {
+                        me.to_string()
+                    },
                     ts,
                     payload: text,
                 })
                 .collect();
             let stored = encrypt_history(state, &from, stored);
-            send_client(state, ClientMsg::HistoryResponse { to: from, messages: stored });
+            send_client(
+                state,
+                ClientMsg::HistoryResponse {
+                    to: from,
+                    messages: stored,
+                },
+            );
         }
         ServerMsg::HistoryResponse { from, messages } => {
             for m in messages {
@@ -224,7 +241,8 @@ fn encrypt_history(state: &AppState, peer: &str, msgs: Vec<StoredMsg>) -> Vec<St
     let Some(pw) = cfg.password else { return msgs };
     msgs.into_iter()
         .map(|m| {
-            let enc = crypto::encrypt(m.payload.as_bytes(), &pw).unwrap_or_else(|_| m.payload.clone());
+            let enc =
+                crypto::encrypt(m.payload.as_bytes(), &pw).unwrap_or_else(|_| m.payload.clone());
             StoredMsg {
                 from: m.from,
                 to: m.to,
