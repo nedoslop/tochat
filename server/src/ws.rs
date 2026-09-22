@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -13,8 +15,10 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
-use crate::state::AppState;
+use crate::state::{AppState, OnlineSession};
 use crate::util::{hash_password, now};
+
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -48,23 +52,24 @@ fn reject(msg: &str) -> axum::response::Response {
 async fn handle_socket(socket: WebSocket, state: AppState, username: String, last_seen: i64) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let already_connected = match state.online.entry(username.clone()) {
-        Entry::Occupied(_) => true,
-        Entry::Vacant(v) => {
-            v.insert(tx.clone());
-            false
+    // Take over any existing session for this user.
+    match state.online.entry(username.clone()) {
+        Entry::Occupied(mut e) => {
+            let old = e.get();
+            let _ = old.tx.send(ServerMsg::Close);
+            e.insert(OnlineSession {
+                tx: tx.clone(),
+                session_id,
+            });
         }
-    };
-
-    if already_connected {
-        let msg = serde_json::to_string(&ServerMsg::Error {
-            msg: "another session is already connected for this user".into(),
-        })
-        .unwrap();
-        let _ = sender.send(Message::Text(msg.into())).await;
-        let _ = sender.send(Message::Close(None)).await;
-        return;
+        Entry::Vacant(v) => {
+            v.insert(OnlineSession {
+                tx: tx.clone(),
+                session_id,
+            });
+        }
     }
 
     let _ = tx.send(ServerMsg::AuthOk {
@@ -79,9 +84,19 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
     });
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
 
+    // Send initial online status for peers that are already online.
     for p in &peers {
-        if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOnline {
+        if state.online.contains_key(p) {
+            let _ = tx.send(ServerMsg::PeerOnline {
+                username: p.clone(),
+            });
+        }
+    }
+
+    // Notify peers that we are online.
+    for p in &peers {
+        if let Some(peer) = state.online.get(p) {
+            let _ = peer.tx.send(ServerMsg::PeerOnline {
                 username: username.clone(),
             });
         }
@@ -127,14 +142,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         _ = &mut recv_task => send_task.abort(),
     }
 
-    state.online.remove(&username);
-    state.db.update_last_seen(&username, now()).await;
+    // Only clean up if we are still the current session.
+    let still_current = state
+        .online
+        .get(&username)
+        .map(|e| e.session_id == session_id)
+        .unwrap_or(false);
 
-    for p in &peers {
-        if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline {
-                username: username.clone(),
-            });
+    if still_current {
+        state.online.remove(&username);
+        state.db.update_last_seen(&username, now()).await;
+
+        for p in &peers {
+            if let Some(peer) = state.online.get(p) {
+                let _ = peer.tx.send(ServerMsg::PeerOffline {
+                    username: username.clone(),
+                });
+            }
         }
     }
 }
@@ -191,11 +215,16 @@ async fn handle_send(
             // First message → register pending relationship. Sender stores
             // message locally; we do not deliver anything to `to`.
             state.db.ensure_relationship_initiated(me, to).await;
+            // Notify receiver if online that they have a new pending chat.
+            if let Some(peer) = state.online.get(to) {
+                let pending = state.db.list_pending_chats(to).await;
+                let _ = peer.tx.send(ServerMsg::PendingChats { users: pending });
+            }
         }
         Some((initiator, established)) => {
             if established {
                 if let Some(peer) = state.online.get(to) {
-                    let _ = peer.send(ServerMsg::Message {
+                    let _ = peer.tx.send(ServerMsg::Message {
                         from: me.to_string(),
                         payload,
                         ts,
@@ -251,7 +280,7 @@ async fn handle_pull_history(
 
     match state.online.get(from) {
         Some(peer) => {
-            let _ = peer.send(ServerMsg::PullHistoryRequest {
+            let _ = peer.tx.send(ServerMsg::PullHistoryRequest {
                 from: me.to_string(),
                 since,
             });
@@ -274,21 +303,26 @@ async fn handle_history_response(me: &str, to: &str, messages: Vec<StoredMsg>, s
     if let Some((_initiator, established)) = state.db.get_relationship(me, to).await {
         if !established {
             state.db.establish_relationship(me, to).await;
+            // Notify both sides that they are now peers.
             if let Some(peer) = state.online.get(to) {
-                let _ = peer.send(ServerMsg::PeerOnline {
+                let _ = peer.tx.send(ServerMsg::PeerOnline {
                     username: me.to_string(),
                 });
+                let pending = state.db.list_pending_chats(to).await;
+                let _ = peer.tx.send(ServerMsg::PendingChats { users: pending });
             }
             if let Some(my_tx) = state.online.get(me) {
-                let _ = my_tx.send(ServerMsg::PeerOnline {
+                let _ = my_tx.tx.send(ServerMsg::PeerOnline {
                     username: to.to_string(),
                 });
+                let pending = state.db.list_pending_chats(me).await;
+                let _ = my_tx.tx.send(ServerMsg::PendingChats { users: pending });
             }
         }
     }
 
     if let Some(peer) = state.online.get(to) {
-        let _ = peer.send(ServerMsg::HistoryResponse {
+        let _ = peer.tx.send(ServerMsg::HistoryResponse {
             from: me.to_string(),
             messages,
         });
@@ -317,7 +351,7 @@ async fn handle_delete_account(
     let peers = state.db.list_peers(me).await;
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline {
+            let _ = peer_tx.tx.send(ServerMsg::PeerOffline {
                 username: me.to_string(),
             });
         }

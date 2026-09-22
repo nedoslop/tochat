@@ -9,6 +9,7 @@ mod state;
 mod util;
 mod ws;
 
+use std::sync::Arc;
 use tauri::Manager;
 
 use crate::state::AppState;
@@ -18,7 +19,8 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            app.manage(AppState::new());
+            let state = AppState::new(app.handle().clone()).expect("failed to init state");
+            app.manage(Arc::new(state));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

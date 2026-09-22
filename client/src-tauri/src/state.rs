@@ -1,32 +1,34 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
+use tokio::sync::{mpsc, Mutex};
 
-use tokio::sync::mpsc;
-
-use crate::db::LocalDb;
+use crate::db::Database;
 use crate::protocol::ClientMsg;
 
-pub struct Connection {
-    pub username: String,
-    pub base_url: String,
+pub struct WsHandle {
     pub tx: mpsc::UnboundedSender<ClientMsg>,
+    pub session_id: u64,
 }
 
-#[derive(Clone, Default)]
-pub struct EncConfig {
-    pub method: String,
-    pub password: Option<String>,
-}
-
-#[derive(Clone, Default)]
 pub struct AppState {
-    pub conn: Arc<Mutex<Option<Connection>>>,
-    pub db: Arc<Mutex<Option<LocalDb>>>,
-    pub enc: Arc<Mutex<HashMap<String, EncConfig>>>,
+    pub db: Database,
+    pub ws: Mutex<Option<WsHandle>>,
+    pub username: Mutex<Option<String>>,
+    pub app: AppHandle,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(app: AppHandle) -> Result<Self, String> {
+        let db_path = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("chat.db");
+        let db = Database::open(db_path.to_str().unwrap()).map_err(|e| e.to_string())?;
+        Ok(Self {
+            db,
+            ws: Mutex::new(None),
+            username: Mutex::new(None),
+            app,
+        })
     }
 }

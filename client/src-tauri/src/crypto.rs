@@ -1,44 +1,27 @@
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
-use base64::Engine;
-use rand::RngCore;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 
-fn derive_key(password: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(password.as_bytes());
-    let out = h.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&out);
-    key
+pub fn encrypt(password: &str, plaintext: &str) -> String {
+    let key = Sha256::digest(password.as_bytes());
+    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ct = cipher.encrypt(&nonce, plaintext.as_bytes()).unwrap();
+    let mut out = nonce.to_vec();
+    out.extend_from_slice(&ct);
+    STANDARD.encode(out)
 }
 
-pub fn encrypt(plaintext: &[u8], password: &str) -> Result<String, String> {
-    let key = derive_key(password);
-    let cipher = Aes256Gcm::new(&key.into());
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|e| e.to_string())?;
-    let mut combined = Vec::with_capacity(12 + ct.len());
-    combined.extend_from_slice(&nonce_bytes);
-    combined.extend_from_slice(&ct);
-    Ok(base64::engine::general_purpose::STANDARD.encode(combined))
-}
-
-pub fn decrypt(encoded: &str, password: &str) -> Result<Vec<u8>, String> {
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|e| e.to_string())?;
-    if data.len() < 12 {
-        return Err("ciphertext too short".into());
+pub fn decrypt(password: &str, data: &str) -> Option<String> {
+    let bytes = STANDARD.decode(data).ok()?;
+    if bytes.len() < 12 {
+        return None;
     }
-    let (nonce_bytes, ct) = data.split_at(12);
-    let key = derive_key(password);
-    let cipher = Aes256Gcm::new(&key.into());
-    cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ct)
-        .map_err(|e| e.to_string())
+    let (nonce, ct) = bytes.split_at(12);
+    let key = Sha256::digest(password.as_bytes());
+    let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+    let nonce = Nonce::from_slice(nonce);
+    let pt = cipher.decrypt(nonce, ct).ok()?;
+    String::from_utf8(pt).ok()
 }
