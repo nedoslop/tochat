@@ -20,7 +20,10 @@ async fn last_seen(app: &AppHandle) -> i64 {
 /// Handle one decoded server frame.
 pub async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
     match sm {
-        ServerMsg::AuthOk { username, last_seen: ls } => {
+        ServerMsg::AuthOk {
+            username,
+            last_seen: ls,
+        } => {
             {
                 let state = app.state::<AppState>();
                 state.ws.lock().await.last_seen = ls;
@@ -36,10 +39,13 @@ pub async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
         ServerMsg::Peers { peers } => {
             let since = last_seen(app).await;
             for p in &peers {
-                send(app, ClientMsg::PullHistory {
-                    from: p.clone(),
-                    since,
-                })
+                send(
+                    app,
+                    ClientMsg::PullHistory {
+                        from: p.clone(),
+                        since,
+                    },
+                )
                 .await;
             }
             let _ = app.emit("peers", peers);
@@ -55,10 +61,13 @@ pub async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
         // Pull the history we missed.
         ServerMsg::PeerOnline { username } => {
             let since = last_seen(app).await;
-            send(app, ClientMsg::PullHistory {
-                from: username.clone(),
-                since,
-            })
+            send(
+                app,
+                ClientMsg::PullHistory {
+                    from: username.clone(),
+                    since,
+                },
+            )
             .await;
             let _ = app.emit("peer-online", username);
         }

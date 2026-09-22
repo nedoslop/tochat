@@ -20,17 +20,17 @@ pub async fn register(
     Json(creds): Json<Credentials>,
 ) -> impl IntoResponse {
     if creds.username.is_empty() || creds.password.is_empty() {
-        return bad(StatusCode::BAD_REQUEST, "bad_request", "missing credentials");
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "missing credentials",
+        );
     }
     let hash = hash_password(&creds.password);
     if state.db.create_user(&creds.username, &hash).await {
         (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
     } else {
-        bad(
-            StatusCode::CONFLICT,
-            "conflict",
-            "username already taken",
-        )
+        bad(StatusCode::CONFLICT, "conflict", "username already taken")
     }
 }
 

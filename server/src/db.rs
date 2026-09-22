@@ -13,7 +13,11 @@ pub struct Database {
 }
 
 fn order<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 impl Database {

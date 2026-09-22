@@ -12,7 +12,10 @@ pub enum ClientMsg {
     PullHistory { from: String, since: i64 },
 
     /// Answer to a forwarded history-pull request (we are the initiator).
-    HistoryResponse { to: String, messages: Vec<StoredMsg> },
+    HistoryResponse {
+        to: String,
+        messages: Vec<StoredMsg>,
+    },
 
     /// Ask the server for the list of users who initiated a chat with us
     /// and whose pending first message we have not consumed yet.
