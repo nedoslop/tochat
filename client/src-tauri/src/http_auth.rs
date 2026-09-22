@@ -1,19 +1,23 @@
-use serde_json::json;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Creds<'a> {
+    username: &'a str,
+    password: &'a str,
+}
 
 pub async fn register(base_url: &str, username: &str, password: &str) -> Result<(), String> {
     let url = format!("{}/register", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    let resp = client
         .post(&url)
-        .json(&json!({ "username": username, "password": password }))
+        .json(&Creds { username, password })
         .send()
         .await
-        .map_err(|e| format!("http: {e}"))?;
-
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        Err(format!("server: {status} {body}"))
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("register failed: {text}"));
     }
+    Ok(())
 }

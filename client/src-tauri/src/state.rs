@@ -1,28 +1,32 @@
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use crate::db::Database;
+use tokio::sync::mpsc;
+
+use crate::db::LocalDb;
 use crate::protocol::ClientMsg;
 
-pub struct AppState {
-    pub inner: Mutex<Inner>,
+pub struct Connection {
+    pub username: String,
+    pub base_url: String,
+    pub tx: mpsc::UnboundedSender<ClientMsg>,
 }
 
-pub struct Inner {
-    pub db: Option<Database>,
-    pub username: Option<String>,
-    pub ws_tx: Option<mpsc::UnboundedSender<ClientMsg>>,
-    pub shutdown_tx: Option<oneshot::Sender<()>>,
+#[derive(Clone, Default)]
+pub struct EncConfig {
+    pub method: String,
+    pub password: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct AppState {
+    pub conn: Arc<Mutex<Option<Connection>>>,
+    pub db: Arc<Mutex<Option<LocalDb>>>,
+    pub enc: Arc<Mutex<HashMap<String, EncConfig>>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(Inner {
-                db: None,
-                username: None,
-                ws_tx: None,
-                shutdown_tx: None,
-            }),
-        }
+        Self::default()
     }
 }

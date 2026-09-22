@@ -1,21 +1,19 @@
+use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::{mpsc, oneshot};
 
-use crate::db::LocalMsg;
+use crate::db::LocalDb;
+use crate::http_auth;
 use crate::protocol::ClientMsg;
-use crate::state::AppState;
+use crate::state::{AppState, Connection, EncConfig};
 use crate::util::now;
 use crate::ws;
-use crate::{crypto, http_auth};
-
-#[derive(serde::Serialize)]
-pub struct EncInfo {
-    pub method: String,
-    pub has_password: bool,
-}
 
 #[tauri::command]
-pub async fn register(base_url: String, username: String, password: String) -> Result<(), String> {
+pub async fn register(
+    base_url: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
     http_auth::register(&base_url, &username, &password).await
 }
 
@@ -27,58 +25,52 @@ pub async fn connect(
     username: String,
     password: String,
 ) -> Result<(), String> {
+    // Drop any previous connection so a reload/login doesn't leave a
+    // stale websocket on the server.
     {
-        let inner = state.inner.lock().await;
-        if inner.username.is_some() {
-            return Err("already connected".into());
-        }
+        let mut guard = state.conn.lock().unwrap();
+        *guard = None;
     }
 
-    // Per-user DB file — several clients can run side-by-side.
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let user_dir = dir.join("users").join(&username);
-    std::fs::create_dir_all(&user_dir).map_err(|e| e.to_string())?;
-    let db =
-        crate::db::Database::open(&user_dir.join("local.db")).map_err(|e| format!("db: {e}"))?;
+    std::fs::create_dir_all(&dir).ok();
+    let db = LocalDb::open(&dir, &username).map_err(|e| e.to_string())?;
 
-    let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
-    let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    // Preload encryption configs.
+    {
+        let mut map = state.enc.lock().unwrap();
+        map.clear();
+    }
+    for (peer, method, password) in db.all_peer_enc().await {
+        state
+            .enc
+            .lock()
+            .unwrap()
+            .insert(peer, EncConfig { method, password });
+    }
 
-    let app2 = app.clone();
-    let db2 = db.clone();
-    let uname = username.clone();
-    tokio::spawn(ws::run(
-        app2,
+    let tx = ws::spawn_connection(
+        app.clone(),
+        state.inner().clone(),
+        db.clone(),
+        base_url.clone(),
+        username.clone(),
+        password.clone(),
+    )?;
+
+    *state.conn.lock().unwrap() = Some(Connection {
+        username: username.clone(),
         base_url,
-        uname,
-        password,
-        tx.clone(),
-        rx,
-        ready_tx,
-        shutdown_rx,
-        db2,
-    ));
+        tx,
+    });
+    *state.db.lock().unwrap() = Some(db);
 
-    ready_rx.await.map_err(|e| e.to_string())??;
-
-    let mut inner = state.inner.lock().await;
-    inner.username = Some(username);
-    inner.ws_tx = Some(tx);
-    inner.shutdown_tx = Some(shutdown_tx);
-    inner.db = Some(db);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.inner.lock().await;
-    if let Some(tx) = inner.shutdown_tx.take() {
-        let _ = tx.send(());
-    }
-    inner.username = None;
-    inner.ws_tx = None;
-    inner.db = None;
+    *state.conn.lock().unwrap() = None;
     Ok(())
 }
 
@@ -88,70 +80,71 @@ pub async fn send_message(
     to: String,
     text: String,
 ) -> Result<(), String> {
-    let (tx, db) = {
-        let inner = state.inner.lock().await;
-        let tx = inner.ws_tx.clone().ok_or("not connected")?;
-        let db = inner.db.clone().ok_or("no db")?;
-        (tx, db)
+    let (tx, db, me) = {
+        let conn = state.conn.lock().unwrap();
+        let Some(c) = conn.as_ref() else {
+            return Err("not connected".into());
+        };
+        let db = state.db.lock().unwrap().clone();
+        (c.tx.clone(), db, c.username.clone())
     };
-
-    let (method, pw) = db.get_encryption(&to).await;
-    let payload = crypto::encrypt(&method, pw.as_deref(), &text)?;
-
-    let ts = now();
-    db.insert_message(&to, "out", ts, &text).await;
-
-    tx.send(ClientMsg::Send { to, payload })
-        .map_err(|_| "ws closed".to_string())?;
+    if to == me {
+        return Err("cannot send to yourself".into());
+    }
+    let payload = encrypt_for(&state, &to, &text);
+    tx.send(ClientMsg::Send { to: to.clone(), payload })
+        .map_err(|_| "connection closed".to_string())?;
+    if let Some(db) = db {
+        db.insert_message(&to, "out", now(), &text).await;
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn pull_history(state: State<'_, AppState>, from: String) -> Result<(), String> {
     let tx = {
-        state
-            .inner
-            .lock()
-            .await
-            .ws_tx
-            .clone()
-            .ok_or("not connected")?
+        let conn = state.conn.lock().unwrap();
+        let Some(c) = conn.as_ref() else {
+            return Err("not connected".into());
+        };
+        c.tx.clone()
     };
     tx.send(ClientMsg::PullHistory { from, since: 0 })
-        .map_err(|_| "ws closed".to_string())?;
+        .map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn list_pending(state: State<'_, AppState>) -> Result<(), String> {
     let tx = {
-        state
-            .inner
-            .lock()
-            .await
-            .ws_tx
-            .clone()
-            .ok_or("not connected")?
+        let conn = state.conn.lock().unwrap();
+        let Some(c) = conn.as_ref() else {
+            return Err("not connected".into());
+        };
+        c.tx.clone()
     };
     tx.send(ClientMsg::ListPending)
-        .map_err(|_| "ws closed".to_string())?;
+        .map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_account(state: State<'_, AppState>, password: String) -> Result<(), String> {
     let tx = {
-        state
-            .inner
-            .lock()
-            .await
-            .ws_tx
-            .clone()
-            .ok_or("not connected")?
+        let conn = state.conn.lock().unwrap();
+        let Some(c) = conn.as_ref() else {
+            return Err("not connected".into());
+        };
+        c.tx.clone()
     };
     tx.send(ClientMsg::DeleteAccount { password })
-        .map_err(|_| "ws closed".to_string())?;
+        .map_err(|_| "connection closed".to_string())?;
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct EncInfo {
+    pub method: String,
 }
 
 #[tauri::command]
@@ -161,20 +154,15 @@ pub async fn set_peer_encryption(
     method: String,
     password: Option<String>,
 ) -> Result<(), String> {
-    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
-
-    if method != "none" && method != "aes-gcm" {
-        return Err(format!("unsupported method: {method}"));
+    let db = state.db.lock().unwrap().clone();
+    if let Some(db) = db {
+        db.set_peer_enc(&peer, &method, password.as_deref()).await;
     }
-    if method == "aes-gcm" && password.as_deref().map_or(true, |p| p.is_empty()) {
-        return Err("password required for aes-gcm".into());
-    }
-    let pw = if method == "aes-gcm" {
-        password.as_deref()
-    } else {
-        None
-    };
-    db.set_encryption(&peer, &method, pw).await;
+    state
+        .enc
+        .lock()
+        .unwrap()
+        .insert(peer, EncConfig { method, password });
     Ok(())
 }
 
@@ -183,28 +171,64 @@ pub async fn get_peer_encryption(
     state: State<'_, AppState>,
     peer: String,
 ) -> Result<EncInfo, String> {
-    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
-    let (method, pw) = db.get_encryption(&peer).await;
-    Ok(EncInfo {
-        method,
-        has_password: pw.is_some(),
-    })
+    let method = {
+        let map = state.enc.lock().unwrap();
+        map.get(&peer).map(|c| c.method.clone())
+    };
+    if let Some(m) = method {
+        return Ok(EncInfo { method: m });
+    }
+    let db = state.db.lock().unwrap().clone();
+    if let Some(db) = db {
+        let (m, _pw) = db.get_peer_enc(&peer).await;
+        return Ok(EncInfo { method: m });
+    }
+    Ok(EncInfo { method: "none".into() })
+}
+
+#[derive(Serialize)]
+pub struct MsgRow {
+    pub direction: String,
+    pub ts: i64,
+    pub text: String,
 }
 
 #[tauri::command]
 pub async fn get_messages(
     state: State<'_, AppState>,
     peer: String,
-) -> Result<Vec<LocalMsg>, String> {
-    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
-    Ok(db.get_messages(&peer).await)
+) -> Result<Vec<MsgRow>, String> {
+    let db = state.db.lock().unwrap().clone();
+    let Some(db) = db else { return Ok(Vec::new()); };
+    let rows = db.get_messages(&peer).await;
+    Ok(rows
+        .into_iter()
+        .map(|(direction, ts, text)| MsgRow { direction, ts, text })
+        .collect())
 }
 
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, AppState>) -> Result<(), String> {
-    let db = { state.inner.lock().await.db.clone() };
+    let db = state.db.lock().unwrap().clone();
     if let Some(db) = db {
         db.wipe().await;
     }
     Ok(())
+}
+
+fn encrypt_for(state: &AppState, peer: &str, text: &str) -> String {
+    let cfg = {
+        let map = state.enc.lock().unwrap();
+        map.get(peer).cloned()
+    };
+    if let Some(cfg) = cfg {
+        if cfg.method == "aes-gcm" {
+            if let Some(pw) = cfg.password {
+                if let Ok(enc) = crate::crypto::encrypt(text.as_bytes(), &pw) {
+                    return enc;
+                }
+            }
+        }
+    }
+    text.to_string()
 }

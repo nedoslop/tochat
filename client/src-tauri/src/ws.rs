@@ -1,213 +1,173 @@
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::crypto;
-use crate::db::Database;
+use crate::db::LocalDb;
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
+use crate::state::{AppState, EncConfig};
 
-pub async fn run(
+pub fn spawn_connection(
     app: AppHandle,
+    state: AppState,
+    db: LocalDb,
     base_url: String,
     username: String,
     password: String,
-    tx: mpsc::UnboundedSender<ClientMsg>,
+) -> Result<mpsc::UnboundedSender<ClientMsg>, String> {
+    let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let app2 = app.clone();
+    let username2 = username.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = run(app2, state, db, base_url, username2, password, rx).await {
+            eprintln!("ws error: {e}");
+        }
+    });
+
+    Ok(tx)
+}
+
+async fn run(
+    app: AppHandle,
+    state: AppState,
+    db: LocalDb,
+    base_url: String,
+    username: String,
+    password: String,
     mut rx: mpsc::UnboundedReceiver<ClientMsg>,
-    ready_tx: oneshot::Sender<Result<(), String>>,
-    shutdown_rx: oneshot::Receiver<()>,
-    db: Database,
-) {
-    let ws_url = to_ws_url(&base_url);
-    let mut req = match ws_url.into_client_request() {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!("url: {e}")));
-            return;
-        }
-    };
-    let auth = format!("{username}:{password}");
-    match HeaderValue::from_str(&auth) {
-        Ok(v) => {
-            req.headers_mut().insert("Authorization", v);
-        }
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!("header: {e}")));
-            return;
-        }
-    }
+) -> Result<(), String> {
+    let ws_url = base_url
+        .trim_end_matches('/')
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1);
+    let url = format!("{}/login", ws_url);
 
-    let (ws_stream, _) = match tokio_tungstenite::connect_async(req).await {
-        Ok(x) => x,
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!("ws: {e}")));
-            return;
-        }
-    };
-    let (mut write, mut read) = ws_stream.split();
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| format!("bad url: {e}"))?;
+    let token = format!("{username}:{password}");
+    req.headers_mut().insert(
+        "Authorization",
+        token.parse().map_err(|e| format!("bad header: {e}"))?,
+    );
 
-    // First message must be AuthOk (or Error).
-    let first = match read.next().await {
-        Some(Ok(Message::Text(t))) => t.to_string(),
-        _ => {
-            let _ = ready_tx.send(Err("no auth response".into()));
-            return;
-        }
-    };
-    match serde_json::from_str::<ServerMsg>(&first) {
-        Ok(ServerMsg::AuthOk {
-            username: u,
-            last_seen,
-        }) => {
-            let _ = app.emit("auth-ok", json!({ "username": u, "last_seen": last_seen }));
-        }
-        Ok(ServerMsg::Error { msg }) => {
-            let _ = ready_tx.send(Err(msg));
-            return;
-        }
-        Ok(_) => {
-            let _ = ready_tx.send(Err("unexpected first message".into()));
-            return;
-        }
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!("parse: {e}")));
-            return;
-        }
-    }
-    let _ = ready_tx.send(Ok(()));
+    let (stream, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let (mut sink, mut source) = stream.split();
 
-    let mut write_task = tokio::spawn(async move {
-        while let Some(cm) = rx.recv().await {
-            let s = match serde_json::to_string(&cm) {
+    let mut send_task = tokio::spawn(async move {
+        while let Some(m) = rx.recv().await {
+            let s = match serde_json::to_string(&m) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            if write.send(Message::Text(s.into())).await.is_err() {
+            if sink.send(WsMessage::Text(s.into())).await.is_err() {
                 break;
             }
         }
-        let _ = write.close().await;
     });
 
-    let app2 = app.clone();
-    let db2 = db.clone();
-    let uname = username.clone();
-    let tx2 = tx.clone();
-    let mut read_task = tokio::spawn(async move {
-        while let Some(Ok(m)) = read.next().await {
-            match m {
-                Message::Text(t) => {
-                    if let Ok(sm) = serde_json::from_str::<ServerMsg>(&t.to_string()) {
-                        handle_server_msg(&app2, &db2, &uname, &tx2, sm).await;
-                    }
+    let app_in = app.clone();
+    let state_in = state.clone();
+    let db_in = db.clone();
+    let me = username.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = source.next().await {
+            match msg {
+                WsMessage::Text(t) => {
+                    let parsed: ServerMsg = match serde_json::from_str(&t) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    handle_server_msg(&app_in, &state_in, &db_in, &me, parsed).await;
                 }
-                Message::Close(_) => break,
+                WsMessage::Close(_) => break,
                 _ => {}
             }
         }
     });
 
     tokio::select! {
-        _ = &mut write_task => { read_task.abort(); }
-        _ = &mut read_task => { write_task.abort(); }
-        _ = shutdown_rx => {
-            write_task.abort();
-            read_task.abort();
-        }
+        _ = &mut send_task => recv_task.abort(),
+        _ = &mut recv_task => send_task.abort(),
     }
 
     let _ = app.emit("disconnected", ());
-}
-
-fn to_ws_url(base: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let base = if let Some(r) = base.strip_prefix("https://") {
-        format!("wss://{r}")
-    } else if let Some(r) = base.strip_prefix("http://") {
-        format!("ws://{r}")
-    } else {
-        base.to_string()
-    };
-    format!("{base}/login")
+    Ok(())
 }
 
 async fn handle_server_msg(
     app: &AppHandle,
-    db: &Database,
+    state: &AppState,
+    db: &LocalDb,
     me: &str,
-    tx: &mpsc::UnboundedSender<ClientMsg>,
     msg: ServerMsg,
 ) {
     match msg {
-        ServerMsg::AuthOk { .. } => {}
-
+        ServerMsg::AuthOk { username, last_seen } => {
+            let _ = app.emit(
+                "auth-ok",
+                json!({ "username": username, "lastSeen": last_seen }),
+            );
+        }
         ServerMsg::Peers { peers } => {
-            let _ = app.emit("peers", peers);
+            let _ = app.emit("peers", peers.clone());
+            // Auto-sync with every peer.
+            for p in peers {
+                send_pull(state, &p);
+            }
         }
         ServerMsg::PendingChats { users } => {
             let _ = app.emit("pending-chats", users);
         }
         ServerMsg::PeerOnline { username } => {
-            let _ = app.emit("peer-online", username);
+            let _ = app.emit("peer-online", username.clone());
+            // Sync from peer the moment they come online.
+            send_pull(state, &username);
         }
         ServerMsg::PeerOffline { username } => {
             let _ = app.emit("peer-offline", username);
         }
-
         ServerMsg::Message { from, payload, ts } => {
-            let (_, pw) = db.get_encryption(&from).await;
-            let text = crypto::decrypt(&payload, pw.as_deref())
-                .unwrap_or_else(|e| format!("[decryption failed: {e}]"));
-            db.insert_message(&from, "in", ts, &text).await;
+            let text = decrypt_payload(state, &from, &payload);
+            let _ = db.insert_message_dedup(&from, "in", ts, &text).await;
             let _ = app.emit(
                 "message",
                 json!({ "peer": from, "direction": "in", "ts": ts, "text": text }),
             );
         }
-
-        ServerMsg::PullHistoryRequest { from, since } => {
-            // Re-encrypt our stored messages with the *current* setting for
-            // that peer before shipping them back.
-            let (method, pw) = db.get_encryption(&from).await;
-            let stored = db.get_messages_since(&from, since).await;
-            let mut out = Vec::with_capacity(stored.len());
-            for m in stored {
-                let payload = match crypto::encrypt(&method, pw.as_deref(), &m.text) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                let (m_from, m_to) = if m.direction == "out" {
-                    (me.to_string(), from.clone())
-                } else {
-                    (from.clone(), me.to_string())
-                };
-                out.push(StoredMsg {
-                    from: m_from,
-                    to: m_to,
-                    ts: m.ts,
-                    payload,
-                });
-            }
-            let _ = tx.send(ClientMsg::HistoryResponse {
-                to: from,
-                messages: out,
-            });
+        ServerMsg::PullHistoryRequest { from, since: _ } => {
+            // Peer wants our log with them → send everything we have.
+            let msgs = db.get_messages(&from).await;
+            let stored: Vec<StoredMsg> = msgs
+                .into_iter()
+                .map(|(direction, ts, text)| StoredMsg {
+                    from: if direction == "out" { me.to_string() } else { from.clone() },
+                    to: if direction == "out" { from.clone() } else { me.to_string() },
+                    ts,
+                    payload: text,
+                })
+                .collect();
+            let stored = encrypt_history(state, &from, stored);
+            send_client(state, ClientMsg::HistoryResponse { to: from, messages: stored });
         }
-
         ServerMsg::HistoryResponse { from, messages } => {
-            let (_, pw) = db.get_encryption(&from).await;
-            for m in &messages {
-                let text = crypto::decrypt(&m.payload, pw.as_deref())
-                    .unwrap_or_else(|e| format!("[decryption failed: {e}]"));
-                let direction = if m.from == me { "out" } else { "in" };
-                db.insert_message(&from, direction, m.ts, &text).await;
+            for m in messages {
+                let (peer, direction, raw) = if m.from == me {
+                    (m.to.clone(), "out", m.payload)
+                } else {
+                    (m.from.clone(), "in", m.payload)
+                };
+                let text = decrypt_payload(state, &peer, &raw);
+                let _ = db.insert_message_dedup(&peer, direction, m.ts, &text).await;
             }
-            let _ = app.emit("history-received", &from);
+            let _ = app.emit("history-received", from);
         }
-
         ServerMsg::Error { msg } => {
             let _ = app.emit("error", msg);
         }
@@ -215,4 +175,62 @@ async fn handle_server_msg(
             let _ = app.emit("session-closed", ());
         }
     }
+}
+
+fn send_client(state: &AppState, m: ClientMsg) {
+    if let Some(conn) = state.conn.lock().unwrap().as_ref() {
+        let _ = conn.tx.send(m);
+    }
+}
+
+fn send_pull(state: &AppState, peer: &str) {
+    send_client(
+        state,
+        ClientMsg::PullHistory {
+            from: peer.to_string(),
+            since: 0,
+        },
+    );
+}
+
+fn decrypt_payload(state: &AppState, peer: &str, payload: &str) -> String {
+    let cfg = {
+        let map = state.enc.lock().unwrap();
+        map.get(peer).cloned()
+    };
+    if let Some(cfg) = cfg {
+        if cfg.method == "aes-gcm" {
+            if let Some(pw) = cfg.password {
+                if let Ok(bytes) = crypto::decrypt(payload, &pw) {
+                    if let Ok(s) = String::from_utf8(bytes) {
+                        return s;
+                    }
+                }
+            }
+        }
+    }
+    payload.to_string()
+}
+
+fn encrypt_history(state: &AppState, peer: &str, msgs: Vec<StoredMsg>) -> Vec<StoredMsg> {
+    let cfg: Option<EncConfig> = {
+        let map = state.enc.lock().unwrap();
+        map.get(peer).cloned()
+    };
+    let Some(cfg) = cfg else { return msgs };
+    if cfg.method != "aes-gcm" {
+        return msgs;
+    }
+    let Some(pw) = cfg.password else { return msgs };
+    msgs.into_iter()
+        .map(|m| {
+            let enc = crypto::encrypt(m.payload.as_bytes(), &pw).unwrap_or_else(|_| m.payload.clone());
+            StoredMsg {
+                from: m.from,
+                to: m.to,
+                ts: m.ts,
+                payload: enc,
+            }
+        })
+        .collect()
 }

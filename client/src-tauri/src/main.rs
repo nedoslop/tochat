@@ -18,7 +18,6 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            // DB opens lazily inside `connect` — one file per username.
             app.manage(AppState::new());
             Ok(())
         })

@@ -49,12 +49,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
 
-    // --- single session per user (atomic) ---------------------------
-    //
-    // `DashMap::entry` locks the shard for the duration of this match,
-    // so two concurrent upgrades for the same username can never both
-    // observe a vacant slot. The second one gets `Occupied` and is
-    // rejected; the already-connected session is left untouched.
     let already_connected = match state.online.entry(username.clone()) {
         Entry::Occupied(_) => true,
         Entry::Vacant(v) => {
@@ -70,12 +64,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         .unwrap();
         let _ = sender.send(Message::Text(msg.into())).await;
         let _ = sender.send(Message::Close(None)).await;
-        // NOTE: do *not* fall through to the cleanup block below — we
-        // must not remove the existing session's entry from `online`.
         return;
     }
 
-    // Send the initial snapshot.
     let _ = tx.send(ServerMsg::AuthOk {
         username: username.clone(),
         last_seen,
@@ -83,21 +74,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
 
     let peers = state.db.list_peers(&username).await;
     let pending = state.db.list_pending_chats(&username).await;
-    let _ = tx.send(ServerMsg::Peers {
-        peers: peers.clone(),
-    });
+    let _ = tx.send(ServerMsg::Peers { peers: peers.clone() });
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
 
-    // Notify established peers we came online.
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOnline {
-                username: username.clone(),
-            });
+            let _ = peer_tx.send(ServerMsg::PeerOnline { username: username.clone() });
         }
     }
 
-    // ---- sender task ------------------------------------------------
     let mut send_task = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let is_close = matches!(m, ServerMsg::Close);
@@ -115,7 +100,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         }
     });
 
-    // ---- receiver task ----------------------------------------------
     let state2 = state.clone();
     let username2 = username.clone();
     let tx2 = tx.clone();
@@ -139,18 +123,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, username: String, las
         _ = &mut recv_task => send_task.abort(),
     }
 
-    // ---- cleanup ----------------------------------------------------
-    //
-    // Only reached by the session that actually owns the slot. A rejected
-    // duplicate returned above, so it can never erase a live session.
     state.online.remove(&username);
     state.db.update_last_seen(&username, now()).await;
 
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline {
-                username: username.clone(),
-            });
+            let _ = peer_tx.send(ServerMsg::PeerOffline { username: username.clone() });
         }
     }
 }
@@ -193,20 +171,20 @@ async fn handle_send(
         return;
     }
 
+    if !state.db.user_exists(to).await {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user '{}' does not exist", to),
+        });
+        return;
+    }
+
     let ts = now();
 
     match state.db.get_relationship(me, to).await {
-        // No relationship yet -> the first message is a pending initiation.
-        // We record it but do **not** deliver anything to `to`.
         None => {
+            // First message → register pending relationship. Sender stores
+            // message locally; we do not deliver anything to `to`.
             state.db.ensure_relationship_initiated(me, to).await;
-
-            let _ = tx.send(ServerMsg::Error {
-                msg: format!(
-                    "chat with {} initiated; {} must pull history to open it",
-                    to, to
-                ),
-            });
         }
         Some((initiator, established)) => {
             if established {
@@ -217,15 +195,11 @@ async fn handle_send(
                         ts,
                     });
                 }
-                // Offline: message stays on the client's disk, nothing to do.
+                // If peer offline → sender stores locally, peer will pull later.
             } else if initiator == me {
-                // We initiated, the other side has not pulled yet.
-                let _ = tx.send(ServerMsg::Error {
-                    msg: format!("{} has not pulled your history yet", to),
-                });
+                // We initiated, other side hasn't pulled yet → store locally only.
             } else {
-                // We are on the receiving side of a pending initiation.
-                // We must pull history first.
+                // We are the receiver of a pending init → we must pull first.
                 let _ = tx.send(ServerMsg::Error {
                     msg: format!("pull history from {} first", to),
                 });
@@ -241,16 +215,27 @@ async fn handle_pull_history(
     state: &AppState,
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
-    let Some((initiator, established)) = state.db.get_relationship(me, from).await else {
-        // No pending message and no established chat -> refuse.
+    if me == from {
         let _ = tx.send(ServerMsg::Error {
-            msg: format!("{} has not messaged you", from),
+            msg: "cannot pull history from yourself".into(),
+        });
+        return;
+    }
+    if !state.db.user_exists(from).await {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user '{}' does not exist", from),
+        });
+        return;
+    }
+
+    let Some((initiator, established)) = state.db.get_relationship(me, from).await else {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("no chat with {}", from),
         });
         return;
     };
 
-    // Only the other side (the initiator) can be pulled from
-    // until the chat has been established.
+    // While pending, only the initiator's history may be pulled.
     if !established && initiator != from {
         let _ = tx.send(ServerMsg::Error {
             msg: format!("{} has not messaged you", from),
@@ -273,22 +258,26 @@ async fn handle_pull_history(
     }
 }
 
-async fn handle_history_response(me: &str, to: &str, messages: Vec<StoredMsg>, state: &AppState) {
-    // Only the initiator of a not-yet-established relationship can establish it.
-    if let Some((initiator, established)) = state.db.get_relationship(me, to).await {
-        if initiator == me && !established {
-            state.db.establish_relationship(me, to).await;
+async fn handle_history_response(
+    me: &str,
+    to: &str,
+    messages: Vec<StoredMsg>,
+    state: &AppState,
+) {
+    if me == to {
+        return;
+    }
 
-            // Both sides now know the other is a peer.
+    // Any first exchange of history establishes the chat; notify both sides
+    // so each immediately pulls from the other (bidirectional sync).
+    if let Some((_initiator, established)) = state.db.get_relationship(me, to).await {
+        if !established {
+            state.db.establish_relationship(me, to).await;
             if let Some(peer) = state.online.get(to) {
-                let _ = peer.send(ServerMsg::PeerOnline {
-                    username: me.to_string(),
-                });
+                let _ = peer.send(ServerMsg::PeerOnline { username: me.to_string() });
             }
             if let Some(my_tx) = state.online.get(me) {
-                let _ = my_tx.send(ServerMsg::PeerOnline {
-                    username: to.to_string(),
-                });
+                let _ = my_tx.send(ServerMsg::PeerOnline { username: to.to_string() });
             }
         }
     }
@@ -308,24 +297,18 @@ async fn handle_delete_account(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     let Some((h, _)) = state.db.get_user(me).await else {
-        let _ = tx.send(ServerMsg::Error {
-            msg: "unknown user".into(),
-        });
+        let _ = tx.send(ServerMsg::Error { msg: "unknown user".into() });
         return;
     };
     if h != hash_password(password) {
-        let _ = tx.send(ServerMsg::Error {
-            msg: "invalid password".into(),
-        });
+        let _ = tx.send(ServerMsg::Error { msg: "invalid password".into() });
         return;
     }
 
     let peers = state.db.list_peers(me).await;
     for p in &peers {
         if let Some(peer_tx) = state.online.get(p) {
-            let _ = peer_tx.send(ServerMsg::PeerOffline {
-                username: me.to_string(),
-            });
+            let _ = peer_tx.send(ServerMsg::PeerOffline { username: me.to_string() });
         }
     }
 
