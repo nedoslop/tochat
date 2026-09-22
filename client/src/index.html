@@ -1,19 +1,23 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <title>Chat</title>
 <style>
   body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
-  #login { margin: auto; display: flex; flex-direction: column; gap: 8px; width: 320px; }
+  #login { margin: auto; display: flex; flex-direction: column; gap: 8px; width: 340px; }
   input, button { padding: 6px 8px; font-size: 14px; }
   #app { display: flex; width: 100%; }
-  #sidebar { width: 220px; border-right: 1px solid #ccc; padding: 8px; overflow: auto; }
-  #sidebar .peer { padding: 6px; cursor: pointer; border-radius: 4px; }
+  #sidebar { width: 240px; border-right: 1px solid #ccc; padding: 8px; overflow: auto; }
+  #sidebar .section { margin-top: 10px; }
+  #sidebar .peer { padding: 6px; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between; }
   #sidebar .peer:hover { background: #eee; }
   #sidebar .peer.active { background: #d0e0ff; }
+  #sidebar .peer .badge { background: #ff9800; color: white; border-radius: 10px; padding: 0 6px; font-size: 11px; }
+  #sidebar .peer.offline { opacity: 0.6; }
   #main { flex: 1; display: flex; flex-direction: column; }
   #header { padding: 8px; border-bottom: 1px solid #ccc; display: flex; gap: 8px; align-items: center; }
+  #header .status { color: #888; font-size: 12px; }
   #messages { flex: 1; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
   .msg { padding: 4px 8px; border-radius: 6px; max-width: 70%; white-space: pre-wrap; word-break: break-word; }
   .in { background: #eee; align-self: flex-start; }
@@ -26,27 +30,37 @@
 <body>
 
 <div id="login">
-  <h3>Подключиться к чат-серверу</h3>
-  <input id="url" value="ws://localhost:8080/auth" />
+  <h3>Connect to chat server</h3>
+  <input id="base-url" value="http://localhost:8080" placeholder="http://host:port" />
   <input id="user" placeholder="username" />
   <input id="pass" type="password" placeholder="password" />
   <button id="connect-btn">Connect</button>
-  <div class="hint">Если логина нет — он будет создан.</div>
+  <div class="hint">If the username is new, the account will be created.</div>
 </div>
 
 <div id="app" style="display:none">
   <div id="sidebar">
-    <div class="hint">Чаты:</div>
+    <div class="hint">Chats:</div>
     <div id="peers"></div>
+
+    <div class="section">
+      <div class="hint">Pending (they messaged you first):</div>
+      <div id="pending"></div>
+    </div>
+
     <hr />
-    <div class="hint">Начать новый чат:</div>
+    <div class="hint">Start a new chat:</div>
     <input id="new-peer" placeholder="username" />
     <button id="new-peer-btn">Open</button>
+    <button id="logout-btn" style="margin-top:10px">Log out</button>
+    <button id="delete-btn" style="margin-top:4px">Delete account</button>
   </div>
+
   <div id="main">
     <div id="header">
       <span id="peer-title">—</span>
-      <button id="set-pw-btn">Set shared password</button>
+      <span class="status" id="peer-status"></span>
+      <button id="set-pw-btn" style="margin-left:auto">Set shared password</button>
     </div>
     <div id="messages"></div>
     <div id="composer">
@@ -62,16 +76,21 @@ const { listen } = window.__TAURI__.event;
 
 let me = null;
 let currentPeer = null;
-const peers = new Set();
-const msgCache = {}; // peer -> [{direction, ts, text}]
+
+const peers   = new Set(); // established chats
+const pending = new Set(); // users who initiated a chat with us
+const online  = new Set(); // subset of peers currently connected
+const msgCache = {};       // peer -> [{direction, ts, text}]
+
+// ---------- actions ----------
 
 async function connect() {
-  const url = document.getElementById('url').value.trim();
+  const baseUrl  = document.getElementById('base-url').value.trim();
   const username = document.getElementById('user').value.trim();
   const password = document.getElementById('pass').value;
-  if (!url || !username || !password) return alert('fill all fields');
+  if (!baseUrl || !username || !password) return alert('fill all fields');
   try {
-    await invoke('connect', { url, username, password });
+    await invoke('connect', { baseUrl, username, password });
   } catch (e) {
     alert('connect error: ' + e);
   }
@@ -80,36 +99,25 @@ async function connect() {
 async function openPeer(peer) {
   currentPeer = peer;
   peers.add(peer);
-  const msgs = await invoke('get_messages', { peer });
-  msgCache[peer] = msgs;
-  document.getElementById('peer-title').textContent = peer;
-  renderPeers();
+  msgCache[peer] = await invoke('get_messages', { peer });
+  renderSidebar();
   renderMessages();
 }
 
-function renderPeers() {
-  const el = document.getElementById('peers');
-  el.innerHTML = '';
-  for (const p of peers) {
-    const d = document.createElement('div');
-    d.className = 'peer' + (p === currentPeer ? ' active' : '');
-    d.textContent = p;
-    d.onclick = () => openPeer(p);
-    el.appendChild(d);
+async function acceptPending(peer) {
+  // User explicitly opts in to a chat someone started with them.
+  try {
+    await invoke('pull_history', { from: peer });
+  } catch (e) {
+    alert('pull failed: ' + e);
+    return;
   }
-}
-
-function renderMessages() {
-  const el = document.getElementById('messages');
-  el.innerHTML = '';
-  const msgs = (msgCache[currentPeer] || []).slice().sort((a, b) => a.ts - b.ts);
-  for (const m of msgs) {
-    const d = document.createElement('div');
-    d.className = 'msg ' + (m.direction === 'out' ? 'out' : 'in');
-    d.textContent = m.text;
-    el.appendChild(d);
-  }
-  el.scrollTop = el.scrollHeight;
+  // Optimistic UI: move it out of pending. Server will confirm with
+  // `peer-online`, which is a no-op if we already did this.
+  pending.delete(peer);
+  peers.add(peer);
+  renderSidebar();
+  openPeer(peer);
 }
 
 async function send() {
@@ -127,17 +135,99 @@ async function send() {
 
 async function setPeerPassword() {
   if (!currentPeer) return alert('open a chat first');
-  const pw = prompt('Общий пароль шифрования с ' + currentPeer);
+  const pw = prompt('Shared encryption password with ' + currentPeer);
   if (pw === null) return;
   await invoke('set_peer_password', { peer: currentPeer, password: pw });
-  alert('Сохранено. Внимание: старые сообщения были зашифрованы другим ключом.');
+  alert('Saved. Note: previous messages were encrypted with a different key.');
   openPeer(currentPeer);
 }
+
+async function logout() {
+  await invoke('disconnect');
+}
+
+async function deleteAccount() {
+  const pw = prompt('Enter your password to delete the account');
+  if (pw === null) return;
+  try {
+    await invoke('delete_account', { password: pw });
+  } catch (e) {
+    alert(e);
+  }
+}
+
+// ---------- rendering ----------
+
+function renderSidebar() {
+  const peersEl = document.getElementById('peers');
+  peersEl.innerHTML = '';
+  for (const p of peers) {
+    const d = document.createElement('div');
+    d.className = 'peer' + (p === currentPeer ? ' active' : '');
+    if (online.has(p)) {
+      d.textContent = p;
+    } else {
+      d.textContent = p;
+      d.classList.add('offline');
+    }
+    d.onclick = () => openPeer(p);
+    peersEl.appendChild(d);
+  }
+
+  const pendingEl = document.getElementById('pending');
+  pendingEl.innerHTML = '';
+  for (const p of pending) {
+    const d = document.createElement('div');
+    d.className = 'peer';
+    d.textContent = p;
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = 'new';
+    d.appendChild(badge);
+    d.onclick = () => acceptPending(p);
+    pendingEl.appendChild(d);
+  }
+
+  const statusEl = document.getElementById('peer-status');
+  if (currentPeer) {
+    statusEl.textContent = online.has(currentPeer) ? 'online' : 'offline';
+  } else {
+    statusEl.textContent = '';
+  }
+}
+
+function renderMessages() {
+  const el = document.getElementById('messages');
+  el.innerHTML = '';
+  const msgs = (msgCache[currentPeer] || []).slice().sort((a, b) => a.ts - b.ts);
+  for (const m of msgs) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + (m.direction === 'out' ? 'out' : 'in');
+    d.textContent = m.text;
+    el.appendChild(d);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function resetToLogin() {
+  me = null;
+  currentPeer = null;
+  peers.clear();
+  pending.clear();
+  online.clear();
+  for (const k of Object.keys(msgCache)) delete msgCache[k];
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login').style.display = 'flex';
+}
+
+// ---------- event wiring ----------
 
 async function init() {
   document.getElementById('connect-btn').onclick = connect;
   document.getElementById('send-btn').onclick = send;
   document.getElementById('set-pw-btn').onclick = setPeerPassword;
+  document.getElementById('logout-btn').onclick = logout;
+  document.getElementById('delete-btn').onclick = deleteAccount;
   document.getElementById('new-peer-btn').onclick = () => {
     const p = document.getElementById('new-peer').value.trim();
     if (p) openPeer(p);
@@ -154,7 +244,32 @@ async function init() {
 
   await listen('peers', (e) => {
     for (const p of e.payload) peers.add(p);
-    renderPeers();
+    renderSidebar();
+  });
+
+  await listen('pending-chats', (e) => {
+    pending.clear();
+    for (const p of e.payload) {
+      // A user that's already an established peer is not "pending".
+      if (!peers.has(p)) pending.add(p);
+    }
+    renderSidebar();
+  });
+
+  await listen('peer-online', (e) => {
+    const name = e.payload;
+    online.add(name);
+    // If the relationship just got established, it moves out of pending.
+    if (pending.has(name)) {
+      pending.delete(name);
+      peers.add(name);
+    }
+    renderSidebar();
+  });
+
+  await listen('peer-offline', (e) => {
+    online.delete(e.payload);
+    renderSidebar();
   });
 
   await listen('message', (e) => {
@@ -162,16 +277,27 @@ async function init() {
     peers.add(m.peer);
     if (!msgCache[m.peer]) msgCache[m.peer] = [];
     msgCache[m.peer].push({ direction: m.direction, ts: m.ts, text: m.text });
-    renderPeers();
+    renderSidebar();
     if (currentPeer === m.peer) renderMessages();
   });
 
   await listen('error', (e) => {
     console.warn('server error:', e.payload);
+    // Show the user the specific "initiate / pull first" hints.
+    const s = String(e.payload);
+    if (s.includes('initiated') || s.includes('pull history')) {
+      alert(s);
+    }
+  });
+
+  await listen('session-closed', async () => {
+    alert('Session closed by server (account deleted or session taken over).');
+    try { await invoke('wipe_local_data'); } catch (_) {}
+    resetToLogin();
   });
 
   await listen('disconnected', () => {
-    alert('Отключено от сервера.');
+    resetToLogin();
   });
 }
 
