@@ -33,19 +33,3 @@ pub async fn register(
         bad(StatusCode::CONFLICT, "conflict", "username already taken")
     }
 }
-
-pub async fn login(
-    State(state): State<AppState>,
-    Json(creds): Json<Credentials>,
-) -> impl IntoResponse {
-    match state.db.get_user(&creds.username).await {
-        Some((h, _)) if h == hash_password(&creds.password) => {
-            (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
-        }
-        _ => bad(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "invalid credentials",
-        ),
-    }
-}

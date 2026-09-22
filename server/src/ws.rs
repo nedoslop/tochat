@@ -201,12 +201,6 @@ async fn handle_send(
         None => {
             state.db.ensure_relationship_initiated(me, to).await;
 
-            // Notify `to` that they have a new pending chat, if they're online.
-            if let Some(peer_tx) = state.online.get(to) {
-                let pending = state.db.list_pending_chats(to).await;
-                let _ = peer_tx.send(ServerMsg::PendingChats { users: pending });
-            }
-
             let _ = tx.send(ServerMsg::Error {
                 msg: format!(
                     "chat with {} initiated; {} must pull history to open it",

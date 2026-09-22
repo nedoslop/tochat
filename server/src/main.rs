@@ -28,8 +28,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/register", post(auth::register))
-        .route("/login", post(auth::login))
-        .route("/ws", get(ws::ws_handler))
+        .route("/login", get(ws::ws_handler)) // WebSocket upgrade happens here
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());

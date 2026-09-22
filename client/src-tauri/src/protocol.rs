@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Messages we send to the server.
-#[derive(Debug, Serialize)]
+/// Messages a client sends to the server.
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Send {
@@ -22,8 +22,16 @@ pub enum ClientMsg {
     },
 }
 
-/// Messages the server pushes to us.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredMsg {
+    pub from: String,
+    pub to: String,
+    pub ts: i64,
+    pub payload: String,
+}
+
+/// Messages the server pushes to a client.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     AuthOk {
@@ -59,22 +67,4 @@ pub enum ServerMsg {
         msg: String,
     },
     Close,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredMsg {
-    pub from: String,
-    pub to: String,
-    pub ts: i64,
-    pub payload: String,
-}
-
-/// What the UI receives.
-#[derive(Debug, Clone, Serialize)]
-pub struct UiMsg {
-    pub peer: String,
-    /// "in" | "out"
-    pub direction: String,
-    pub ts: i64,
-    pub text: String,
 }

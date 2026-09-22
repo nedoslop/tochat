@@ -1,173 +1,217 @@
-use tauri::{AppHandle, Emitter, Manager};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::crypto;
-use crate::protocol::{ClientMsg, ServerMsg, UiMsg};
-use crate::state::AppState;
+use crate::db::Database;
+use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
 
-/// Send a message through the active websocket, if any.
-pub async fn send(app: &AppHandle, msg: ClientMsg) {
-    let state = app.state::<AppState>();
-    let tx = state.ws.lock().await.tx.clone();
-    if let Some(tx) = tx {
-        let _ = tx.send(msg);
-    }
-}
-
-async fn last_seen(app: &AppHandle) -> i64 {
-    app.state::<AppState>().ws.lock().await.last_seen
-}
-
-/// Handle one decoded server frame.
-pub async fn handle_server(sm: ServerMsg, app: &AppHandle, me: &str) {
-    match sm {
-        ServerMsg::AuthOk {
-            username,
-            last_seen: ls,
-        } => {
-            {
-                let state = app.state::<AppState>();
-                state.ws.lock().await.last_seen = ls;
-            }
-            let _ = app.emit(
-                "auth-ok",
-                serde_json::json!({ "username": username, "last_seen": ls }),
-            );
+pub async fn run(
+    app: AppHandle,
+    base_url: String,
+    username: String,
+    password: String,
+    tx: mpsc::UnboundedSender<ClientMsg>,
+    mut rx: mpsc::UnboundedReceiver<ClientMsg>,
+    ready_tx: oneshot::Sender<Result<(), String>>,
+    shutdown_rx: oneshot::Receiver<()>,
+    db: Database,
+) {
+    let ws_url = to_ws_url(&base_url);
+    let mut req = match ws_url.into_client_request() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("url: {e}")));
+            return;
         }
+    };
+    let auth = format!("{username}:{password}");
+    match HeaderValue::from_str(&auth) {
+        Ok(v) => {
+            req.headers_mut().insert("Authorization", v);
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("header: {e}")));
+            return;
+        }
+    }
 
-        // Established peers. Pull from each in case they sent us something
-        // while we were offline.
-        ServerMsg::Peers { peers } => {
-            let since = last_seen(app).await;
-            for p in &peers {
-                send(
-                    app,
-                    ClientMsg::PullHistory {
-                        from: p.clone(),
-                        since,
-                    },
-                )
-                .await;
+    let (ws_stream, _) = match tokio_tungstenite::connect_async(req).await {
+        Ok(x) => x,
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("ws: {e}")));
+            return;
+        }
+    };
+    let (mut write, mut read) = ws_stream.split();
+
+    // First message must be AuthOk (or Error).
+    let first = match read.next().await {
+        Some(Ok(Message::Text(t))) => t.to_string(),
+        _ => {
+            let _ = ready_tx.send(Err("no auth response".into()));
+            return;
+        }
+    };
+    match serde_json::from_str::<ServerMsg>(&first) {
+        Ok(ServerMsg::AuthOk {
+            username: u,
+            last_seen,
+        }) => {
+            let _ = app.emit("auth-ok", json!({ "username": u, "last_seen": last_seen }));
+        }
+        Ok(ServerMsg::Error { msg }) => {
+            let _ = ready_tx.send(Err(msg));
+            return;
+        }
+        Ok(_) => {
+            let _ = ready_tx.send(Err("unexpected first message".into()));
+            return;
+        }
+        Err(e) => {
+            let _ = ready_tx.send(Err(format!("parse: {e}")));
+            return;
+        }
+    }
+    let _ = ready_tx.send(Ok(()));
+
+    let mut write_task = tokio::spawn(async move {
+        while let Some(cm) = rx.recv().await {
+            let s = match serde_json::to_string(&cm) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if write.send(Message::Text(s.into())).await.is_err() {
+                break;
             }
+        }
+        let _ = write.close().await;
+    });
+
+    let app2 = app.clone();
+    let db2 = db.clone();
+    let uname = username.clone();
+    let tx2 = tx.clone();
+    let mut read_task = tokio::spawn(async move {
+        while let Some(Ok(m)) = read.next().await {
+            match m {
+                Message::Text(t) => {
+                    if let Ok(sm) = serde_json::from_str::<ServerMsg>(&t.to_string()) {
+                        handle_server_msg(&app2, &db2, &uname, &tx2, sm).await;
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut write_task => { read_task.abort(); }
+        _ = &mut read_task => { write_task.abort(); }
+        _ = shutdown_rx => {
+            write_task.abort();
+            read_task.abort();
+        }
+    }
+
+    let _ = app.emit("disconnected", ());
+}
+
+fn to_ws_url(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let base = if let Some(r) = base.strip_prefix("https://") {
+        format!("wss://{r}")
+    } else if let Some(r) = base.strip_prefix("http://") {
+        format!("ws://{r}")
+    } else {
+        base.to_string()
+    };
+    format!("{base}/login")
+}
+
+async fn handle_server_msg(
+    app: &AppHandle,
+    db: &Database,
+    me: &str,
+    tx: &mpsc::UnboundedSender<ClientMsg>,
+    msg: ServerMsg,
+) {
+    match msg {
+        ServerMsg::AuthOk { .. } => {}
+
+        ServerMsg::Peers { peers } => {
             let _ = app.emit("peers", peers);
         }
-
-        // Users who initiated a chat with us and whose first message we
-        // have not pulled yet. UI shows them as "pending".
         ServerMsg::PendingChats { users } => {
             let _ = app.emit("pending-chats", users);
         }
-
-        // A peer came online (or the relationship just got established).
-        // Pull the history we missed.
         ServerMsg::PeerOnline { username } => {
-            let since = last_seen(app).await;
-            send(
-                app,
-                ClientMsg::PullHistory {
-                    from: username.clone(),
-                    since,
-                },
-            )
-            .await;
             let _ = app.emit("peer-online", username);
         }
-
         ServerMsg::PeerOffline { username } => {
             let _ = app.emit("peer-offline", username);
         }
 
         ServerMsg::Message { from, payload, ts } => {
-            let state = app.state::<AppState>();
-            let _ = state.db.store_message(&from, "in", ts, &payload).await;
-
-            let pw = state.db.get_peer_password(&from).await;
-            let text = pw
-                .as_deref()
-                .and_then(|p| crypto::decrypt(p, &payload))
-                .unwrap_or_else(|| format!("<encrypted: {payload}>"));
-
+            let (_, pw) = db.get_encryption(&from).await;
+            let text = crypto::decrypt(&payload, pw.as_deref())
+                .unwrap_or_else(|e| format!("[decryption failed: {e}]"));
+            db.insert_message(&from, "in", ts, &text).await;
             let _ = app.emit(
                 "message",
-                UiMsg {
-                    peer: from,
-                    direction: "in".into(),
-                    ts,
-                    text,
-                },
+                json!({ "peer": from, "direction": "in", "ts": ts, "text": text }),
             );
         }
 
-        // A peer wants our local history with them, since `since`.
-        // We answer directly from our local DB.
         ServerMsg::PullHistoryRequest { from, since } => {
-            let msgs = {
-                let state = app.state::<AppState>();
-                state
-                    .db
-                    .history_for_peer(&from, me, since)
-                    .await
-                    .unwrap_or_default()
-            };
-            send(
-                app,
-                ClientMsg::HistoryResponse {
-                    to: from,
-                    messages: msgs,
-                },
-            )
-            .await;
+            // Re-encrypt our stored messages with the *current* setting for
+            // that peer before shipping them back.
+            let (method, pw) = db.get_encryption(&from).await;
+            let stored = db.get_messages_since(&from, since).await;
+            let mut out = Vec::with_capacity(stored.len());
+            for m in stored {
+                let payload = match crypto::encrypt(&method, pw.as_deref(), &m.text) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let (m_from, m_to) = if m.direction == "out" {
+                    (me.to_string(), from.clone())
+                } else {
+                    (from.clone(), me.to_string())
+                };
+                out.push(StoredMsg {
+                    from: m_from,
+                    to: m_to,
+                    ts: m.ts,
+                    payload,
+                });
+            }
+            let _ = tx.send(ClientMsg::HistoryResponse {
+                to: from,
+                messages: out,
+            });
         }
 
-        // A peer's answer to a pull we made. Store new rows, then emit them.
         ServerMsg::HistoryResponse { from, messages } => {
-            let mut fresh: Vec<(i64, String, String)> = Vec::new(); // ts, payload, direction
-            {
-                let state = app.state::<AppState>();
-                for m in &messages {
-                    let direction = if m.from == me { "out" } else { "in" };
-                    let is_new = state
-                        .db
-                        .store_message(&from, direction, m.ts, &m.payload)
-                        .await
-                        .unwrap_or(false);
-                    if is_new {
-                        fresh.push((m.ts, m.payload.clone(), direction.to_string()));
-                    }
-                }
+            let (_, pw) = db.get_encryption(&from).await;
+            for m in &messages {
+                let text = crypto::decrypt(&m.payload, pw.as_deref())
+                    .unwrap_or_else(|e| format!("[decryption failed: {e}]"));
+                let direction = if m.from == me { "out" } else { "in" };
+                db.insert_message(&from, direction, m.ts, &text).await;
             }
-
-            let state = app.state::<AppState>();
-            let pw = state.db.get_peer_password(&from).await;
-            for (ts, payload, direction) in fresh {
-                let text = pw
-                    .as_deref()
-                    .and_then(|p| crypto::decrypt(p, &payload))
-                    .unwrap_or_else(|| format!("<encrypted: {payload}>"));
-                let _ = app.emit(
-                    "message",
-                    UiMsg {
-                        peer: from.clone(),
-                        direction,
-                        ts,
-                        text,
-                    },
-                );
-            }
+            let _ = app.emit("history-received", &from);
         }
 
         ServerMsg::Error { msg } => {
             let _ = app.emit("error", msg);
         }
-
-        // Server-initiated close: we were deleted, or someone else took the
-        // single allowed session for this user.
         ServerMsg::Close => {
-            {
-                let state = app.state::<AppState>();
-                let mut ws = state.ws.lock().await;
-                ws.tx = None;
-                ws.username = None;
-            }
             let _ = app.emit("session-closed", ());
         }
     }

@@ -1,236 +1,210 @@
-use futures_util::{SinkExt, StreamExt};
-use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::Message;
+use tauri::{AppHandle, Manager, State};
+use tokio::sync::{mpsc, oneshot};
 
-use crate::crypto;
-use crate::http_auth;
-use crate::protocol::{ClientMsg, UiMsg};
+use crate::db::LocalMsg;
+use crate::protocol::ClientMsg;
 use crate::state::AppState;
 use crate::util::now;
 use crate::ws;
+use crate::{crypto, http_auth};
+
+#[derive(serde::Serialize)]
+pub struct EncInfo {
+    pub method: String,
+    pub has_password: bool,
+}
+
+#[tauri::command]
+pub async fn register(base_url: String, username: String, password: String) -> Result<(), String> {
+    http_auth::register(&base_url, &username, &password).await
+}
 
 #[tauri::command]
 pub async fn connect(
     app: AppHandle,
+    state: State<'_, AppState>,
     base_url: String,
     username: String,
     password: String,
 ) -> Result<(), String> {
-    // 1. HTTP login (or register) first.
-    http_auth::login_or_register(&base_url, &username, &password).await?;
-
-    // 2. Build the WS upgrade request the canonical way.
-    let ws_url = http_auth::to_ws_url(&base_url)?;
-
-    // `into_client_request` on a String/Uri injects Sec-WebSocket-Key,
-    // Sec-WebSocket-Version, Upgrade and Connection for us. Building a
-    // `http::Request<()>` by hand does *not*, which is why the server
-    // complained about the missing sec-websocket-key header.
-    let mut request = ws_url
-        .into_client_request()
-        .map_err(|e| format!("bad websocket URL: {e}"))?;
-
-    request.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("{username}:{password}"))
-            .map_err(|e| format!("bad credentials header: {e}"))?,
-    );
-
-    let (socket, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|e| format!("websocket connect failed: {e}"))?;
-
-    let (mut write, mut read) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
-
-    // 3. Store the sender so `send_message` etc. can use it.
     {
-        let state = app.state::<AppState>();
-        let mut ws = state.ws.lock().await;
-        ws.tx = Some(tx.clone());
-        ws.username = Some(username.clone());
-        ws.last_seen = 0;
+        let inner = state.inner.lock().await;
+        if inner.username.is_some() {
+            return Err("already connected".into());
+        }
     }
 
-    // 4. Writer task.
-    tauri::async_runtime::spawn(async move {
-        while let Some(m) = rx.recv().await {
-            let s = match serde_json::to_string(&m) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            if write.send(Message::Text(s)).await.is_err() {
-                break;
-            }
-        }
-    });
+    // Per-user DB file — several clients can run side-by-side.
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let user_dir = dir.join("users").join(&username);
+    std::fs::create_dir_all(&user_dir).map_err(|e| e.to_string())?;
+    let db =
+        crate::db::Database::open(&user_dir.join("local.db")).map_err(|e| format!("db: {e}"))?;
 
-    // 5. Reader task.
-    let app_reader = app.clone();
-    let username_reader = username.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(Ok(msg)) = read.next().await {
-            if let Message::Text(t) = msg {
-                if let Ok(sm) = serde_json::from_str(&t) {
-                    ws::handle_server(sm, &app_reader, &username_reader).await;
-                }
-            }
-        }
-        {
-            let state = app_reader.state::<AppState>();
-            let mut ws = state.ws.lock().await;
-            ws.tx = None;
-            ws.username = None;
-        }
-        let _ = app_reader.emit("disconnected", ());
-    });
+    let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
+    let app2 = app.clone();
+    let db2 = db.clone();
+    let uname = username.clone();
+    tokio::spawn(ws::run(
+        app2,
+        base_url,
+        uname,
+        password,
+        tx.clone(),
+        rx,
+        ready_tx,
+        shutdown_rx,
+        db2,
+    ));
+
+    ready_rx.await.map_err(|e| e.to_string())??;
+
+    let mut inner = state.inner.lock().await;
+    inner.username = Some(username);
+    inner.ws_tx = Some(tx);
+    inner.shutdown_tx = Some(shutdown_tx);
+    inner.db = Some(db);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn send_message(app: AppHandle, to: String, text: String) -> Result<(), String> {
-    let state = app.state::<AppState>();
+pub async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    let mut inner = state.inner.lock().await;
+    if let Some(tx) = inner.shutdown_tx.take() {
+        let _ = tx.send(());
+    }
+    inner.username = None;
+    inner.ws_tx = None;
+    inner.db = None;
+    Ok(())
+}
 
-    let pw = state
-        .db
-        .get_peer_password(&to)
-        .await
-        .ok_or_else(|| format!("set the shared password for {to} first"))?;
+#[tauri::command]
+pub async fn send_message(
+    state: State<'_, AppState>,
+    to: String,
+    text: String,
+) -> Result<(), String> {
+    let (tx, db) = {
+        let inner = state.inner.lock().await;
+        let tx = inner.ws_tx.clone().ok_or("not connected")?;
+        let db = inner.db.clone().ok_or("no db")?;
+        (tx, db)
+    };
 
-    let payload = crypto::encrypt(&pw, &text);
+    let (method, pw) = db.get_encryption(&to).await;
+    let payload = crypto::encrypt(&method, pw.as_deref(), &text)?;
+
     let ts = now();
+    db.insert_message(&to, "out", ts, &text).await;
 
-    // Persist locally before sending, so the UI can always show it.
-    state
-        .db
-        .store_message(&to, "out", ts, &payload)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let tx = state.ws.lock().await.tx.clone().ok_or("not connected")?;
-    tx.send(ClientMsg::Send {
-        to: to.clone(),
-        payload,
-    })
-    .map_err(|e| e.to_string())?;
-
-    let _ = app.emit(
-        "message",
-        UiMsg {
-            peer: to,
-            direction: "out".into(),
-            ts,
-            text,
-        },
-    );
+    tx.send(ClientMsg::Send { to, payload })
+        .map_err(|_| "ws closed".to_string())?;
     Ok(())
 }
 
-/// Ask the server to forward a history pull to `from`.
-/// Only allowed by the server if `from` initiated the chat with us.
 #[tauri::command]
-pub async fn pull_history(app: AppHandle, from: String) -> Result<(), String> {
-    let (since, tx) = {
-        let state = app.state::<AppState>();
-        let guard = state.ws.lock().await;
-        // Bind the values into locals so the guard and `state` are
-        // dropped *before* the block's tail expression is evaluated.
-        let since = guard.last_seen;
-        let tx = guard.tx.clone();
-        (since, tx)
-    };
-
-    let tx = tx.ok_or("not connected")?;
-    tx.send(ClientMsg::PullHistory { from, since })
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Ask the server to re-send the list of pending chats.
-#[tauri::command]
-pub async fn list_pending(app: AppHandle) -> Result<(), String> {
+pub async fn pull_history(state: State<'_, AppState>, from: String) -> Result<(), String> {
     let tx = {
-        let state = app.state::<AppState>();
-        let guard = state.ws.lock().await;
-        let tx = guard.tx.clone();
-        tx
+        state
+            .inner
+            .lock()
+            .await
+            .ws_tx
+            .clone()
+            .ok_or("not connected")?
     };
-
-    let tx = tx.ok_or("not connected")?;
-    tx.send(ClientMsg::ListPending).map_err(|e| e.to_string())?;
+    tx.send(ClientMsg::PullHistory { from, since: 0 })
+        .map_err(|_| "ws closed".to_string())?;
     Ok(())
 }
 
-/// Request account deletion. Server confirms by sending a `Close` frame.
 #[tauri::command]
-pub async fn delete_account(app: AppHandle, password: String) -> Result<(), String> {
+pub async fn list_pending(state: State<'_, AppState>) -> Result<(), String> {
     let tx = {
-        let state = app.state::<AppState>();
-        let guard = state.ws.lock().await;
-        let tx = guard.tx.clone();
-        tx
+        state
+            .inner
+            .lock()
+            .await
+            .ws_tx
+            .clone()
+            .ok_or("not connected")?
     };
+    tx.send(ClientMsg::ListPending)
+        .map_err(|_| "ws closed".to_string())?;
+    Ok(())
+}
 
-    let tx = tx.ok_or("not connected")?;
+#[tauri::command]
+pub async fn delete_account(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    let tx = {
+        state
+            .inner
+            .lock()
+            .await
+            .ws_tx
+            .clone()
+            .ok_or("not connected")?
+    };
     tx.send(ClientMsg::DeleteAccount { password })
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Drop the websocket (log out). The reader task will emit `disconnected`.
-#[tauri::command]
-pub async fn disconnect(app: AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let mut ws = state.ws.lock().await;
-    ws.tx = None;
-    ws.username = None;
+        .map_err(|_| "ws closed".to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn set_peer_password(
+pub async fn set_peer_encryption(
     state: State<'_, AppState>,
     peer: String,
-    password: String,
+    method: String,
+    password: Option<String>,
 ) -> Result<(), String> {
-    state
-        .db
-        .set_peer_password(&peer, &password)
-        .await
-        .map_err(|e| e.to_string())
+    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
+
+    if method != "none" && method != "aes-gcm" {
+        return Err(format!("unsupported method: {method}"));
+    }
+    if method == "aes-gcm" && password.as_deref().map_or(true, |p| p.is_empty()) {
+        return Err("password required for aes-gcm".into());
+    }
+    let pw = if method == "aes-gcm" {
+        password.as_deref()
+    } else {
+        None
+    };
+    db.set_encryption(&peer, &method, pw).await;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn get_messages(state: State<'_, AppState>, peer: String) -> Result<Vec<UiMsg>, String> {
-    let pw = state.db.get_peer_password(&peer).await;
-    let rows = state
-        .db
-        .messages_for_peer(&peer)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for (direction, ts, payload) in rows {
-        let text = pw
-            .as_deref()
-            .and_then(|p| crypto::decrypt(p, &payload))
-            .unwrap_or_else(|| format!("<encrypted: {payload}>"));
-        out.push(UiMsg {
-            peer: peer.clone(),
-            direction,
-            ts,
-            text,
-        });
-    }
-    Ok(out)
+pub async fn get_peer_encryption(
+    state: State<'_, AppState>,
+    peer: String,
+) -> Result<EncInfo, String> {
+    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
+    let (method, pw) = db.get_encryption(&peer).await;
+    Ok(EncInfo {
+        method,
+        has_password: pw.is_some(),
+    })
 }
 
-/// Wipe local DB after account deletion (UI calls this after `session-closed`).
+#[tauri::command]
+pub async fn get_messages(
+    state: State<'_, AppState>,
+    peer: String,
+) -> Result<Vec<LocalMsg>, String> {
+    let db = { state.inner.lock().await.db.clone().ok_or("no db")? };
+    Ok(db.get_messages(&peer).await)
+}
+
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, AppState>) -> Result<(), String> {
-    state.db.wipe().await.map_err(|e| e.to_string())
+    let db = { state.inner.lock().await.db.clone() };
+    if let Some(db) = db {
+        db.wipe().await;
+    }
+    Ok(())
 }

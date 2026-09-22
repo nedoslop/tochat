@@ -11,7 +11,6 @@ mod ws;
 
 use tauri::Manager;
 
-use crate::db::Database;
 use crate::state::AppState;
 
 fn main() {
@@ -19,18 +18,20 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let db = Database::open(&dir.join("local.db"))?;
-            app.manage(AppState::new(db));
+            // DB opens lazily inside `connect` — one file per username.
+            app.manage(AppState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::register,
             commands::connect,
             commands::disconnect,
             commands::send_message,
             commands::pull_history,
             commands::list_pending,
             commands::delete_account,
-            commands::set_peer_password,
+            commands::set_peer_encryption,
+            commands::get_peer_encryption,
             commands::get_messages,
             commands::wipe_local_data,
         ])
