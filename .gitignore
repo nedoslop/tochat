@@ -93,6 +93,7 @@ tarpaulin-report.*
 *.bak
 *.tmp
 *.temp
+joined.txt
 .crash
 tmp/
 temp/
