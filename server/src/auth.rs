@@ -11,23 +11,21 @@ pub struct Credentials {
     pub password: String,
 }
 
+/// Builds a JSON error response.
 fn bad(status: StatusCode, err: &str, msg: &str) -> axum::response::Response {
     (status, Json(json!({ "error": err, "message": msg }))).into_response()
 }
 
+/// HTTP handler: registers a new user.
 pub async fn register(
     State(state): State<AppState>,
     Json(creds): Json<Credentials>,
 ) -> impl IntoResponse {
     if creds.username.is_empty() || creds.password.is_empty() {
-        return bad(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            "missing credentials",
-        );
+        return bad(StatusCode::BAD_REQUEST, "bad_request", "missing credentials");
     }
     let hash = hash_password(&creds.password);
-    if state.db.create_user(&creds.username, &hash).await {
+    if state.db.create_user(&creds.username, &hash).await.is_some() {
         (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
     } else {
         bad(StatusCode::CONFLICT, "conflict", "username already taken")

@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod crypto;
 mod db;
 mod http_auth;
 mod protocol;
@@ -14,12 +13,13 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
+/// Application entry point: sets up state and registers commands.
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let state = AppState::new(app.handle().clone()).expect("failed to init state");
+            let state = AppState::new(app.handle().clone(), dir);
             app.manage(Arc::new(state));
             Ok(())
         })
@@ -28,11 +28,11 @@ fn main() {
             commands::connect,
             commands::disconnect,
             commands::send_message,
+            commands::edit_message,
+            commands::delete_message,
             commands::pull_history,
             commands::list_pending,
             commands::delete_account,
-            commands::set_peer_encryption,
-            commands::get_peer_encryption,
             commands::get_messages,
             commands::wipe_local_data,
         ])

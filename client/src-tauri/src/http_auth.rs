@@ -1,19 +1,19 @@
-use reqwest::Client;
-use serde_json::json;
-
+/// Registers a new user via an HTTP POST to `<base_url>/register`.
 pub async fn register(base_url: &str, username: &str, password: &str) -> Result<(), String> {
     let url = format!("{}/register", base_url.trim_end_matches('/'));
-    let client = Client::new();
-    let res = client
+    let client = reqwest::Client::new();
+    let resp = client
         .post(&url)
-        .json(&json!({ "username": username, "password": password }))
+        .json(&serde_json::json!({ "username": username, "password": password }))
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if res.status().is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let text = res.text().await.unwrap_or_default();
-        Err(format!("register failed: {}", text))
+        Err(resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "registration failed".into()))
     }
 }

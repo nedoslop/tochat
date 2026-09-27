@@ -1,162 +1,196 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::State;
 
-use crate::crypto;
+use crate::db::Database;
 use crate::http_auth;
-use crate::protocol::ClientMsg;
+use crate::protocol::{ClientMsg, StoredMsg, KIND_TEXT};
 use crate::state::AppState;
-use crate::util::now;
+use crate::util::{new_msg_id, now_ms};
 use crate::ws;
 
+/// Registers a new user via HTTP.
 #[tauri::command]
-pub async fn register(base_url: String, username: String, password: String) -> Result<(), String> {
+pub async fn register(
+    base_url: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
     http_auth::register(&base_url, &username, &password).await
 }
 
+/// Connects to the server: opens the per-user DB and starts the WebSocket.
 #[tauri::command]
 pub async fn connect(
-    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     base_url: String,
     username: String,
     password: String,
 ) -> Result<(), String> {
-    ws::connect(app, state.inner().clone(), base_url, username, password).await
-}
+    let state = state.inner().clone();
 
-#[tauri::command]
-pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    // Invalidate the current session id so any still-running reader/writer
-    // tasks from the old connection immediately stop emitting events into
-    // the UI. Their sockets will close on their own once their tx / rx
-    // halves are dropped.
-    state.current_session.store(0, Ordering::Relaxed);
-    let mut ws = state.ws.lock().await;
-    *ws = None;
+    // Clear any previous session (idempotent).
+    clear_session(&state).await;
+
+    // Open the per-user database.
+    let db = Database::open(&state.data_dir, &username).map_err(|e| e.to_string())?;
+    *state.db.write().await = Some(Arc::new(db));
+    *state.me.write().await = Some(username.clone());
+
+    // Start the WebSocket.
+    if let Err(e) = ws::spawn(state.clone(), &base_url, &username, &password).await {
+        clear_session(&state).await;
+        return Err(e);
+    }
     Ok(())
 }
 
+/// Closes the WebSocket and clears session state.
+#[tauri::command]
+pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    clear_session(state.inner()).await;
+    Ok(())
+}
+
+/// Sends a new text message to a peer (stored locally + relayed).
 #[tauri::command]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
     to: String,
     text: String,
 ) -> Result<(), String> {
-    let owner = state.owner().await?;
-    let ts = now();
-    let (method, pw) = state.db.get_peer_encryption(&owner, &to).await;
-    let payload = if method == "aes-gcm" {
-        if let Some(pw) = pw {
-            crypto::encrypt(&pw, &text)
-        } else {
-            text.clone()
-        }
-    } else {
-        text.clone()
-    };
-    state.db.insert_message(&owner, &to, "out", ts, &text).await;
-
-    let ws = state.ws.lock().await;
-    if let Some(handle) = ws.as_ref() {
-        handle
-            .tx
-            .send(ClientMsg::Send { to, payload })
-            .map_err(|e| e.to_string())?;
-    } else {
-        return Err("not connected".into());
+    if text.is_empty() {
+        return Err("empty message".into());
     }
-    Ok(())
+    let me = state.me().await?;
+    let db = state.db().await?;
+    let id = new_msg_id();
+    let ts = now_ms();
+    let stored = StoredMsg {
+        id: id.clone(),
+        from: me.clone(),
+        to: to.clone(),
+        ts,
+        edit_ts: ts,
+        kind: KIND_TEXT.to_string(),
+        payload: text.clone(),
+    };
+    db.upsert(&stored).await;
+    state
+        .send(ClientMsg::Send {
+            to,
+            id,
+            ts,
+            kind: KIND_TEXT.to_string(),
+            payload: text,
+        })
+        .await
 }
 
+/// Edits an existing message (text = "" means delete).
+#[tauri::command]
+pub async fn edit_message(
+    state: State<'_, Arc<AppState>>,
+    peer: String,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let me = state.me().await?;
+    let db = state.db().await?;
+    let existing = db.get(&id).await.ok_or("message not found")?;
+    let edit_ts = now_ms();
+    let stored = StoredMsg {
+        id: id.clone(),
+        from: me,
+        to: peer.clone(),
+        ts: existing.ts,
+        edit_ts,
+        kind: existing.kind.clone(),
+        payload: text.clone(),
+    };
+    db.upsert(&stored).await;
+    state
+        .send(ClientMsg::Edit {
+            to: peer,
+            id,
+            ts: existing.ts,
+            edit_ts,
+            kind: existing.kind,
+            payload: text,
+        })
+        .await
+}
+
+/// Deletes a message (empty payload, updated edit_ts).
+#[tauri::command]
+pub async fn delete_message(
+    state: State<'_, Arc<AppState>>,
+    peer: String,
+    id: String,
+) -> Result<(), String> {
+    edit_message(state, peer, id, String::new()).await
+}
+
+/// Requests history from a peer since a given edit_ts (exclusive).
 #[tauri::command]
 pub async fn pull_history(
     state: State<'_, Arc<AppState>>,
     from: String,
-    since: Option<i64>,
+    since: i64,
 ) -> Result<(), String> {
-    let since = since.unwrap_or(0);
-    let ws = state.ws.lock().await;
-    if let Some(handle) = ws.as_ref() {
-        handle
-            .tx
-            .send(ClientMsg::PullHistory { from, since })
-            .map_err(|e| e.to_string())?;
-    } else {
-        return Err("not connected".into());
-    }
-    Ok(())
+    state.send(ClientMsg::PullHistory { from, since }).await
 }
 
+/// Requests the current pending chat list from the server.
 #[tauri::command]
 pub async fn list_pending(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let ws = state.ws.lock().await;
-    if let Some(handle) = ws.as_ref() {
-        handle
-            .tx
-            .send(ClientMsg::ListPending)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    state.send(ClientMsg::ListPending).await
 }
 
+/// Deletes the account on the server (password required).
 #[tauri::command]
 pub async fn delete_account(
     state: State<'_, Arc<AppState>>,
     password: String,
 ) -> Result<(), String> {
-    let ws = state.ws.lock().await;
-    if let Some(handle) = ws.as_ref() {
-        handle
-            .tx
-            .send(ClientMsg::DeleteAccount { password })
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    state.send(ClientMsg::DeleteAccount { password }).await
 }
 
-#[tauri::command]
-pub async fn set_peer_encryption(
-    state: State<'_, Arc<AppState>>,
-    peer: String,
-    method: String,
-    password: Option<String>,
-) -> Result<(), String> {
-    let owner = state.owner().await?;
-    state
-        .db
-        .set_peer_encryption(&owner, &peer, &method, password.as_deref())
-        .await;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn get_peer_encryption(
-    state: State<'_, Arc<AppState>>,
-    peer: String,
-) -> Result<serde_json::Value, String> {
-    let owner = state.owner().await?;
-    let (method, _) = state.db.get_peer_encryption(&owner, &peer).await;
-    Ok(serde_json::json!({ "method": method }))
-}
-
+/// Returns all locally stored messages with a peer.
 #[tauri::command]
 pub async fn get_messages(
     state: State<'_, Arc<AppState>>,
     peer: String,
-) -> Result<Vec<crate::db::Message>, String> {
-    let owner = state.owner().await?;
-    Ok(state.db.get_messages(&owner, &peer).await)
+) -> Result<Vec<crate::db::LocalMsg>, String> {
+    let db = state.db().await?;
+    Ok(db.all_for_peer(&peer).await)
 }
 
+/// Wipes the current user's local database file.
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    // Only wipe the currently logged-in account's local data. Any other
-    // account that happens to share this SQLite file (e.g. a second app
-    // instance) keeps its own rows untouched.
-    if let Ok(owner) = state.owner().await {
-        state.db.wipe_owner(&owner).await;
+    let me = state.me.read().await.clone();
+    // Drop the open handle before deleting files.
+    *state.db.write().await = None;
+    if let Some(username) = me {
+        let base = state.data_dir.join(format!("{}.db", crate::util::encode_username(&username)));
+        let _ = std::fs::remove_file(&base);
+        let _ = std::fs::remove_file(base.with_extension("db-wal"));
+        let _ = std::fs::remove_file(base.with_extension("db-shm"));
     }
     Ok(())
+}
+
+/// Clears session state: aborts the WebSocket task, drops the DB handle.
+async fn clear_session(state: &Arc<AppState>) {
+    {
+        let mut guard = state.ws.lock().await;
+        if let Some(handle) = guard.take() {
+            // Abort the pump task (its future drop closes the socket).
+            handle.task.abort();
+            drop(handle.tx);
+        }
+    }
+    *state.db.write().await = None;
+    *state.me.write().await = None;
 }

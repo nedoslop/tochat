@@ -1,163 +1,155 @@
-use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use rusqlite::{params, Connection};
+use serde::Serialize;
 use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub direction: String,
+use crate::protocol::StoredMsg;
+use crate::util::encode_username;
+
+/// One message as stored locally (frontend representation).
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalMsg {
+    pub id: String,
+    pub direction: String, // "in" | "out"
     pub ts: i64,
-    pub text: String,
+    pub edit_ts: i64,
+    pub kind: String,
+    pub payload: String,
 }
 
+/// Per-user SQLite database, keyed by the logged-in username.
 #[derive(Clone)]
 pub struct Database {
+    me: String,
     conn: Arc<Mutex<Connection>>,
 }
 
-fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
-    let sql = format!("PRAGMA table_info({})", table);
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let rows = stmt.query_map([], |r| r.get::<_, String>(1));
-    match rows {
-        Ok(rows) => rows.filter_map(|r| r.ok()).any(|name| name == column),
-        Err(_) => false,
-    }
-}
-
-fn table_exists(conn: &Connection, table: &str) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [table],
-        |_| Ok(()),
-    )
-    .is_ok()
-}
-
 impl Database {
-    pub fn open(path: &str) -> rusqlite::Result<Self> {
+    /// Opens (or creates) `<dir>/<hex(username)>.db`.
+    pub fn open(dir: &Path, username: &str) -> rusqlite::Result<Self> {
+        let path: PathBuf = dir.join(format!("{}.db", encode_username(username)));
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
-
-        // Legacy schema (before owner-scoping) has a `messages` table without
-        // an `owner` column, and `peer_encryption` with a single-column PK.
-        // We drop and recreate to migrate; local chat history is per-machine
-        // cache anyway, and previously it was cross-account mixed up so it
-        // wasn't trustworthy across accounts.
-        let legacy_messages = table_exists(&conn, "messages")
-            && !column_exists(&conn, "messages", "owner");
-        let legacy_enc = table_exists(&conn, "peer_encryption")
-            && !column_exists(&conn, "peer_encryption", "owner");
-        if legacy_messages {
-            conn.execute_batch("DROP TABLE IF EXISTS messages;")?;
-        }
-        if legacy_enc {
-            conn.execute_batch("DROP TABLE IF EXISTS peer_encryption;")?;
-        }
-
         conn.execute_batch(
             r#"
+            PRAGMA journal_mode = WAL;
+
             CREATE TABLE IF NOT EXISTS messages (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                owner     TEXT NOT NULL,
+                id        TEXT PRIMARY KEY,
                 peer      TEXT NOT NULL,
                 direction TEXT NOT NULL,
                 ts        INTEGER NOT NULL,
-                text      TEXT NOT NULL
+                edit_ts   INTEGER NOT NULL,
+                kind      TEXT NOT NULL DEFAULT 'text',
+                payload   TEXT NOT NULL
             );
-            -- Uniqueness guard so the same message can never be inserted twice
-            -- (dedup across restarts, concurrent pulls, retries, etc.).
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_unique
-                ON messages(owner, peer, direction, ts, text);
-            CREATE INDEX IF NOT EXISTS idx_messages_owner_peer_ts
-                ON messages(owner, peer, ts);
 
-            CREATE TABLE IF NOT EXISTS peer_encryption (
-                owner    TEXT NOT NULL,
-                peer     TEXT NOT NULL,
-                method   TEXT NOT NULL,
-                password TEXT,
-                PRIMARY KEY (owner, peer)
-            );
+            CREATE INDEX IF NOT EXISTS idx_messages_peer_edit_ts
+                ON messages(peer, edit_ts);
             "#,
         )?;
-
         Ok(Self {
+            me: username.to_string(),
             conn: Arc::new(Mutex::new(conn)),
         })
     }
 
-    pub async fn insert_message(
-        &self,
-        owner: &str,
-        peer: &str,
-        direction: &str,
-        ts: i64,
-        text: &str,
-    ) {
+    /// Inserts or replaces a message by id.
+    pub async fn upsert(&self, msg: &StoredMsg) {
+        let direction = if msg.from == self.me { "out" } else { "in" };
+        let peer = if direction == "in" { &msg.from } else { &msg.to };
         let conn = self.conn.lock().await;
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO messages (owner, peer, direction, ts, text) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![owner, peer, direction, ts, text],
+            "INSERT INTO messages (id, peer, direction, ts, edit_ts, kind, payload) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(id) DO UPDATE SET \
+                edit_ts = excluded.edit_ts, \
+                kind    = excluded.kind, \
+                payload = excluded.payload",
+            params![msg.id, peer, direction, msg.ts, msg.edit_ts, msg.kind, msg.payload],
         );
     }
 
-    pub async fn get_messages(&self, owner: &str, peer: &str) -> Vec<Message> {
+    /// Returns all messages for a peer, ordered by ts.
+    pub async fn all_for_peer(&self, peer: &str) -> Vec<LocalMsg> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT direction, ts, text FROM messages \
-             WHERE owner = ?1 AND peer = ?2 ORDER BY ts ASC, id ASC",
+            "SELECT id, direction, ts, edit_ts, kind, payload \
+             FROM messages WHERE peer = ?1 ORDER BY ts ASC, id ASC",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map(params![owner, peer], |r| {
-            Ok(Message {
-                direction: r.get(0)?,
-                ts: r.get(1)?,
-                text: r.get(2)?,
+        let rows = stmt.query_map([peer], |r| {
+            Ok(LocalMsg {
+                id: r.get(0)?,
+                direction: r.get(1)?,
+                ts: r.get(2)?,
+                edit_ts: r.get(3)?,
+                kind: r.get(4)?,
+                payload: r.get(5)?,
             })
         });
-        match rows {
-            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-            Err(_) => Vec::new(),
-        }
+        rows.map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default()
     }
 
-    pub async fn set_peer_encryption(
-        &self,
-        owner: &str,
-        peer: &str,
-        method: &str,
-        password: Option<&str>,
-    ) {
+    /// Returns StoredMsg form of all messages with `peer` whose edit_ts > since.
+    pub async fn since_for_peer(&self, peer: &str, since: i64) -> Vec<StoredMsg> {
         let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO peer_encryption (owner, peer, method, password) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![owner, peer, method, password],
-        );
+        let mut stmt = match conn.prepare(
+            "SELECT id, direction, ts, edit_ts, kind, payload \
+             FROM messages WHERE peer = ?1 AND edit_ts > ?2 ORDER BY edit_ts ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map(params![peer, since], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        });
+        let mut out = Vec::new();
+        if let Ok(rows) = rows {
+            for (id, direction, ts, edit_ts, kind, payload) in rows.flatten() {
+                let (from, to) = if direction == "in" {
+                    (peer.to_string(), self.me.clone())
+                } else {
+                    (self.me.clone(), peer.to_string())
+                };
+                out.push(StoredMsg { id, from, to, ts, edit_ts, kind, payload });
+            }
+        }
+        out
     }
 
-    pub async fn get_peer_encryption(&self, owner: &str, peer: &str) -> (String, Option<String>) {
+    /// Looks up a locally stored message by id.
+    pub async fn get(&self, id: &str) -> Option<StoredMsg> {
         let conn = self.conn.lock().await;
         conn.query_row(
-            "SELECT method, password FROM peer_encryption WHERE owner = ?1 AND peer = ?2",
-            params![owner, peer],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT peer, direction, ts, edit_ts, kind, payload \
+             FROM messages WHERE id = ?1",
+            [id],
+            |r| {
+                let peer: String = r.get(0)?;
+                let direction: String = r.get(1)?;
+                let ts: i64 = r.get(2)?;
+                let edit_ts: i64 = r.get(3)?;
+                let kind: String = r.get(4)?;
+                let payload: String = r.get(5)?;
+                let (from, to) = if direction == "in" {
+                    (peer.clone(), self.me.clone())
+                } else {
+                    (self.me.clone(), peer)
+                };
+                Ok(StoredMsg { id: id.to_string(), from, to, ts, edit_ts, kind, payload })
+            },
         )
-        .unwrap_or(("none".to_string(), None))
-    }
-
-    /// Wipe only the current account's local data. Other accounts
-    /// (which may be running in parallel app instances) are left alone.
-    pub async fn wipe_owner(&self, owner: &str) {
-        let conn = self.conn.lock().await;
-        let _ = conn.execute("DELETE FROM messages WHERE owner = ?1", [owner]);
-        let _ = conn.execute("DELETE FROM peer_encryption WHERE owner = ?1", [owner]);
+        .ok()
     }
 }

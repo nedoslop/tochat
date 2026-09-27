@@ -1,699 +1,700 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Chat</title>
-    <style>
-      body {
-        font-family: sans-serif;
-        margin: 0;
-        display: flex;
-        height: 100vh;
-      }
-      #login {
-        margin: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        width: 340px;
-      }
-      input,
-      button,
-      select {
-        padding: 6px 8px;
-        font-size: 14px;
-      }
-      #app {
-        display: flex;
-        width: 100%;
-      }
-      #sidebar {
-        width: 260px;
-        border-right: 1px solid #ccc;
-        padding: 8px;
-        overflow: auto;
-      }
-      #sidebar .section {
-        margin-top: 10px;
-      }
-      #sidebar .peer {
-        padding: 6px;
-        cursor: pointer;
-        border-radius: 4px;
-        display: flex;
-        justify-content: space-between;
-      }
-      #sidebar .peer:hover {
-        background: #eee;
-      }
-      #sidebar .peer.active {
-        background: #d0e0ff;
-      }
-      #sidebar .peer .badge {
-        background: #ff9800;
-        color: white;
-        border-radius: 10px;
-        padding: 0 6px;
-        font-size: 11px;
-      }
-      #sidebar .peer.offline {
-        opacity: 0.6;
-      }
-      #main {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-      }
-      #header {
-        padding: 8px;
-        border-bottom: 1px solid #ccc;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-      #header .status {
-        color: #888;
-        font-size: 12px;
-      }
-      #messages {
-        flex: 1;
-        overflow: auto;
-        padding: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .msg {
-        padding: 4px 8px;
-        border-radius: 6px;
-        max-width: 70%;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      .in {
-        background: #eee;
-        align-self: flex-start;
-      }
-      .out {
-        background: #cfe7ff;
-        align-self: flex-end;
-      }
-      .msg-time {
-        font-size: 10px;
-        color: #666;
-        text-align: right;
-        margin-top: 2px;
-      }
-      .date-sep {
-        text-align: center;
-        color: #888;
-        font-size: 12px;
-        margin: 8px 0;
-      }
-      #composer {
-        display: flex;
-        gap: 8px;
-        padding: 8px;
-        border-top: 1px solid #ccc;
-      }
-      #composer input {
-        flex: 1;
-      }
-      .hint {
-        color: #888;
-        font-size: 12px;
-      }
-      .pending-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 6px;
-        border-bottom: 1px solid #eee;
-      }
-      .pending-row button {
-        padding: 2px 8px;
-      }
-      #pending-view,
-      #chat-view {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        overflow: auto;
-      }
-      #pending-view {
-        padding: 12px;
-      }
-      #toast {
-        position: fixed;
-        right: 12px;
-        bottom: 12px;
-        background: #333;
-        color: white;
-        padding: 8px 12px;
-        border-radius: 6px;
-        display: none;
-        max-width: 320px;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="login">
-      <h3>Connect to chat server</h3>
-      <input
-        id="base-url"
-        value="http://localhost:8080"
-        placeholder="http://host:port"
-      />
-      <input id="user" placeholder="username" />
-      <input id="pass" type="password" placeholder="password" />
-      <button id="register-btn">Register</button>
-      <button id="login-btn">Login</button>
-      <div class="hint">New username? Register first, then Login.</div>
-    </div>
+<head>
+<meta charset="utf-8" />
+<title>Chat</title>
+<style>
+body {
+font-family: sans-serif;
+margin: 0;
+display: flex;
+height: 100vh;
+}
+#login {
+margin: auto;
+display: flex;
+flex-direction: column;
+gap: 8px;
+width: 340px;
+}
+input,
+button,
+select {
+padding: 6px 8px;
+font-size: 14px;
+}
+#app {
+display: flex;
+width: 100%;
+}
+#sidebar {
+width: 260px;
+border-right: 1px solid #ccc;
+padding: 8px;
+overflow: auto;
+}
+#sidebar .section {
+margin-top: 10px;
+}
+#sidebar .peer {
+padding: 6px;
+cursor: pointer;
+border-radius: 4px;
+display: flex;
+justify-content: space-between;
+}
+#sidebar .peer:hover {
+background: #eee;
+}
+#sidebar .peer.active {
+background: #d0e0ff;
+}
+#sidebar .peer .badge {
+background: #ff9800;
+color: white;
+border-radius: 10px;
+padding: 0 6px;
+font-size: 11px;
+}
+#sidebar .peer.offline {
+opacity: 0.6;
+}
+#main {
+flex: 1;
+display: flex;
+flex-direction: column;
+}
+#header {
+padding: 8px;
+border-bottom: 1px solid #ccc;
+display: flex;
+gap: 8px;
+align-items: center;
+}
+#header .status {
+color: #888;
+font-size: 12px;
+}
+#messages {
+flex: 1;
+overflow: auto;
+padding: 8px;
+display: flex;
+flex-direction: column;
+gap: 4px;
+}
+.msg {
+padding: 4px 8px;
+border-radius: 6px;
+max-width: 70%;
+white-space: pre-wrap;
+word-break: break-word;
+position: relative;
+}
+.in {
+background: #eee;
+align-self: flex-start;
+}
+.out {
+background: #cfe7ff;
+align-self: flex-end;
+}
+.msg-time {
+font-size: 10px;
+color: #666;
+text-align: right;
+margin-top: 2px;
+}
+.msg-actions {
+position: absolute;
+top: -10px;
+right: 0;
+display: none;
+background: white;
+border: 1px solid #ccc;
+border-radius: 4px;
+font-size: 12px;
+}
+.msg:hover .msg-actions {
+display: block;
+}
+.msg-actions button {
+background: none;
+border: none;
+padding: 2px 6px;
+cursor: pointer;
+}
+.msg.deleted .msg-body {
+font-style: italic;
+color: #999;
+}
+.date-sep {
+text-align: center;
+color: #888;
+font-size: 12px;
+margin: 8px 0;
+}
+#composer {
+display: flex;
+gap: 8px;
+padding: 8px;
+border-top: 1px solid #ccc;
+}
+#composer input {
+flex: 1;
+}
+.hint {
+color: #888;
+font-size: 12px;
+}
+.pending-row {
+display: flex;
+justify-content: space-between;
+align-items: center;
+padding: 6px;
+border-bottom: 1px solid #eee;
+}
+.pending-row button {
+padding: 2px 8px;
+}
+#pending-view,
+#chat-view {
+flex: 1;
+display: flex;
+flex-direction: column;
+overflow: auto;
+}
+#pending-view {
+padding: 12px;
+}
+#toast {
+position: fixed;
+right: 12px;
+bottom: 12px;
+background: #333;
+color: white;
+padding: 8px 12px;
+border-radius: 6px;
+display: none;
+max-width: 320px;
+}
+</style>
+</head>
+<body>
+<div id="login">
+<h3>Connect to chat server</h3>
+<input
+id="base-url"
+value="http://localhost:8080"
+placeholder="http://host:port"
+/>
+<input id="user" placeholder="username" />
+<input id="pass" type="password" placeholder="password" />
+<button id="register-btn">Register</button>
+<button id="login-btn">Login</button>
+<div class="hint">New username? Register first, then Login.</div>
+</div>
 
-    <div id="app" style="display: none">
-      <div id="sidebar">
-        <div class="hint">Chats:</div>
-        <div id="peers"></div>
+<div id="app" style="display: none">
+<div id="sidebar">
+<div class="hint">Chats:</div>
+<div id="peers"></div>
 
-        <div class="section">
-          <button id="pending-btn" style="width: 100%">
-            Pending requests (<span id="pending-count">0</span>)
-          </button>
-        </div>
+<div class="section">
+<button id="pending-btn" style="width: 100%">
+Pending requests (<span id="pending-count">0</span>)
+</button>
+</div>
 
-        <hr />
-        <div class="hint">Start a new chat:</div>
-        <input id="new-peer" placeholder="username" />
-        <button id="new-peer-btn">Open</button>
-        <button id="logout-btn" style="margin-top: 10px">Log out</button>
-        <button id="reload-btn" style="margin-top: 4px">Reload UI</button>
-        <button id="delete-btn" style="margin-top: 4px">Delete account</button>
-      </div>
+<hr />
+<div class="hint">Start a new chat:</div>
+<input id="new-peer" placeholder="username" />
+<button id="new-peer-btn">Open</button>
+<button id="logout-btn" style="margin-top: 10px">Log out</button>
+<button id="reload-btn" style="margin-top: 4px">Reload UI</button>
+<button id="delete-btn" style="margin-top: 4px">Delete account</button>
+</div>
 
-      <div id="main">
-        <!-- Chat view -->
-        <div id="chat-view">
-          <div id="header">
-            <span id="peer-title">—</span>
-            <span class="status" id="peer-status"></span>
-            <div
-              style="
-                margin-left: auto;
-                display: flex;
-                gap: 8px;
-                align-items: center;
-              "
-            >
-              <label>Encryption:</label>
-              <select id="enc-method">
-                <option value="none">None</option>
-                <option value="aes-gcm">AES-GCM</option>
-              </select>
-              <button id="set-enc-btn">Set</button>
-            </div>
-          </div>
-          <div id="messages"></div>
-          <div id="composer">
-            <input id="msg" placeholder="Message…" />
-            <button id="send-btn">Send</button>
-          </div>
-        </div>
+<div id="main">
+<div id="chat-view">
+<div id="header">
+<span id="peer-title">—</span>
+<span class="status" id="peer-status"></span>
+</div>
+<div id="messages"></div>
+<div id="composer">
+<input id="msg" placeholder="Message…" />
+<button id="send-btn">Send</button>
+</div>
+</div>
 
-        <!-- Pending view -->
-        <div id="pending-view" style="display: none">
-          <div
-            style="
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-            "
-          >
-            <h3 style="margin: 0">Pending chats</h3>
-            <div>
-              <button id="refresh-pending-btn">Refresh</button>
-              <button id="pending-back-btn">Back</button>
-            </div>
-          </div>
-          <p class="hint">
-            These users messaged you first. Pull history to accept the chat.
-          </p>
-          <div id="pending-list"></div>
-        </div>
-      </div>
-    </div>
+<div id="pending-view" style="display: none">
+<div
+style="
+display: flex;
+justify-content: space-between;
+align-items: center;
+"
+>
+<h3 style="margin: 0">Pending chats</h3>
+<div>
+<button id="refresh-pending-btn">Refresh</button>
+<button id="pending-back-btn">Back</button>
+</div>
+</div>
+<p class="hint">
+These users messaged you first. Pull history to accept the chat.
+</p>
+<div id="pending-list"></div>
+</div>
+</div>
+</div>
 
-    <div id="toast"></div>
+<div id="toast"></div>
 
-    <script>
-      const { invoke } = window.__TAURI__.core;
-      const { listen } = window.__TAURI__.event;
+<script>
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 
-      let me = null;
-      let currentPeer = null;
+let me = null;
+let currentPeer = null;
 
-      const peers = new Set();
-      const pending = new Set();
-      const online = new Set();
-      const msgCache = {};
-      // Tracks peers for which a pull_history is currently in flight.
-      const pulling = new Set();
+const peers = new Set();
+const pending = new Set();
+const online = new Set();
+const msgCache = {};
+// Peers for which a pull_history is currently in flight.
+const pulling = new Set();
 
-      // ---------- helpers ----------
+// ---------- helpers ----------
 
-      function toast(text, ms = 3500) {
-        const t = document.getElementById("toast");
-        t.textContent = text;
-        t.style.display = "block";
-        clearTimeout(t._timer);
-        t._timer = setTimeout(() => {
-          t.style.display = "none";
-        }, ms);
-      }
+function toast(text, ms = 3500) {
+const t = document.getElementById("toast");
+t.textContent = text;
+t.style.display = "block";
+clearTimeout(t._timer);
+t._timer = setTimeout(() => {
+t.style.display = "none";
+}, ms);
+}
 
-      function showChatView() {
-        document.getElementById("chat-view").style.display = "flex";
-        document.getElementById("pending-view").style.display = "none";
-      }
-      function showPendingView() {
-        document.getElementById("chat-view").style.display = "none";
-        document.getElementById("pending-view").style.display = "flex";
-        renderPendingList();
-      }
+function showChatView() {
+document.getElementById("chat-view").style.display = "flex";
+document.getElementById("pending-view").style.display = "none";
+}
+function showPendingView() {
+document.getElementById("chat-view").style.display = "none";
+document.getElementById("pending-view").style.display = "flex";
+renderPendingList();
+}
 
-      function escapeHtml(text) {
-        const div = document.createElement("div");
-        div.textContent = text;
-        return div.innerHTML;
-      }
+function escapeHtml(text) {
+const div = document.createElement("div");
+div.textContent = text;
+return div.innerHTML;
+}
 
-      // Compute the newest *received* message timestamp from a peer.
-      //
-      // IMPORTANT: this must only look at incoming messages. If we included
-      // our own outgoing messages, then any peer message older than our own
-      // most recent send would be excluded by the `m.ts > since` filter on
-      // the peer's side — which is exactly the "sent something, then my
-      // peer's earlier messages never show up" bug.
-      function lastReceivedTs(peer) {
-        const msgs = msgCache[peer] || [];
-        let max = 0;
-        for (const m of msgs) {
-          if (m.direction === "in" && m.ts > max) max = m.ts;
-        }
-        return max;
-      }
+// Newest *incoming* edit_ts for a peer (used as the `since` cursor).
+// Only incoming messages: an outgoing message must not raise our cursor,
+// otherwise an older incoming message could be silently skipped.
+function lastReceivedEditTs(peer) {
+const msgs = msgCache[peer] || [];
+let max = 0;
+for (const m of msgs) {
+if (m.direction === "in" && m.edit_ts > max) max = m.edit_ts;
+}
+return max;
+}
 
-      // Pull only new history since the last message we received from the
-      // peer. Safe to call repeatedly: the `pulling` guard prevents
-      // overlapping requests for the same peer, and the DB has a UNIQUE
-      // index that deduplicates any accidental re-inserts.
-      async function autoPull(peer) {
-        if (!peer || peer === me) return;
-        if (pulling.has(peer)) return;
-        pulling.add(peer);
-        try {
-          if (!msgCache[peer]) {
-            msgCache[peer] = await invoke("get_messages", { peer });
-          }
-          const since = lastReceivedTs(peer);
-          await invoke("pull_history", { from: peer, since });
-        } catch (_) {
-          /* silent — auto-pull is best-effort */
-        }
-        // Safety net in case no response ever arrives.
-        setTimeout(() => pulling.delete(peer), 8000);
-      }
+// Best-effort pull from a peer. Guarded so overlapping requests are
+// collapsed, and a timeout clears the guard if no response ever arrives.
+async function autoPull(peer) {
+if (!peer || peer === me) return;
+if (pulling.has(peer)) return;
+pulling.add(peer);
+try {
+if (!msgCache[peer]) {
+msgCache[peer] = await invoke("get_messages", { peer });
+}
+const since = lastReceivedEditTs(peer);
+await invoke("pull_history", { from: peer, since });
+} catch (_) {
+/* silent */
+}
+setTimeout(() => pulling.delete(peer), 8000);
+}
 
-      // ---------- actions ----------
+// ---------- actions ----------
 
-      async function register() {
-        const baseUrl = document.getElementById("base-url").value.trim();
-        const username = document.getElementById("user").value.trim();
-        const password = document.getElementById("pass").value;
-        if (!baseUrl || !username || !password)
-          return alert("fill all fields");
-        try {
-          await invoke("register", { baseUrl, username, password });
-          alert("Registered. You can log in now.");
-        } catch (e) {
-          alert("register error: " + e);
-        }
-      }
+async function register() {
+const baseUrl = document.getElementById("base-url").value.trim();
+const username = document.getElementById("user").value.trim();
+const password = document.getElementById("pass").value;
+if (!baseUrl || !username || !password) return alert("fill all fields");
+try {
+await invoke("register", { baseUrl, username, password });
+alert("Registered. You can log in now.");
+} catch (e) {
+alert("register error: " + e);
+}
+}
 
-      async function login() {
-        const baseUrl = document.getElementById("base-url").value.trim();
-        const username = document.getElementById("user").value.trim();
-        const password = document.getElementById("pass").value;
-        if (!baseUrl || !username || !password)
-          return alert("fill all fields");
-        try {
-          await invoke("connect", { baseUrl, username, password });
-        } catch (e) {
-          alert("login error: " + e);
-        }
-      }
+async function login() {
+const baseUrl = document.getElementById("base-url").value.trim();
+const username = document.getElementById("user").value.trim();
+const password = document.getElementById("pass").value;
+if (!baseUrl || !username || !password) return alert("fill all fields");
+try {
+await invoke("connect", { baseUrl, username, password });
+} catch (e) {
+alert("login error: " + e);
+}
+}
 
-      async function refreshPending() {
-        try {
-          await invoke("list_pending");
-        } catch (e) {
-          toast("refresh pending error: " + e);
-        }
-      }
+async function refreshPending() {
+try {
+await invoke("list_pending");
+} catch (e) {
+toast("refresh pending error: " + e);
+}
+}
 
-      async function openPeer(peer) {
-        if (!peer) return;
-        if (peer === me) return toast("cannot chat with yourself");
-        currentPeer = peer;
-        peers.add(peer);
-        showChatView();
-        msgCache[peer] = await invoke("get_messages", { peer });
-        renderSidebar();
-        renderMessages();
-        try {
-          const enc = await invoke("get_peer_encryption", { peer });
-          document.getElementById("enc-method").value = enc.method;
-        } catch (_) {
-          document.getElementById("enc-method").value = "none";
-        }
-        await autoPull(peer);
-      }
+async function openPeer(peer) {
+if (!peer) return;
+if (peer === me) return toast("cannot chat with yourself");
+currentPeer = peer;
+peers.add(peer);
+showChatView();
+msgCache[peer] = await invoke("get_messages", { peer });
+renderSidebar();
+renderMessages();
+await autoPull(peer);
+}
 
-      async function acceptPending(peer) {
-        // Do NOT pull here — openPeer() already pulls, and issuing two
-        // pulls with the same `since` before either response lands causes
-        // every message to be inserted twice into the local DB.
-        pending.delete(peer);
-        peers.add(peer);
-        renderSidebar();
-        renderPendingList();
-        await openPeer(peer);
-      }
+async function acceptPending(peer) {
+// openPeer already auto-pulls; issuing a second pull here would
+// double-insert on slow links.
+pending.delete(peer);
+peers.add(peer);
+renderSidebar();
+renderPendingList();
+await openPeer(peer);
+}
 
-      async function send() {
-        if (!currentPeer) return;
-        const input = document.getElementById("msg");
-        const text = input.value;
-        if (!text.trim()) return;
-        try {
-          await invoke("send_message", { to: currentPeer, text });
-          input.value = "";
-          // Sending to a pending peer implicitly accepts the chat — the
-          // server establishes the relationship on our behalf.
-          if (pending.has(currentPeer)) {
-            pending.delete(currentPeer);
-          }
-          msgCache[currentPeer] = await invoke("get_messages", {
-            peer: currentPeer,
-          });
-          renderSidebar();
-          renderMessages();
-        } catch (e) {
-          toast("send error: " + e);
-        }
-      }
+async function send() {
+if (!currentPeer) return;
+const input = document.getElementById("msg");
+const text = input.value;
+if (!text.trim()) return;
+try {
+await invoke("send_message", { to: currentPeer, text });
+input.value = "";
+// Sending to a pending peer implicitly accepts it.
+if (pending.has(currentPeer)) pending.delete(currentPeer);
+msgCache[currentPeer] = await invoke("get_messages", { peer: currentPeer });
+renderSidebar();
+renderMessages();
+} catch (e) {
+toast("send error: " + e);
+}
+}
 
-      async function setEncryption() {
-        if (!currentPeer) return toast("open a chat first");
-        const method = document.getElementById("enc-method").value;
-        let password = null;
-        if (method === "aes-gcm") {
-          password = prompt(
-            "Shared encryption password with " + currentPeer
-          );
-          if (password === null) return;
-        }
-        try {
-          await invoke("set_peer_encryption", {
-            peer: currentPeer,
-            method,
-            password,
-          });
-          toast("Saved. Applies to new messages from now on.");
-        } catch (e) {
-          toast("set encryption error: " + e);
-        }
-      }
+async function editMessage(id, currentText) {
+const next = prompt("Edit message (leave empty to delete):", currentText);
+if (next === null) return;
+try {
+if (next === "") {
+await invoke("delete_message", { peer: currentPeer, id });
+} else {
+await invoke("edit_message", { peer: currentPeer, id, text: next });
+}
+msgCache[currentPeer] = await invoke("get_messages", { peer: currentPeer });
+renderMessages();
+} catch (e) {
+toast("edit error: " + e);
+}
+}
 
-      async function logout() {
-        try {
-          await invoke("disconnect");
-        } catch (_) {}
-        resetToLogin();
-      }
+async function deleteMessage(id) {
+if (!confirm("Delete this message?")) return;
+try {
+await invoke("delete_message", { peer: currentPeer, id });
+msgCache[currentPeer] = await invoke("get_messages", { peer: currentPeer });
+renderMessages();
+} catch (e) {
+toast("delete error: " + e);
+}
+}
 
-      async function deleteAccount() {
-        const pw = prompt("Enter your password to delete the account");
-        if (pw === null) return;
-        try {
-          await invoke("delete_account", { password: pw });
-        } catch (e) {
-          toast("delete error: " + e);
-        }
-      }
+async function logout() {
+try {
+await invoke("disconnect");
+} catch (_) {}
+resetToLogin();
+}
 
-      async function reloadUI() {
-        // Close ws first, then reset — otherwise server keeps a stale session
-        // and a fresh login would be rejected as "another session connected".
-        try {
-          await invoke("disconnect");
-        } catch (_) {}
-        resetToLogin();
-      }
+async function deleteAccount() {
+const pw = prompt("Enter your password to delete the account");
+if (pw === null) return;
+try {
+await invoke("delete_account", { password: pw });
+} catch (e) {
+toast("delete error: " + e);
+}
+}
 
-      // ---------- rendering ----------
+async function reloadUI() {
+// Close the WS first so the server doesn't reject the next login with
+// a "session taken over" message.
+try {
+await invoke("disconnect");
+} catch (_) {}
+resetToLogin();
+}
 
-      function renderSidebar() {
-        const peersEl = document.getElementById("peers");
-        peersEl.innerHTML = "";
-        const all = new Set([...peers, ...pending]);
-        for (const p of all) {
-          const d = document.createElement("div");
-          d.className = "peer" + (p === currentPeer ? " active" : "");
-          d.textContent = p;
-          if (!online.has(p) && !pending.has(p)) d.classList.add("offline");
-          if (pending.has(p)) {
-            const b = document.createElement("span");
-            b.className = "badge";
-            b.textContent = "new";
-            d.appendChild(b);
-          }
-          d.onclick = () => (pending.has(p) ? acceptPending(p) : openPeer(p));
-          peersEl.appendChild(d);
-        }
+// ---------- rendering ----------
 
-        document.getElementById("pending-count").textContent = String(
-          pending.size
-        );
+function renderSidebar() {
+const peersEl = document.getElementById("peers");
+peersEl.innerHTML = "";
+const all = new Set([...peers, ...pending]);
+for (const p of all) {
+const d = document.createElement("div");
+d.className = "peer" + (p === currentPeer ? " active" : "");
+d.textContent = p;
+if (!online.has(p) && !pending.has(p)) d.classList.add("offline");
+if (pending.has(p)) {
+const b = document.createElement("span");
+b.className = "badge";
+b.textContent = "new";
+d.appendChild(b);
+}
+d.onclick = () => (pending.has(p) ? acceptPending(p) : openPeer(p));
+peersEl.appendChild(d);
+}
 
-        const statusEl = document.getElementById("peer-status");
-        if (currentPeer) {
-          statusEl.textContent = online.has(currentPeer) ? "online" : "offline";
-        } else {
-          statusEl.textContent = "";
-        }
-      }
+document.getElementById("pending-count").textContent = String(pending.size);
 
-      function renderPendingList() {
-        const el = document.getElementById("pending-list");
-        el.innerHTML = "";
-        if (pending.size === 0) {
-          el.innerHTML = '<div class="hint">No pending chats.</div>';
-          return;
-        }
-        for (const p of pending) {
-          const row = document.createElement("div");
-          row.className = "pending-row";
-          const name = document.createElement("span");
-          name.textContent = p;
-          const btn = document.createElement("button");
-          btn.textContent = "Pull history";
-          btn.onclick = () => acceptPending(p);
-          row.appendChild(name);
-          row.appendChild(btn);
-          el.appendChild(row);
-        }
-      }
+const statusEl = document.getElementById("peer-status");
+if (currentPeer) {
+statusEl.textContent = online.has(currentPeer) ? "online" : "offline";
+} else {
+statusEl.textContent = "";
+}
+}
 
-      function renderMessages() {
-        const el = document.getElementById("messages");
-        el.innerHTML = "";
-        const msgs = (msgCache[currentPeer] || [])
-          .slice()
-          .sort((a, b) => a.ts - b.ts);
-        let lastDate = null;
-        for (const m of msgs) {
-          const d = new Date(m.ts * 1000);
-          const dateStr = d.toLocaleDateString();
-          if (dateStr !== lastDate) {
-            const sep = document.createElement("div");
-            sep.className = "date-sep";
-            sep.textContent = dateStr;
-            el.appendChild(sep);
-            lastDate = dateStr;
-          }
-          const msgDiv = document.createElement("div");
-          msgDiv.className = "msg " + (m.direction === "out" ? "out" : "in");
-          const timeStr = d.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          msgDiv.innerHTML = `<div>${escapeHtml(
-            m.text
-          )}</div><div class="msg-time">${timeStr}</div>`;
-          el.appendChild(msgDiv);
-        }
-        el.scrollTop = el.scrollHeight;
-      }
+function renderPendingList() {
+const el = document.getElementById("pending-list");
+el.innerHTML = "";
+if (pending.size === 0) {
+el.innerHTML = '<div class="hint">No pending chats.</div>';
+return;
+}
+for (const p of pending) {
+const row = document.createElement("div");
+row.className = "pending-row";
+const name = document.createElement("span");
+name.textContent = p;
+const btn = document.createElement("button");
+btn.textContent = "Pull history";
+btn.onclick = () => acceptPending(p);
+row.appendChild(name);
+row.appendChild(btn);
+el.appendChild(row);
+}
+}
 
-      function resetToLogin() {
-        me = null;
-        currentPeer = null;
-        peers.clear();
-        pending.clear();
-        online.clear();
-        pulling.clear();
-        for (const k of Object.keys(msgCache)) delete msgCache[k];
-        document.getElementById("app").style.display = "none";
-        document.getElementById("login").style.display = "flex";
-      }
+function renderMessages() {
+const el = document.getElementById("messages");
+el.innerHTML = "";
+const msgs = (msgCache[currentPeer] || [])
+.slice()
+.sort((a, b) => a.ts - b.ts);
+let lastDate = null;
+for (const m of msgs) {
+const d = new Date(m.ts);
+const dateStr = d.toLocaleDateString();
+if (dateStr !== lastDate) {
+const sep = document.createElement("div");
+sep.className = "date-sep";
+sep.textContent = dateStr;
+el.appendChild(sep);
+lastDate = dateStr;
+}
+const msgDiv = document.createElement("div");
+const deleted = m.payload === "";
+msgDiv.className =
+"msg " +
+(m.direction === "out" ? "out" : "in") +
+(deleted ? " deleted" : "");
+const timeStr = d.toLocaleTimeString([], {
+hour: "2-digit",
+minute: "2-digit",
+});
+const bodyText = deleted ? "(deleted)" : m.payload;
+let body = `<div class="msg-body">${escapeHtml(
+bodyText
+)}</div><div class="msg-time">${timeStr}</div>`;
+if (m.direction === "out" && !deleted) {
+body +=
+`<div class="msg-actions">` +
+`<button data-act="edit">✏️</button>` +
+`<button data-act="del">🗑</button>` +
+`</div>`;
+}
+msgDiv.innerHTML = body;
+if (m.direction === "out" && !deleted) {
+msgDiv.querySelector('[data-act="edit"]').onclick = () =>
+editMessage(m.id, m.payload);
+msgDiv.querySelector('[data-act="del"]').onclick = () =>
+deleteMessage(m.id);
+}
+el.appendChild(msgDiv);
+}
+el.scrollTop = el.scrollHeight;
+}
 
-      // ---------- event wiring ----------
+function resetToLogin() {
+me = null;
+currentPeer = null;
+peers.clear();
+pending.clear();
+online.clear();
+pulling.clear();
+for (const k of Object.keys(msgCache)) delete msgCache[k];
+document.getElementById("app").style.display = "none";
+document.getElementById("login").style.display = "flex";
+}
 
-      async function init() {
-        document.getElementById("register-btn").onclick = register;
-        document.getElementById("login-btn").onclick = login;
-        document.getElementById("send-btn").onclick = send;
-        document.getElementById("set-enc-btn").onclick = setEncryption;
-        document.getElementById("logout-btn").onclick = logout;
-        document.getElementById("reload-btn").onclick = reloadUI;
-        document.getElementById("delete-btn").onclick = deleteAccount;
-        document.getElementById("refresh-pending-btn").onclick =
-          refreshPending;
-        document.getElementById("pending-btn").onclick = () => {
-          showPendingView();
-          refreshPending();
-        };
-        document.getElementById("pending-back-btn").onclick = () =>
-          showChatView();
-        document.getElementById("new-peer-btn").onclick = () => {
-          const p = document.getElementById("new-peer").value.trim();
-          if (p) openPeer(p);
-        };
-        document
-          .getElementById("msg")
-          .addEventListener("keydown", (e) => {
-            if (e.key === "Enter") send();
-          });
+// ---------- event wiring ----------
 
-        // If the webview is reloaded, tell the Rust side to close the socket.
-        window.addEventListener("beforeunload", () => {
-          try {
-            invoke("disconnect");
-          } catch (_) {}
-        });
+async function init() {
+document.getElementById("register-btn").onclick = register;
+document.getElementById("login-btn").onclick = login;
+document.getElementById("send-btn").onclick = send;
+document.getElementById("logout-btn").onclick = logout;
+document.getElementById("reload-btn").onclick = reloadUI;
+document.getElementById("delete-btn").onclick = deleteAccount;
+document.getElementById("refresh-pending-btn").onclick = refreshPending;
+document.getElementById("pending-btn").onclick = () => {
+showPendingView();
+refreshPending();
+};
+document.getElementById("pending-back-btn").onclick = () => showChatView();
+document.getElementById("new-peer-btn").onclick = () => {
+const p = document.getElementById("new-peer").value.trim();
+if (p) openPeer(p);
+};
+document.getElementById("msg").addEventListener("keydown", (e) => {
+if (e.key === "Enter") send();
+});
 
-        await listen("auth-ok", (e) => {
-          me = e.payload.username;
-          document.getElementById("login").style.display = "none";
-          document.getElementById("app").style.display = "flex";
-          showChatView();
-        });
+// Let the Rust side close the socket cleanly before we go away.
+window.addEventListener("beforeunload", () => {
+try {
+invoke("disconnect");
+} catch (_) {}
+});
 
-        await listen("peers", (e) => {
-          for (const p of e.payload) peers.add(p);
-          renderSidebar();
-          // Auto-pull from every established peer at login so any messages
-          // sent to us while we were offline show up immediately.
-          for (const p of e.payload) autoPull(p);
-        });
+await listen("auth-ok", (e) => {
+me = e.payload.username;
+document.getElementById("login").style.display = "none";
+document.getElementById("app").style.display = "flex";
+showChatView();
+});
 
-        await listen("pending-chats", (e) => {
-          pending.clear();
-          for (const p of e.payload) {
-            if (!peers.has(p)) pending.add(p);
-          }
-          renderSidebar();
-          renderPendingList();
-        });
+await listen("peers", (e) => {
+for (const p of e.payload) peers.add(p);
+renderSidebar();
+// Sync with every established peer at login.
+for (const p of e.payload) autoPull(p);
+});
 
-        await listen("peer-online", (e) => {
-          const name = e.payload;
-          online.add(name);
-          if (pending.has(name)) {
-            // Keep it pending until user explicitly pulls.
-          } else {
-            peers.add(name);
-          }
-          renderSidebar();
-          // Peer just came online — sync in case they have messages we
-          // didn't receive while they were offline.
-          if (!pending.has(name)) autoPull(name);
-        });
+await listen("pending-chats", (e) => {
+pending.clear();
+for (const p of e.payload) {
+if (!peers.has(p)) pending.add(p);
+}
+renderSidebar();
+renderPendingList();
+});
 
-        await listen("peer-offline", (e) => {
-          online.delete(e.payload);
-          renderSidebar();
-        });
+await listen("peer-online", (e) => {
+const name = e.payload;
+online.add(name);
+if (!pending.has(name)) peers.add(name);
+renderSidebar();
+// Peer just came online — pull in case they have newer messages.
+if (!pending.has(name)) autoPull(name);
+});
 
-        await listen("message", (e) => {
-          const m = e.payload;
-          // Receiving a message from a pending peer means the relationship
-          // is now established (server marks it as implicit accept when the
-          // non-initiator replies). Drop the pending badge.
-          pending.delete(m.peer);
-          peers.add(m.peer);
-          if (!msgCache[m.peer]) msgCache[m.peer] = [];
-          msgCache[m.peer].push({
-            direction: m.direction,
-            ts: m.ts,
-            text: m.text,
-          });
-          renderSidebar();
-          renderPendingList();
-          if (currentPeer === m.peer) renderMessages();
-        });
+await listen("peer-offline", (e) => {
+online.delete(e.payload);
+renderSidebar();
+});
 
-        await listen("history-received", async (e) => {
-          const peer = e.payload;
-          pulling.delete(peer);
-          msgCache[peer] = await invoke("get_messages", { peer });
-          if (pending.has(peer)) {
-            pending.delete(peer);
-            peers.add(peer);
-            renderSidebar();
-            renderPendingList();
-          }
-          if (currentPeer === peer) renderMessages();
-        });
+await listen("message", (e) => {
+const m = e.payload;
+// Incoming message from a pending peer = implicit accept.
+pending.delete(m.peer);
+peers.add(m.peer);
+if (!msgCache[m.peer]) msgCache[m.peer] = [];
+// Upsert by id (edits arrive through the same event).
+const idx = msgCache[m.peer].findIndex((x) => x.id === m.id);
+const entry = {
+id: m.id,
+direction: m.direction,
+ts: m.ts,
+edit_ts: m.edit_ts,
+kind: m.kind,
+payload: m.payload,
+};
+if (idx >= 0) msgCache[m.peer][idx] = entry;
+else msgCache[m.peer].push(entry);
+renderSidebar();
+renderPendingList();
+if (currentPeer === m.peer) renderMessages();
+});
 
-        await listen("error", (e) => {
-          const msg = String(e.payload);
-          // Auto-pull from an offline peer is expected and shouldn't be
-          // surfaced to the user (would just spam the toast).
-          if (msg.includes("is offline")) return;
-          toast(msg);
-        });
+await listen("history-received", async (e) => {
+const peer = e.payload;
+pulling.delete(peer);
+msgCache[peer] = await invoke("get_messages", { peer });
+if (pending.has(peer)) {
+pending.delete(peer);
+peers.add(peer);
+renderSidebar();
+renderPendingList();
+}
+if (currentPeer === peer) renderMessages();
+});
 
-        await listen("session-closed", async () => {
-          alert(
-            "Session closed by server (account deleted or session taken over)."
-          );
-          try {
-            await invoke("wipe_local_data");
-          } catch (_) {}
-          try {
-            await invoke("disconnect");
-          } catch (_) {}
-          resetToLogin();
-        });
+await listen("error", (e) => {
+const msg = String(e.payload);
+// Auto-pull from offline peers is expected, don't spam.
+if (msg.includes("is offline")) return;
+toast(msg);
+});
 
-        await listen("disconnected", () => {
-          if (me) resetToLogin();
-        });
-      }
+await listen("session-closed", async () => {
+alert(
+"Session closed by server (account deleted or session taken over)."
+);
+try {
+await invoke("wipe_local_data");
+} catch (_) {}
+try {
+await invoke("disconnect");
+} catch (_) {}
+resetToLogin();
+});
 
-      window.addEventListener("DOMContentLoaded", init);
-    </script>
-  </body>
+await listen("disconnected", () => {
+if (me) resetToLogin();
+});
+}
+
+window.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
 </html>
