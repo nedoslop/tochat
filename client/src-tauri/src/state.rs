@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tauri::AppHandle;
@@ -8,58 +8,59 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::db::Database;
 use crate::protocol::ClientMsg;
 
-/// Handle to the active WebSocket connection.
-pub struct WsHandle {
-    pub tx: mpsc::UnboundedSender<ClientMsg>,
-    pub task: tokio::task::JoinHandle<()>,
-    /// Set to true before tearing down the task; the task checks it to
-    /// avoid emitting stale `disconnected` events.
-    pub shutdown: Arc<AtomicBool>,
+/// In-memory encryption configuration.
+///
+/// `key` is the derived symmetric key; `password` is kept only so the UI can
+/// echo it back. Both are `None` when encryption is off.
+#[derive(Default)]
+pub struct EncryptionState {
+    pub password: Option<String>,
+    pub key: Option<[u8; 32]>,
 }
 
-/// Shared client application state.
+impl EncryptionState {
+    pub fn is_enabled(&self) -> bool {
+        self.key.is_some()
+    }
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub data_dir: PathBuf,
-    pub db: RwLock<Option<Arc<Database>>>,
+    pub db: Database,
+    /// Current logged-in username, if any.
     pub me: RwLock<Option<String>>,
-    pub ws: Mutex<Option<WsHandle>>,
+    /// Outbound channel for the active WebSocket session.
+    pub ws: Mutex<Option<mpsc::UnboundedSender<ClientMsg>>>,
+    /// Generation counter used to distinguish "current" from stale readers.
+    pub ws_gen: AtomicU64,
+    pub encryption: RwLock<EncryptionState>,
 }
 
 impl AppState {
-    /// Creates a new state value.
     pub fn new(app: AppHandle, data_dir: PathBuf) -> Self {
+        let db = Database::open(&data_dir.join("client.db"))
+            .expect("failed to open local database");
+
+        // Load the persisted shared password (if any).
+        let password = std::fs::read_to_string(encryption_path(&data_dir))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let key = password.as_deref().map(crate::util::derive_key);
+
         Self {
             app,
             data_dir,
-            db: RwLock::new(None),
+            db,
             me: RwLock::new(None),
             ws: Mutex::new(None),
+            ws_gen: AtomicU64::new(0),
+            encryption: RwLock::new(EncryptionState { password, key }),
         }
     }
+}
 
-    /// Returns the current user's DB, or an error if not logged in.
-    pub async fn db(&self) -> Result<Arc<Database>, String> {
-        self.db
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| "not logged in".to_string())
-    }
-
-    /// Returns the current username, or an error if not logged in.
-    pub async fn me(&self) -> Result<String, String> {
-        self.me
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| "not logged in".to_string())
-    }
-
-    /// Sends a ClientMsg through the active WebSocket, if any.
-    pub async fn send(&self, msg: ClientMsg) -> Result<(), String> {
-        let guard = self.ws.lock().await;
-        let handle = guard.as_ref().ok_or("not connected")?;
-        handle.tx.send(msg).map_err(|_| "connection closed".into())
-    }
+pub fn encryption_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("encryption.key")
 }

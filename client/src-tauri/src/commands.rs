@@ -1,200 +1,273 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use serde_json::json;
 use tauri::State;
 
-use crate::db::{Database, LocalMsg};
-use crate::http_auth;
-use crate::protocol::{ClientMsg, StoredMsg, KIND_TEXT};
-use crate::state::AppState;
-use crate::util::{encode_username, new_msg_id, now_ms};
+use crate::db::LocalMsg;
+use crate::protocol::{ClientMsg, KIND_TEXT};
+use crate::state::{encryption_path, AppState};
+use crate::util::{derive_key, encrypt_payload, now_ms, random_id};
 use crate::ws;
 
-/// Registers a new user via HTTP.
+// ---------- auth ----------
+
 #[tauri::command]
 pub async fn register(
     base_url: String,
     username: String,
     password: String,
 ) -> Result<(), String> {
-    http_auth::register(&base_url, &username, &password).await
+    let url = format!("{}/register", base_url.trim().trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&json!({ "username": username, "password": password }))
+        .send()
+        .await
+        .map_err(|e| format!("network error: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("register failed ({status}): {text}"))
+    }
 }
 
-/// Connects to the server: opens the per-user DB and starts the WebSocket.
 #[tauri::command]
 pub async fn connect(
-    state: State<'_, Arc<AppState>>,
     base_url: String,
     username: String,
     password: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let state = state.inner().clone();
-
-    // Make sure no stale session survives into the new one.
-    clear_session(&state).await;
-
-    let db = Database::open(&state.data_dir, &username).map_err(|e| e.to_string())?;
-    *state.db.write().await = Some(Arc::new(db));
-    *state.me.write().await = Some(username.clone());
-
-    if let Err(e) = ws::spawn(state.clone(), &base_url, &username, &password).await {
-        clear_session(&state).await;
-        return Err(e);
-    }
-    Ok(())
+    let st = state.inner().clone();
+    ws::connect(st, base_url, username, password).await
 }
 
-/// Closes the WebSocket and clears session state.
 #[tauri::command]
 pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    clear_session(state.inner()).await;
+    let mut ws = state.ws.lock().await;
+    *ws = None;
+    drop(ws);
+    *state.me.write().await = None;
     Ok(())
 }
 
-/// Sends a new text message to a peer (stored locally + relayed).
+// ---------- messaging ----------
+
 #[tauri::command]
 pub async fn send_message(
-    state: State<'_, Arc<AppState>>,
     to: String,
     text: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     if text.is_empty() {
         return Err("empty message".into());
     }
-    let me = state.me().await?;
-    let db = state.db().await?;
-    let id = new_msg_id();
+    let id = random_id();
     let ts = now_ms();
-    db.upsert(&StoredMsg {
-        id: id.clone(),
-        from: me.clone(),
-        to: to.clone(),
-        ts,
-        edit_ts: ts,
-        kind: KIND_TEXT.to_string(),
-        payload: text.clone(),
-    })
-    .await;
-    state
-        .send(ClientMsg::Send {
-            to,
-            id,
-            ts,
-            kind: KIND_TEXT.to_string(),
-            payload: text,
-        })
-        .await
+    send_outgoing(&state, &to, &id, ts, ts, &text, false).await
 }
 
-/// Edits an existing message (text = "" means delete).
 #[tauri::command]
 pub async fn edit_message(
-    state: State<'_, Arc<AppState>>,
     peer: String,
     id: String,
     text: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let me = state.me().await?;
-    let db = state.db().await?;
-    let existing = db.get(&id).await.ok_or("message not found")?;
-    let edit_ts = now_ms();
-    db.upsert(&StoredMsg {
-        id: id.clone(),
-        from: me,
-        to: peer.clone(),
-        ts: existing.ts,
-        edit_ts,
-        kind: existing.kind.clone(),
-        payload: text.clone(),
-    })
-    .await;
-    state
-        .send(ClientMsg::Edit {
-            to: peer,
-            id,
-            ts: existing.ts,
-            edit_ts,
-            kind: existing.kind,
-            payload: text,
-        })
+    if text.is_empty() {
+        return Err("empty message".into());
+    }
+    let ts = state
+        .db
+        .get_messages(&peer)
         .await
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.ts)
+        .unwrap_or_else(now_ms);
+    let edit_ts = now_ms();
+    send_outgoing(&state, &peer, &id, ts, edit_ts, &text, true).await
 }
 
-/// Deletes a message (empty payload, updated edit_ts).
 #[tauri::command]
 pub async fn delete_message(
-    state: State<'_, Arc<AppState>>,
     peer: String,
     id: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    edit_message(state, peer, id, String::new()).await
+    let ts = state
+        .db
+        .get_messages(&peer)
+        .await
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.ts)
+        .unwrap_or_else(now_ms);
+    let edit_ts = now_ms();
+    send_outgoing(&state, &peer, &id, ts, edit_ts, "", true).await
 }
 
-/// Requests history from a peer since a given edit_ts (exclusive).
+/// Shared logic for new messages and edits/deletes.
+///
+/// Locally the plaintext (or empty, for deletes) is stored with
+/// `plaintext = true`. The wire payload is encrypted when a key is set.
+#[allow(clippy::too_many_arguments)]
+async fn send_outgoing(
+    state: &Arc<AppState>,
+    to: &str,
+    id: &str,
+    ts: i64,
+    edit_ts: i64,
+    plaintext: &str,
+    is_edit: bool,
+) -> Result<(), String> {
+    let wire_payload = {
+        let enc = state.encryption.read().await;
+        match enc.key.as_ref() {
+            Some(key) => encrypt_payload(key, plaintext)
+                .ok_or_else(|| "encryption failed".to_string())?,
+            None => plaintext.to_string(),
+        }
+    };
+
+    state
+        .db
+        .upsert_message(to, id, "out", ts, edit_ts, KIND_TEXT, plaintext, true)
+        .await;
+
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.clone().ok_or_else(|| "not connected".to_string())?
+    };
+
+    let msg = if is_edit {
+        ClientMsg::Edit {
+            to: to.to_string(),
+            id: id.to_string(),
+            ts,
+            edit_ts,
+            kind: KIND_TEXT.to_string(),
+            payload: wire_payload,
+        }
+    } else {
+        ClientMsg::Send {
+            to: to.to_string(),
+            id: id.to_string(),
+            ts,
+            kind: KIND_TEXT.to_string(),
+            payload: wire_payload,
+        }
+    };
+
+    tx.send(msg).map_err(|_| "connection closed".to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn pull_history(
-    state: State<'_, Arc<AppState>>,
     from: String,
     since: i64,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    state.send(ClientMsg::PullHistory { from, since }).await
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.clone().ok_or_else(|| "not connected".to_string())?
+    };
+    tx.send(ClientMsg::PullHistory { from, since })
+        .map_err(|_| "connection closed".to_string())?;
+    Ok(())
 }
 
-/// Requests the current pending chat list from the server.
 #[tauri::command]
 pub async fn list_pending(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.send(ClientMsg::ListPending).await
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.clone().ok_or_else(|| "not connected".to_string())?
+    };
+    tx.send(ClientMsg::ListPending)
+        .map_err(|_| "connection closed".to_string())?;
+    Ok(())
 }
 
-/// Deletes the account on the server (password required).
 #[tauri::command]
 pub async fn delete_account(
-    state: State<'_, Arc<AppState>>,
     password: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    state.send(ClientMsg::DeleteAccount { password }).await
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.clone().ok_or_else(|| "not connected".to_string())?
+    };
+    tx.send(ClientMsg::DeleteAccount { password })
+        .map_err(|_| "connection closed".to_string())?;
+    Ok(())
 }
 
-/// Returns all locally stored messages with a peer.
+// ---------- local storage ----------
+
 #[tauri::command]
 pub async fn get_messages(
-    state: State<'_, Arc<AppState>>,
     peer: String,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<LocalMsg>, String> {
-    let db = state.db().await?;
-    Ok(db.all_for_peer(&peer).await)
+    Ok(state.db.get_messages(&peer).await)
 }
 
-/// Wipes the current user's local database file.
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let me = state.me.read().await.clone();
-    *state.db.write().await = None;
-    if let Some(username) = me {
-        let base = state.data_dir.join(format!("{}.db", encode_username(&username)));
-        let _ = std::fs::remove_file(&base);
-        let _ = std::fs::remove_file(base.with_extension("db-wal"));
-        let _ = std::fs::remove_file(base.with_extension("db-shm"));
+    state.db.wipe_all().await;
+    // Also drop any stored encryption password.
+    let mut enc = state.encryption.write().await;
+    enc.password = None;
+    enc.key = None;
+    drop(enc);
+    let _ = std::fs::remove_file(encryption_path(&state.data_dir));
+    Ok(())
+}
+
+// ---------- encryption ----------
+
+/// Sets (or clears) the shared encryption password.
+///
+/// Changing this only affects messages sent/received afterwards: existing
+/// local rows are left untouched.
+#[tauri::command]
+pub async fn set_encryption(
+    password: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let normalized = password
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+
+    match normalized {
+        Some(pw) => {
+            let key = derive_key(&pw);
+            {
+                let mut enc = state.encryption.write().await;
+                enc.password = Some(pw.clone());
+                enc.key = Some(key);
+            }
+            std::fs::write(encryption_path(&state.data_dir), pw.as_bytes())
+                .map_err(|e| format!("persist error: {e}"))?;
+        }
+        None => {
+            {
+                let mut enc = state.encryption.write().await;
+                enc.password = None;
+                enc.key = None;
+            }
+            let _ = std::fs::remove_file(encryption_path(&state.data_dir));
+        }
     }
     Ok(())
 }
 
-/// Clears session state: shuts the WS task down *completely* (so no stale
-/// events leak into the next session), then drops the DB handle and user.
-async fn clear_session(state: &Arc<AppState>) {
-    let handle_opt = state.ws.lock().await.take();
-    if let Some(handle) = handle_opt {
-        // Flag first so the task won't emit `disconnected` even if it
-        // happens to be resuming from an await.
-        handle.shutdown.store(true, Ordering::Relaxed);
-        // Closing the sender lets the writer future exit cleanly…
-        drop(handle.tx);
-        // …and abort guarantees shutdown if the reader is stuck.
-        handle.task.abort();
-        // Wait for the task to actually be gone before we return: this is
-        // what stops an old session from racing the new one.
-        let _ = handle.task.await;
-    }
-    *state.db.write().await = None;
-    *state.me.write().await = None;
+/// Returns `true` when encryption is currently active.
+#[tauri::command]
+pub async fn get_encryption(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    Ok(state.encryption.read().await.is_enabled())
 }

@@ -1,82 +1,93 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::protocol::StoredMsg;
-use crate::util::encode_username;
-
-/// One message as stored locally (frontend representation).
+/// One locally stored message.
+///
+/// `plaintext` is `true` when `payload` is known to be readable text. When
+/// `false`, the payload is opaque (either real ciphertext we couldn't
+/// decrypt, or something we simply didn't try to decrypt).
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalMsg {
     pub id: String,
-    pub direction: String, // "in" | "out"
+    /// "in" or "out".
+    pub direction: String,
     pub ts: i64,
     pub edit_ts: i64,
     pub kind: String,
     pub payload: String,
+    pub plaintext: bool,
 }
 
-/// Per-user SQLite database, keyed by the logged-in username.
 #[derive(Clone)]
 pub struct Database {
-    me: String,
     conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
-    /// Opens (or creates) `<dir>/<hex(username)>.db`.
-    pub fn open(dir: &Path, username: &str) -> rusqlite::Result<Self> {
-        let path: PathBuf = dir.join(format!("{}.db", encode_username(username)));
+    pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
 
             CREATE TABLE IF NOT EXISTS messages (
-                id        TEXT PRIMARY KEY,
                 peer      TEXT NOT NULL,
+                id        TEXT NOT NULL,
                 direction TEXT NOT NULL,
                 ts        INTEGER NOT NULL,
                 edit_ts   INTEGER NOT NULL,
-                kind      TEXT NOT NULL DEFAULT 'text',
-                payload   TEXT NOT NULL
+                kind      TEXT NOT NULL,
+                payload   TEXT NOT NULL,
+                plaintext INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (peer, id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_messages_peer_edit_ts
-                ON messages(peer, edit_ts);
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
-        Ok(Self {
-            me: username.to_string(),
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    /// Inserts or replaces a message by id.
-    pub async fn upsert(&self, msg: &StoredMsg) {
-        let direction = if msg.from == self.me { "out" } else { "in" };
-        let peer = if direction == "in" { &msg.from } else { &msg.to };
+    /// Inserts or updates a message. Keyed by `(peer, id)`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_message(
+        &self,
+        peer: &str,
+        id: &str,
+        direction: &str,
+        ts: i64,
+        edit_ts: i64,
+        kind: &str,
+        payload: &str,
+        plaintext: bool,
+    ) {
         let conn = self.conn.lock().await;
         let _ = conn.execute(
-            "INSERT INTO messages (id, peer, direction, ts, edit_ts, kind, payload) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-             ON CONFLICT(id) DO UPDATE SET \
-                edit_ts = excluded.edit_ts, \
-                kind    = excluded.kind, \
-                payload = excluded.payload",
-            params![msg.id, peer, direction, msg.ts, msg.edit_ts, msg.kind, msg.payload],
+            "INSERT INTO messages
+                (peer, id, direction, ts, edit_ts, kind, payload, plaintext)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(peer, id) DO UPDATE SET
+                ts        = excluded.ts,
+                edit_ts   = excluded.edit_ts,
+                kind      = excluded.kind,
+                payload   = excluded.payload,
+                plaintext = excluded.plaintext",
+            params![peer, id, direction, ts, edit_ts, kind, payload, plaintext as i64],
         );
     }
 
-    /// Returns all messages for a peer, ordered by ts.
-    pub async fn all_for_peer(&self, peer: &str) -> Vec<LocalMsg> {
+    pub async fn get_messages(&self, peer: &str) -> Vec<LocalMsg> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT id, direction, ts, edit_ts, kind, payload \
-             FROM messages WHERE peer = ?1 ORDER BY ts ASC, id ASC",
+            "SELECT id, direction, ts, edit_ts, kind, payload, plaintext
+             FROM messages WHERE peer = ?1 ORDER BY ts ASC, edit_ts ASC",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -89,67 +100,39 @@ impl Database {
                 edit_ts: r.get(3)?,
                 kind: r.get(4)?,
                 payload: r.get(5)?,
+                plaintext: r.get::<_, i64>(6)? != 0,
             })
         });
-        rows.map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default()
-    }
-
-    /// Returns StoredMsg form of all messages with `peer` whose edit_ts > since.
-    pub async fn since_for_peer(&self, peer: &str, since: i64) -> Vec<StoredMsg> {
-        let conn = self.conn.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT id, direction, ts, edit_ts, kind, payload \
-             FROM messages WHERE peer = ?1 AND edit_ts > ?2 ORDER BY edit_ts ASC",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let rows = stmt.query_map(params![peer, since], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        });
-        let mut out = Vec::new();
-        if let Ok(rows) = rows {
-            for (id, direction, ts, edit_ts, kind, payload) in rows.flatten() {
-                let (from, to) = if direction == "in" {
-                    (peer.to_string(), self.me.clone())
-                } else {
-                    (self.me.clone(), peer.to_string())
-                };
-                out.push(StoredMsg { id, from, to, ts, edit_ts, kind, payload });
-            }
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
         }
-        out
     }
 
-    /// Looks up a locally stored message by id.
-    pub async fn get(&self, id: &str) -> Option<StoredMsg> {
+    pub async fn set_setting(&self, key: &str, value: &str) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        );
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().await;
         conn.query_row(
-            "SELECT peer, direction, ts, edit_ts, kind, payload \
-             FROM messages WHERE id = ?1",
-            [id],
-            |r| {
-                let peer: String = r.get(0)?;
-                let direction: String = r.get(1)?;
-                let ts: i64 = r.get(2)?;
-                let edit_ts: i64 = r.get(3)?;
-                let kind: String = r.get(4)?;
-                let payload: String = r.get(5)?;
-                let (from, to) = if direction == "in" {
-                    (peer.clone(), self.me.clone())
-                } else {
-                    (self.me.clone(), peer)
-                };
-                Ok(StoredMsg { id: id.to_string(), from, to, ts, edit_ts, kind, payload })
-            },
+            "SELECT value FROM settings WHERE key = ?1",
+            [key],
+            |r| r.get::<_, String>(0),
         )
+        .optional()
         .ok()
+        .flatten()
+    }
+
+    pub async fn wipe_all(&self) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute("DELETE FROM messages", []);
+        let _ = conn.execute("DELETE FROM settings", []);
     }
 }

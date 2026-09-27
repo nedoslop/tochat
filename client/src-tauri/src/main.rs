@@ -35,6 +35,8 @@ fn main() {
             commands::delete_account,
             commands::get_messages,
             commands::wipe_local_data,
+            commands::set_encryption,
+            commands::get_encryption,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

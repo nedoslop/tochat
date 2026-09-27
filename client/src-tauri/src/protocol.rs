@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-/// Message kind constant (only text for now).
 pub const KIND_TEXT: &str = "text";
 
-/// Client -> server messages.
-#[derive(Debug, Serialize)]
+/// Messages sent by the client to the server.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Send {
@@ -36,7 +35,6 @@ pub enum ClientMsg {
     },
 }
 
-/// A message as it travels over the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMsg {
     pub id: String,
@@ -53,7 +51,7 @@ fn default_kind() -> String {
     KIND_TEXT.to_string()
 }
 
-/// Server -> client messages.
+/// Messages sent by the server to the client.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
@@ -92,7 +90,6 @@ pub enum ServerMsg {
     Error {
         msg: String,
     },
-    /// Server-initiated close. `reason` is "session_taken_over" or "account_deleted".
     Close {
         reason: String,
     },
