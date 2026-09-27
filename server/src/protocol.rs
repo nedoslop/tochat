@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// Message kind constant (only text for now).
-pub const KIND_TEXT: &str = "text";
+/// Kind of message payload. Currently only text is supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    #[default]
+    Text,
+}
 
 /// Messages sent by a client to the server.
 #[derive(Debug, Deserialize)]
@@ -11,7 +16,8 @@ pub enum ClientMsg {
         to: String,
         id: String,
         ts: i64,
-        kind: String,
+        #[serde(default)]
+        kind: MessageKind,
         payload: String,
     },
     Edit {
@@ -19,7 +25,8 @@ pub enum ClientMsg {
         id: String,
         ts: i64,
         edit_ts: i64,
-        kind: String,
+        #[serde(default)]
+        kind: MessageKind,
         payload: String,
     },
     PullHistory {
@@ -44,13 +51,9 @@ pub struct StoredMsg {
     pub to: String,
     pub ts: i64,
     pub edit_ts: i64,
-    #[serde(default = "default_kind")]
-    pub kind: String,
+    #[serde(default)]
+    pub kind: MessageKind,
     pub payload: String,
-}
-
-fn default_kind() -> String {
-    KIND_TEXT.to_string()
 }
 
 /// Messages sent by the server to a client.
@@ -78,8 +81,7 @@ pub enum ServerMsg {
         from: String,
         ts: i64,
         edit_ts: i64,
-        // TODO: maybe use enum for kind and not string????
-        kind: String,
+        kind: MessageKind,
         payload: String,
     },
     PullHistoryRequest {
@@ -93,7 +95,7 @@ pub enum ServerMsg {
     Error {
         msg: String,
     },
-    /// Server-initiated close. `reason` is "session_taken_over" or "account_deleted".
+    /// Server-initiated close. `reason` is `"session_taken_over"` or `"account_deleted"`.
     Close {
         reason: String,
     },

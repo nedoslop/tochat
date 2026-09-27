@@ -24,28 +24,28 @@ impl Database {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
 
-            CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                last_seen     INTEGER NOT NULL DEFAULT 0
-            );
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    last_seen     INTEGER NOT NULL DEFAULT 0
+);
 
-            CREATE TABLE IF NOT EXISTS relationships (
-                user_a      INTEGER NOT NULL,
-                user_b      INTEGER NOT NULL,
-                initiator   INTEGER NOT NULL,
-                established INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_a, user_b),
-                FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
-            );
+CREATE TABLE IF NOT EXISTS relationships (
+    user_a      INTEGER NOT NULL,
+    user_b      INTEGER NOT NULL,
+    initiator   INTEGER NOT NULL,
+    established INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_a, user_b),
+    FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
+);
 
-            CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
-            "#,
+CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
+"#,
         )?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -77,24 +77,19 @@ impl Database {
     }
 
     /// Inserts a new user; returns the new id, or `None` if the username is taken.
+    ///
+    /// Uses `INSERT ... RETURNING id` so the whole operation is atomic and
+    /// needs only a single database round-trip.
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Option<i64> {
-        // TODO: combine 2 requests into 1 maybe?
         let conn = self.conn.lock().await;
-        let inserted = conn
-            .execute(
-                "INSERT OR IGNORE INTO users (username, password_hash, last_seen) VALUES (?1, ?2, 0)",
-                params![username, password_hash],
+        let mut stmt = conn
+            .prepare(
+                "INSERT OR IGNORE INTO users (username, password_hash, last_seen) \
+                 VALUES (?1, ?2, 0) RETURNING id",
             )
-            .unwrap_or(0);
-        if inserted == 0 {
-            return None;
-        }
-        conn.query_row(
-            "SELECT id FROM users WHERE username = ?1",
-            [username],
-            |r| r.get(0),
-        )
-        .ok()
+            .ok()?;
+        stmt.query_row(params![username, password_hash], |r| r.get(0))
+            .ok()
     }
 
     /// Updates the last_seen timestamp for a user id.

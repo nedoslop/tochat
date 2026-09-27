@@ -17,7 +17,7 @@ use crate::state::AppState;
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let state = AppState::new(app.handle().clone(), dir);
             app.manage(Arc::new(state));

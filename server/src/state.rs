@@ -17,7 +17,6 @@ pub struct OnlineSession {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Database,
-    // TODO: store users by ID instead of names
-    /// Online sessions keyed by username.
-    pub online: Arc<DashMap<String, OnlineSession>>,
+    /// Online sessions keyed by user id (stable across renames / logins).
+    pub online: Arc<DashMap<i64, OnlineSession>>,
 }

@@ -64,7 +64,7 @@ async fn handle_socket(
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Take over any existing session for this user.
-    match state.online.entry(username.clone()) {
+    match state.online.entry(user_id) {
         Entry::Occupied(mut e) => {
             let old = e.get();
             let _ = old.tx.send(ServerMsg::Close {
@@ -97,12 +97,15 @@ async fn handle_socket(
 
     // Cross-notify online peers.
     for p in &peers {
-        if state.online.contains_key(p) {
+        let Some(peer_id) = state.db.user_id(p).await else {
+            continue;
+        };
+        if state.online.contains_key(&peer_id) {
             let _ = tx.send(ServerMsg::PeerOnline {
                 username: p.clone(),
             });
         }
-        if let Some(peer) = state.online.get(p) {
+        if let Some(peer) = state.online.get(&peer_id) {
             let _ = peer.tx.send(ServerMsg::PeerOnline {
                 username: username.clone(),
             });
@@ -154,15 +157,18 @@ async fn handle_socket(
     // Cleanup only if this session is still the active one.
     let still_current = state
         .online
-        .get(&username)
+        .get(&user_id)
         .map(|e| e.session_id == session_id)
         .unwrap_or(false);
     if still_current {
-        state.online.remove(&username);
+        state.online.remove(&user_id);
         state.db.update_last_seen(user_id, now_ms()).await;
         let peers = state.db.list_peers(user_id).await;
         for p in &peers {
-            if let Some(peer) = state.online.get(p) {
+            let Some(peer_id) = state.db.user_id(p).await else {
+                continue;
+            };
+            if let Some(peer) = state.online.get(&peer_id) {
                 let _ = peer.tx.send(ServerMsg::PeerOffline {
                     username: username.clone(),
                 });
@@ -212,18 +218,18 @@ async fn handle_client(
 }
 
 /// After a relationship becomes established, notify both sides (if online).
-async fn notify_peer_pair(state: &AppState, me: &str, to: &str) {
-    let to_online = state.online.contains_key(to);
-    let me_online = state.online.contains_key(me);
+async fn notify_peer_pair(state: &AppState, me_id: i64, me: &str, to_id: i64, to: &str) {
+    let to_online = state.online.contains_key(&to_id);
+    let me_online = state.online.contains_key(&me_id);
     if to_online {
-        if let Some(peer) = state.online.get(to) {
+        if let Some(peer) = state.online.get(&to_id) {
             let _ = peer.tx.send(ServerMsg::PeerOnline {
                 username: me.to_string(),
             });
         }
     }
     if to_online && me_online {
-        if let Some(my) = state.online.get(me) {
+        if let Some(my) = state.online.get(&me_id) {
             let _ = my.tx.send(ServerMsg::PeerOnline {
                 username: to.to_string(),
             });
@@ -238,7 +244,7 @@ async fn handle_send(
     to: &str,
     id: String,
     ts: i64,
-    kind: String,
+    kind: crate::protocol::MessageKind,
     payload: String,
     state: &AppState,
     tx: &mpsc::UnboundedSender<ServerMsg>,
@@ -271,14 +277,14 @@ async fn handle_send(
             let implicit_accept = !established && initiator_id != me_id;
             if implicit_accept {
                 state.db.establish_relationship(me_id, to_id).await;
-                notify_peer_pair(state, me, to).await;
+                notify_peer_pair(state, me_id, me, to_id, to).await;
             }
             established || implicit_accept
         }
     };
 
     if deliverable {
-        if let Some(peer) = state.online.get(to) {
+        if let Some(peer) = state.online.get(&to_id) {
             let _ = peer.tx.send(ServerMsg::Message {
                 id,
                 from: me.to_string(),
@@ -299,7 +305,7 @@ async fn handle_edit(
     id: String,
     ts: i64,
     edit_ts: i64,
-    kind: String,
+    kind: crate::protocol::MessageKind,
     payload: String,
     state: &AppState,
     tx: &mpsc::UnboundedSender<ServerMsg>,
@@ -320,7 +326,7 @@ async fn handle_edit(
     if !established {
         return;
     }
-    if let Some(peer) = state.online.get(to) {
+    if let Some(peer) = state.online.get(&to_id) {
         let _ = peer.tx.send(ServerMsg::Message {
             id,
             from: me.to_string(),
@@ -365,7 +371,7 @@ async fn handle_pull_history(
         });
         return;
     }
-    match state.online.get(from) {
+    match state.online.get(&from_id) {
         Some(peer) => {
             let _ = peer.tx.send(ServerMsg::PullHistoryRequest {
                 from: me.to_string(),
@@ -397,10 +403,10 @@ async fn handle_history_response(
     if let Some((_, established)) = state.db.get_relationship(me_id, to_id).await {
         if !established {
             state.db.establish_relationship(me_id, to_id).await;
-            notify_peer_pair(state, me, to).await;
+            notify_peer_pair(state, me_id, me, to_id, to).await;
         }
     }
-    if let Some(peer) = state.online.get(to) {
+    if let Some(peer) = state.online.get(&to_id) {
         let _ = peer.tx.send(ServerMsg::HistoryResponse {
             from: me.to_string(),
             messages,
@@ -428,18 +434,24 @@ async fn handle_delete_account(
         });
         return;
     }
+    // Resolve peer ids before deletion (relationships cascade away after).
     let peers = state.db.list_peers(me_id).await;
+    let mut peer_ids = Vec::with_capacity(peers.len());
     for p in &peers {
-        if let Some(peer) = state.online.get(p) {
+        if let Some(pid) = state.db.user_id(p).await {
+            peer_ids.push(pid);
+        }
+    }
+    state.db.delete_user(me_id).await;
+    state.online.remove(&me_id);
+    for pid in peer_ids {
+        if let Some(peer) = state.online.get(&pid) {
             let _ = peer.tx.send(ServerMsg::PeerOffline {
                 username: me.to_string(),
             });
         }
     }
-    state.db.delete_user(me_id).await;
-    state.online.remove(me);
     let _ = tx.send(ServerMsg::Close {
         reason: "account_deleted".into(),
     });
 }
-

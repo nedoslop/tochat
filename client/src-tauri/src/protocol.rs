@@ -1,6 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-pub const KIND_TEXT: &str = "text";
+/// Kind of message payload. Currently only text is supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    #[default]
+    Text,
+}
+
+impl MessageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+        }
+    }
+}
 
 /// Messages sent by the client to the server.
 #[derive(Debug, Clone, Serialize)]
@@ -10,7 +24,7 @@ pub enum ClientMsg {
         to: String,
         id: String,
         ts: i64,
-        kind: String,
+        kind: MessageKind,
         payload: String,
     },
     Edit {
@@ -18,7 +32,7 @@ pub enum ClientMsg {
         id: String,
         ts: i64,
         edit_ts: i64,
-        kind: String,
+        kind: MessageKind,
         payload: String,
     },
     PullHistory {
@@ -42,13 +56,9 @@ pub struct StoredMsg {
     pub to: String,
     pub ts: i64,
     pub edit_ts: i64,
-    #[serde(default = "default_kind")]
-    pub kind: String,
+    #[serde(default)]
+    pub kind: MessageKind,
     pub payload: String,
-}
-
-fn default_kind() -> String {
-    KIND_TEXT.to_string()
 }
 
 /// Messages sent by the server to the client.
@@ -76,7 +86,7 @@ pub enum ServerMsg {
         from: String,
         ts: i64,
         edit_ts: i64,
-        kind: String,
+        kind: MessageKind,
         payload: String,
     },
     PullHistoryRequest {

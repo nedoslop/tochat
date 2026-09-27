@@ -4,10 +4,10 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::State;
 
-use crate::crypto::{EncryptionConfig, EncryptionMethod};
+use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
-use crate::protocol::{ClientMsg, KIND_TEXT};
-use crate::state::{encryption_path, AppState};
+use crate::protocol::{ClientMsg, MessageKind};
+use crate::state::{encryption_path, user_db_path, AppState};
 use crate::util::{now_ms, random_id};
 use crate::ws;
 
@@ -45,11 +45,8 @@ pub async fn connect(
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut ws = state.ws.lock().await;
-    *ws = None;
-    drop(ws);
-    *state.me.write().await = None;
-    Ok(())
+    let st = state.inner().clone();
+    ws::disconnect(&st).await
 }
 
 // ---------- messaging ----------
@@ -78,8 +75,8 @@ pub async fn edit_message(
     if text.is_empty() {
         return Err("empty message".into());
     }
-    let ts = state
-        .db
+    let db = state.active_db().await?;
+    let ts = db
         .get_messages(&peer)
         .await
         .iter()
@@ -96,8 +93,8 @@ pub async fn delete_message(
     id: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let ts = state
-        .db
+    let db = state.active_db().await?;
+    let ts = db
         .get_messages(&peer)
         .await
         .iter()
@@ -122,16 +119,17 @@ async fn send_outgoing(
     plaintext: &str,
     is_edit: bool,
 ) -> Result<(), String> {
+    let db = state.active_db().await?;
     let wire_payload = state.encrypt_for_wire(plaintext).await?;
 
-    state
-        .db
-        .upsert_message(to, id, "out", ts, edit_ts, KIND_TEXT, plaintext, true)
+    db.upsert_message(to, id, "out", ts, edit_ts, "text", plaintext, true)
         .await;
 
     let tx = {
         let ws = state.ws.lock().await;
-        ws.clone().ok_or_else(|| "not connected".to_string())?
+        ws.as_ref()
+            .map(|s| s.tx.clone())
+            .ok_or_else(|| "not connected".to_string())?
     };
 
     let msg = if is_edit {
@@ -140,7 +138,7 @@ async fn send_outgoing(
             id: id.to_string(),
             ts,
             edit_ts,
-            kind: KIND_TEXT.to_string(),
+            kind: MessageKind::Text,
             payload: wire_payload,
         }
     } else {
@@ -148,7 +146,7 @@ async fn send_outgoing(
             to: to.to_string(),
             id: id.to_string(),
             ts,
-            kind: KIND_TEXT.to_string(),
+            kind: MessageKind::Text,
             payload: wire_payload,
         }
     };
@@ -165,7 +163,9 @@ pub async fn pull_history(
 ) -> Result<(), String> {
     let tx = {
         let ws = state.ws.lock().await;
-        ws.clone().ok_or_else(|| "not connected".to_string())?
+        ws.as_ref()
+            .map(|s| s.tx.clone())
+            .ok_or_else(|| "not connected".to_string())?
     };
     tx.send(ClientMsg::PullHistory { from, since })
         .map_err(|_| "connection closed".to_string())?;
@@ -176,7 +176,9 @@ pub async fn pull_history(
 pub async fn list_pending(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let tx = {
         let ws = state.ws.lock().await;
-        ws.clone().ok_or_else(|| "not connected".to_string())?
+        ws.as_ref()
+            .map(|s| s.tx.clone())
+            .ok_or_else(|| "not connected".to_string())?
     };
     tx.send(ClientMsg::ListPending)
         .map_err(|_| "connection closed".to_string())?;
@@ -190,7 +192,9 @@ pub async fn delete_account(
 ) -> Result<(), String> {
     let tx = {
         let ws = state.ws.lock().await;
-        ws.clone().ok_or_else(|| "not connected".to_string())?
+        ws.as_ref()
+            .map(|s| s.tx.clone())
+            .ok_or_else(|| "not connected".to_string())?
     };
     tx.send(ClientMsg::DeleteAccount { password })
         .map_err(|_| "connection closed".to_string())?;
@@ -204,19 +208,48 @@ pub async fn get_messages(
     peer: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<LocalMsg>, String> {
-    Ok(state.db.get_messages(&peer).await)
+    let db = state.active_db().await?;
+    Ok(db.get_messages(&peer).await)
 }
 
+/// Wipes the current user's local data (messages + DB file) and resets
+/// encryption to defaults. Best-effort: works even if the user has already
+/// been logged out.
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.db.wipe_all().await;
+    // Wipe rows through the active handle, if any.
+    let had_db = {
+        let guard = state.db.read().await.clone();
+        if let Some(db) = guard {
+            db.wipe_all().await;
+            true
+        } else {
+            false
+        }
+    };
 
+    // Determine the current user (may be None if already logged out).
+    let me = state.me.read().await.clone();
+
+    // On Windows we must release the DB file before unlinking it.
+    if had_db {
+        *state.db.write().await = None;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    if let Some(name) = me {
+        let path = user_db_path(&state.data_dir, &name);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // Reset encryption (in-memory + on-disk).
     let config = EncryptionConfig::default();
     {
         let mut enc = state.encryption.write().await;
         enc.set(config);
     }
     let _ = std::fs::remove_file(encryption_path(&state.data_dir));
+
     Ok(())
 }
 
@@ -225,7 +258,7 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
 /// Snapshot of the current encryption configuration, safe to expose to the UI.
 #[derive(Serialize)]
 pub struct EncryptionInfo {
-    /// One of `"none"`, `"shared_password"`.
+    /// One of `"none"`, `"shared_password"`, `"pre_shared_key"`.
     pub method: String,
     /// Whether a secret is currently stored for the active method.
     pub has_secret: bool,
@@ -258,7 +291,7 @@ pub async fn set_encryption(
         .filter(|s| !s.is_empty());
 
     // If the caller didn't supply a secret and the method is unchanged, keep
-    // the existing one (so "Apply" without retyping the password is a no-op).
+    // the existing one (so "Apply" without retyping is a no-op).
     if secret.is_none() {
         let enc = state.encryption.read().await;
         if enc.config.method == m {
@@ -266,8 +299,19 @@ pub async fn set_encryption(
         }
     }
 
-    if m == EncryptionMethod::SharedPassword && secret.is_none() {
-        return Err("shared password is required".into());
+    if m != EncryptionMethod::None {
+        match secret.as_deref() {
+            None => return Err("a secret is required for this method".into()),
+            Some(s) if !validate_secret(m, s) => {
+                return Err(match m {
+                    EncryptionMethod::PreSharedKey => {
+                        "pre-shared key must be 64 hex characters (32 bytes)".into()
+                    }
+                    _ => "invalid secret".into(),
+                });
+            }
+            _ => {}
+        }
     }
 
     let config = EncryptionConfig {
@@ -275,7 +319,7 @@ pub async fn set_encryption(
         secret: secret.clone(),
     };
 
-    // Persist before swapping the runtime state so a disk failure doesn't
+    // Persist before swapping runtime state so a disk failure doesn't
     // silently change behavior for the running session.
     let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
     std::fs::write(encryption_path(&state.data_dir), json)

@@ -19,6 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
+hex = "0.4"
 
 [profile.release]
 lto = true
