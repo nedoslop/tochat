@@ -92,5 +92,8 @@ pub enum ServerMsg {
     Error {
         msg: String,
     },
-    Close,
+    /// Server-initiated close. `reason` is "session_taken_over" or "account_deleted".
+    Close {
+        reason: String,
+    },
 }

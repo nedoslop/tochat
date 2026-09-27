@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -44,11 +45,13 @@ pub async fn spawn(
 
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let shutdown = Arc::new(AtomicBool::new(false));
 
     let app = state.app.clone();
     let state_for_reader = state.clone();
     let me = username.to_string();
     let tx_for_reader = tx.clone();
+    let shutdown_for_task = shutdown.clone();
 
     let task = tokio::spawn(async move {
         // Writer: ClientMsg -> socket.
@@ -94,15 +97,23 @@ pub async fn spawn(
             _ = &mut reader_fut => {},
         }
 
-        let _ = app.emit("disconnected", ());
+        // Only emit if we weren't deliberately shut down. This prevents a
+        // stale task (from a previous login) from firing `disconnected`
+        // after a new session has already started.
+        if !shutdown_for_task.load(Ordering::Relaxed) {
+            let _ = app.emit("disconnected", ());
+        }
     });
 
-    // Replace any existing handle (kills stale session if present).
+    // Replace any existing handle.
     let mut guard = state.ws.lock().await;
     if let Some(old) = guard.take() {
+        old.shutdown.store(true, Ordering::Relaxed);
+        drop(old.tx);
         old.task.abort();
+        let _ = old.task.await;
     }
-    *guard = Some(WsHandle { tx, task });
+    *guard = Some(WsHandle { tx, task, shutdown });
     Ok(())
 }
 
@@ -176,8 +187,8 @@ async fn handle_server_msg(
         ServerMsg::Error { msg } => {
             let _ = app.emit("error", msg);
         }
-        ServerMsg::Close => {
-            let _ = app.emit("session-closed", ());
+        ServerMsg::Close { reason } => {
+            let _ = app.emit("session-closed", reason);
         }
     }
 }

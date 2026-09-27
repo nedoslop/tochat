@@ -32,14 +32,12 @@ pub async fn ws_handler(
     let Some((username, password)) = auth.split_once(':') else {
         return reject("invalid Authorization header");
     };
-
     let Some((user_id, hash, last_seen)) = state.db.get_user(username).await else {
         return reject("invalid credentials");
     };
     if hash != hash_password(password) {
         return reject("invalid credentials");
     }
-
     let username = username.to_string();
     ws.on_upgrade(move |socket| handle_socket(socket, state, user_id, username, last_seen))
 }
@@ -69,7 +67,9 @@ async fn handle_socket(
     match state.online.entry(username.clone()) {
         Entry::Occupied(mut e) => {
             let old = e.get();
-            let _ = old.tx.send(ServerMsg::Close);
+            let _ = old.tx.send(ServerMsg::Close {
+                reason: "session_taken_over".into(),
+            });
             e.insert(OnlineSession { tx: tx.clone(), session_id });
         }
         Entry::Vacant(v) => {
@@ -99,7 +99,7 @@ async fn handle_socket(
     // Writer: forward queued ServerMsg to the socket.
     let mut send_task = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
-            let is_close = matches!(m, ServerMsg::Close);
+            let is_close = matches!(m, ServerMsg::Close { .. });
             let s = match serde_json::to_string(&m) {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -147,7 +147,6 @@ async fn handle_socket(
     if still_current {
         state.online.remove(&username);
         state.db.update_last_seen(user_id, now_ms()).await;
-        // Re-query peers in case new ones appeared during the session.
         let peers = state.db.list_peers(user_id).await;
         for p in &peers {
             if let Some(peer) = state.online.get(p) {
@@ -194,7 +193,6 @@ async fn handle_client(
 async fn notify_peer_pair(state: &AppState, me: &str, to: &str) {
     let to_online = state.online.contains_key(to);
     let me_online = state.online.contains_key(me);
-
     if to_online {
         if let Some(peer) = state.online.get(to) {
             let _ = peer.tx.send(ServerMsg::PeerOnline { username: me.to_string() });
@@ -205,7 +203,6 @@ async fn notify_peer_pair(state: &AppState, me: &str, to: &str) {
             let _ = my.tx.send(ServerMsg::PeerOnline { username: to.to_string() });
         }
     }
-    // If `to` is offline, we deliberately say nothing about them.
 }
 
 /// Handles a new message from `me` to `to`.
@@ -235,7 +232,6 @@ async fn handle_send(
 
     let deliverable = match state.db.get_relationship(me_id, to_id).await {
         None => {
-            // First contact: create a pending relationship, don't deliver.
             state.db.ensure_relationship_initiated(me_id, to_id).await;
             false
         }
@@ -261,7 +257,6 @@ async fn handle_send(
             });
         }
     }
-    // If not deliverable, the peer will pull history once accepted.
 }
 
 /// Handles an edit/delete of an existing message.
@@ -284,15 +279,10 @@ async fn handle_edit(
         let _ = tx.send(ServerMsg::Error { msg: format!("user '{}' does not exist", to) });
         return;
     };
-
-    // Only relay edits on established relationships; otherwise the peer
-    // hasn't received the original message yet and will get the latest
-    // version when they pull.
     let established = matches!(state.db.get_relationship(me_id, to_id).await, Some((_, true)));
     if !established {
         return;
     }
-
     if let Some(peer) = state.online.get(to) {
         let _ = peer.tx.send(ServerMsg::Message {
             id,
@@ -326,7 +316,6 @@ async fn handle_pull_history(
         let _ = tx.send(ServerMsg::Error { msg: format!("no chat with {}", from) });
         return;
     };
-    // While pending, only the initiator's history may be pulled.
     if !established && initiator_id != from_id {
         let _ = tx.send(ServerMsg::Error { msg: format!("{} has not messaged you", from) });
         return;
@@ -358,7 +347,6 @@ async fn handle_history_response(
         return;
     }
     let Some(to_id) = state.db.user_id(to).await else { return };
-
     if let Some((_, established)) = state.db.get_relationship(me_id, to_id).await {
         if !established {
             state.db.establish_relationship(me_id, to_id).await;
@@ -399,5 +387,5 @@ async fn handle_delete_account(
     }
     state.db.delete_user(me_id).await;
     state.online.remove(me);
-    let _ = tx.send(ServerMsg::Close);
+    let _ = tx.send(ServerMsg::Close { reason: "account_deleted".into() });
 }

@@ -676,13 +676,18 @@ if (msg.includes("is offline")) return;
 toast(msg);
 });
 
-await listen("session-closed", async () => {
-alert(
-"Session closed by server (account deleted or session taken over)."
-);
+await listen("session-closed", async (e) => {
+const reason = String(e.payload || "");
+if (reason === "account_deleted") {
+alert("Account deleted.");
 try {
 await invoke("wipe_local_data");
 } catch (_) {}
+} else if (reason === "session_taken_over") {
+alert("Session closed: you logged in from another window/device.");
+} else {
+alert("Session closed by server.");
+}
 try {
 await invoke("disconnect");
 } catch (_) {}

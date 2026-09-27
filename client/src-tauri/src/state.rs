@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use tauri::AppHandle;
@@ -11,6 +12,9 @@ use crate::protocol::ClientMsg;
 pub struct WsHandle {
     pub tx: mpsc::UnboundedSender<ClientMsg>,
     pub task: tokio::task::JoinHandle<()>,
+    /// Set to true before tearing down the task; the task checks it to
+    /// avoid emitting stale `disconnected` events.
+    pub shutdown: Arc<AtomicBool>,
 }
 
 /// Shared client application state.

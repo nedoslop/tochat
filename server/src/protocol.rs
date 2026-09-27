@@ -7,7 +7,6 @@ pub const KIND_TEXT: &str = "text";
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// Send a new message to a peer.
     Send {
         to: String,
         id: String,
@@ -15,7 +14,6 @@ pub enum ClientMsg {
         kind: String,
         payload: String,
     },
-    /// Edit (empty payload = delete) an existing message.
     Edit {
         to: String,
         id: String,
@@ -24,16 +22,12 @@ pub enum ClientMsg {
         kind: String,
         payload: String,
     },
-    /// Request history from a peer since a given edit_ts (exclusive).
     PullHistory { from: String, since: i64 },
-    /// Reply to a PullHistoryRequest.
     HistoryResponse {
         to: String,
         messages: Vec<StoredMsg>,
     },
-    /// Request the current pending (unaccepted) chat list.
     ListPending,
-    /// Delete the caller's account.
     DeleteAccount { password: String },
 }
 
@@ -63,7 +57,6 @@ pub enum ServerMsg {
     PendingChats { users: Vec<String> },
     PeerOnline { username: String },
     PeerOffline { username: String },
-    /// A new message or an in-place update to an existing one (id-keyed).
     Message {
         id: String,
         from: String,
@@ -75,5 +68,6 @@ pub enum ServerMsg {
     PullHistoryRequest { from: String, since: i64 },
     HistoryResponse { from: String, messages: Vec<StoredMsg> },
     Error { msg: String },
-    Close,
+    /// Server-initiated close. `reason` is "session_taken_over" or "account_deleted".
+    Close { reason: String },
 }

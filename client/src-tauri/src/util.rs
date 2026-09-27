@@ -1,12 +1,3 @@
-use sha2::{Digest, Sha256};
-
-/// Hashes a password with SHA-256 (matches the server).
-pub fn hash_password(pw: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(pw.as_bytes());
-    format!("{:x}", h.finalize())
-}
-
 /// Current UNIX time in milliseconds.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
