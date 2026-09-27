@@ -3,7 +3,6 @@
 mod commands;
 mod crypto;
 mod db;
-mod http_auth;
 mod protocol;
 mod state;
 mod util;

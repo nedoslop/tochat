@@ -116,7 +116,10 @@ fn to_ws_url(base: &str) -> Result<String, String> {
 
 async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     match sm {
-        ServerMsg::AuthOk { username, last_seen } => {
+        ServerMsg::AuthOk {
+            username,
+            last_seen,
+        } => {
             let _ = state.app.emit(
                 "auth-ok",
                 json!({ "username": username, "last_seen": last_seen }),
@@ -134,7 +137,14 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         ServerMsg::PeerOffline { username } => {
             let _ = state.app.emit("peer-offline", json!(username));
         }
-        ServerMsg::Message { id, from, ts, edit_ts, kind, payload } => {
+        ServerMsg::Message {
+            id,
+            from,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
             handle_incoming(state, id, from, ts, edit_ts, kind, payload).await;
         }
         ServerMsg::PullHistoryRequest { from, since } => {
@@ -228,17 +238,16 @@ async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
 
     let tx = { state.ws.lock().await.clone() };
     if let Some(tx) = tx {
-        let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: wire });
+        let _ = tx.send(ClientMsg::HistoryResponse {
+            to: from,
+            messages: wire,
+        });
     }
 }
 
 /// Handles an incoming history response, storing the messages and notifying
 /// the UI.
-async fn handle_history_response(
-    state: &Arc<AppState>,
-    from: String,
-    messages: Vec<StoredMsg>,
-) {
+async fn handle_history_response(state: &Arc<AppState>, from: String, messages: Vec<StoredMsg>) {
     let me = state.me.read().await.clone().unwrap_or_default();
 
     for m in messages {
@@ -247,7 +256,16 @@ async fn handle_history_response(
 
         state
             .db
-            .upsert_message(&from, &m.id, direction, m.ts, m.edit_ts, &m.kind, &stored, is_plaintext)
+            .upsert_message(
+                &from,
+                &m.id,
+                direction,
+                m.ts,
+                m.edit_ts,
+                &m.kind,
+                &stored,
+                is_plaintext,
+            )
             .await;
     }
 

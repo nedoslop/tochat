@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -25,10 +24,6 @@ impl Default for EncryptionState {
 }
 
 impl EncryptionState {
-    pub fn is_enabled(&self) -> bool {
-        self.cipher.is_some()
-    }
-
     pub fn set(&mut self, config: EncryptionConfig) {
         self.cipher = build_cipher(config.method, config.secret.as_deref());
         self.config = config;
@@ -50,8 +45,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(app: AppHandle, data_dir: PathBuf) -> Self {
-        let db = Database::open(&data_dir.join("client.db"))
-            .expect("failed to open local database");
+        let db =
+            Database::open(&data_dir.join("client.db")).expect("failed to open local database");
 
         // Load persisted encryption config (if any).
         let config = std::fs::read_to_string(encryption_path(&data_dir))
@@ -85,16 +80,6 @@ impl AppState {
                 .encrypt(plaintext)
                 .ok_or_else(|| "encryption failed".to_string()),
             None => Ok(plaintext.to_string()),
-        }
-    }
-
-    /// Re-encodes stored plaintext for the wire (used when serving a history
-    /// pull). Unlike [`encrypt_for_wire`], failures fall back to the raw text.
-    pub async fn reencode_for_wire(&self, plaintext: &str) -> String {
-        let enc = self.encryption.read().await;
-        match enc.cipher.as_ref() {
-            Some(c) => c.encrypt(plaintext).unwrap_or_else(|| plaintext.to_string()),
-            None => plaintext.to_string(),
         }
     }
 

@@ -78,6 +78,7 @@ impl Database {
 
     /// Inserts a new user; returns the new id, or `None` if the username is taken.
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Option<i64> {
+        // TODO: combine 2 requests into 1 maybe?
         let conn = self.conn.lock().await;
         let inserted = conn
             .execute(

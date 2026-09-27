@@ -22,13 +22,18 @@ pub enum ClientMsg {
         kind: String,
         payload: String,
     },
-    PullHistory { from: String, since: i64 },
+    PullHistory {
+        from: String,
+        since: i64,
+    },
     HistoryResponse {
         to: String,
         messages: Vec<StoredMsg>,
     },
     ListPending,
-    DeleteAccount { password: String },
+    DeleteAccount {
+        password: String,
+    },
 }
 
 /// A stored message as relayed by the server.
@@ -52,22 +57,44 @@ fn default_kind() -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    AuthOk { username: String, last_seen: i64 },
-    Peers { peers: Vec<String> },
-    PendingChats { users: Vec<String> },
-    PeerOnline { username: String },
-    PeerOffline { username: String },
+    AuthOk {
+        username: String,
+        last_seen: i64,
+    },
+    Peers {
+        peers: Vec<String>,
+    },
+    PendingChats {
+        users: Vec<String>,
+    },
+    PeerOnline {
+        username: String,
+    },
+    PeerOffline {
+        username: String,
+    },
     Message {
         id: String,
         from: String,
         ts: i64,
         edit_ts: i64,
+        // TODO: maybe use enum for kind and not string????
         kind: String,
         payload: String,
     },
-    PullHistoryRequest { from: String, since: i64 },
-    HistoryResponse { from: String, messages: Vec<StoredMsg> },
-    Error { msg: String },
+    PullHistoryRequest {
+        from: String,
+        since: i64,
+    },
+    HistoryResponse {
+        from: String,
+        messages: Vec<StoredMsg>,
+    },
+    Error {
+        msg: String,
+    },
     /// Server-initiated close. `reason` is "session_taken_over" or "account_deleted".
-    Close { reason: String },
+    Close {
+        reason: String,
+    },
 }

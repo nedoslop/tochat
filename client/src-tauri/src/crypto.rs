@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::derive_key;
 
+// TODO: other encryption methods
+
 /// Supported payload encryption methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

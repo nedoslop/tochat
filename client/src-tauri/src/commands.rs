@@ -14,11 +14,7 @@ use crate::ws;
 // ---------- auth ----------
 
 #[tauri::command]
-pub async fn register(
-    base_url: String,
-    username: String,
-    password: String,
-) -> Result<(), String> {
+pub async fn register(base_url: String, username: String, password: String) -> Result<(), String> {
     let url = format!("{}/register", base_url.trim().trim_end_matches('/'));
     let client = reqwest::Client::new();
     let resp = client
@@ -236,9 +232,7 @@ pub struct EncryptionInfo {
 }
 
 #[tauri::command]
-pub async fn get_encryption(
-    state: State<'_, Arc<AppState>>,
-) -> Result<EncryptionInfo, String> {
+pub async fn get_encryption(state: State<'_, Arc<AppState>>) -> Result<EncryptionInfo, String> {
     let enc = state.encryption.read().await;
     Ok(EncryptionInfo {
         method: enc.config.method.as_str().to_string(),

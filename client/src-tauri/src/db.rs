@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
@@ -52,7 +52,9 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     /// Inserts or updates a message. Keyed by `(peer, id)`.
@@ -79,7 +81,16 @@ impl Database {
                 kind      = excluded.kind,
                 payload   = excluded.payload,
                 plaintext = excluded.plaintext",
-            params![peer, id, direction, ts, edit_ts, kind, payload, plaintext as i64],
+            params![
+                peer,
+                id,
+                direction,
+                ts,
+                edit_ts,
+                kind,
+                payload,
+                plaintext as i64
+            ],
         );
     }
 
@@ -107,27 +118,6 @@ impl Database {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
-    }
-
-    pub async fn set_setting(&self, key: &str, value: &str) {
-        let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        );
-    }
-
-    pub async fn get_setting(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().await;
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [key],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
     }
 
     pub async fn wipe_all(&self) {
