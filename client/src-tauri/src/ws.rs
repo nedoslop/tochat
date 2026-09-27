@@ -105,7 +105,9 @@ pub async fn connect(
                 *ws = None;
             }
         }
-        let _ = reader_state.app.emit("disconnected", json!(reader_username));
+        let _ = reader_state
+            .app
+            .emit("disconnected", json!(reader_username));
     });
 
     *state.ws.lock().await = Some(WsSession {
@@ -189,8 +191,16 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             kind,
             payload,
         } => {
-            handle_incoming(state, id, from, ts, edit_ts, kind.as_str().to_string(), payload)
-                .await;
+            handle_incoming(
+                state,
+                id,
+                from,
+                ts,
+                edit_ts,
+                kind.as_str().to_string(),
+                payload,
+            )
+            .await;
         }
         ServerMsg::PullHistoryRequest { from, since } => {
             handle_pull_request(state, from, since).await;
