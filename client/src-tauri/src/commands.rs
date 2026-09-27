@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::json;
 use tauri::State;
 
+use crate::crypto::{EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
 use crate::protocol::{ClientMsg, KIND_TEXT};
 use crate::state::{encryption_path, AppState};
-use crate::util::{derive_key, encrypt_payload, now_ms, random_id};
+use crate::util::{now_ms, random_id};
 use crate::ws;
 
 // ---------- auth ----------
@@ -113,7 +115,7 @@ pub async fn delete_message(
 /// Shared logic for new messages and edits/deletes.
 ///
 /// Locally the plaintext (or empty, for deletes) is stored with
-/// `plaintext = true`. The wire payload is encrypted when a key is set.
+/// `plaintext = true`. The wire payload is encrypted if a cipher is active.
 #[allow(clippy::too_many_arguments)]
 async fn send_outgoing(
     state: &Arc<AppState>,
@@ -124,14 +126,7 @@ async fn send_outgoing(
     plaintext: &str,
     is_edit: bool,
 ) -> Result<(), String> {
-    let wire_payload = {
-        let enc = state.encryption.read().await;
-        match enc.key.as_ref() {
-            Some(key) => encrypt_payload(key, plaintext)
-                .ok_or_else(|| "encryption failed".to_string())?,
-            None => plaintext.to_string(),
-        }
-    };
+    let wire_payload = state.encrypt_for_wire(plaintext).await?;
 
     state
         .db
@@ -219,55 +214,80 @@ pub async fn get_messages(
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.db.wipe_all().await;
-    // Also drop any stored encryption password.
-    let mut enc = state.encryption.write().await;
-    enc.password = None;
-    enc.key = None;
-    drop(enc);
+
+    let config = EncryptionConfig::default();
+    {
+        let mut enc = state.encryption.write().await;
+        enc.set(config);
+    }
     let _ = std::fs::remove_file(encryption_path(&state.data_dir));
     Ok(())
 }
 
 // ---------- encryption ----------
 
-/// Sets (or clears) the shared encryption password.
-///
-/// Changing this only affects messages sent/received afterwards: existing
-/// local rows are left untouched.
-#[tauri::command]
-pub async fn set_encryption(
-    password: Option<String>,
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
-    let normalized = password
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty());
-
-    match normalized {
-        Some(pw) => {
-            let key = derive_key(&pw);
-            {
-                let mut enc = state.encryption.write().await;
-                enc.password = Some(pw.clone());
-                enc.key = Some(key);
-            }
-            std::fs::write(encryption_path(&state.data_dir), pw.as_bytes())
-                .map_err(|e| format!("persist error: {e}"))?;
-        }
-        None => {
-            {
-                let mut enc = state.encryption.write().await;
-                enc.password = None;
-                enc.key = None;
-            }
-            let _ = std::fs::remove_file(encryption_path(&state.data_dir));
-        }
-    }
-    Ok(())
+/// Snapshot of the current encryption configuration, safe to expose to the UI.
+#[derive(Serialize)]
+pub struct EncryptionInfo {
+    /// One of `"none"`, `"shared_password"`.
+    pub method: String,
+    /// Whether a secret is currently stored for the active method.
+    pub has_secret: bool,
 }
 
-/// Returns `true` when encryption is currently active.
 #[tauri::command]
-pub async fn get_encryption(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
-    Ok(state.encryption.read().await.is_enabled())
+pub async fn get_encryption(
+    state: State<'_, Arc<AppState>>,
+) -> Result<EncryptionInfo, String> {
+    let enc = state.encryption.read().await;
+    Ok(EncryptionInfo {
+        method: enc.config.method.as_str().to_string(),
+        has_secret: enc
+            .config
+            .secret
+            .as_deref()
+            .map_or(false, |s| !s.is_empty()),
+    })
+}
+
+/// Sets the encryption method + optional secret. Pass `secret = None` with an
+/// unchanged method to keep the previously stored secret.
+#[tauri::command]
+pub async fn set_encryption(
+    method: String,
+    secret: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let m = EncryptionMethod::parse(&method);
+    let mut secret = secret
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // If the caller didn't supply a secret and the method is unchanged, keep
+    // the existing one (so "Apply" without retyping the password is a no-op).
+    if secret.is_none() {
+        let enc = state.encryption.read().await;
+        if enc.config.method == m {
+            secret = enc.config.secret.clone();
+        }
+    }
+
+    if m == EncryptionMethod::SharedPassword && secret.is_none() {
+        return Err("shared password is required".into());
+    }
+
+    let config = EncryptionConfig {
+        method: m,
+        secret: secret.clone(),
+    };
+
+    // Persist before swapping the runtime state so a disk failure doesn't
+    // silently change behavior for the running session.
+    let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(encryption_path(&state.data_dir), json)
+        .map_err(|e| format!("persist error: {e}"))?;
+
+    let mut enc = state.encryption.write().await;
+    enc.set(config);
+    Ok(())
 }

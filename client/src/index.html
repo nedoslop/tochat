@@ -70,6 +70,7 @@ border-bottom: 1px solid #ccc;
 display: flex;
 gap: 8px;
 align-items: center;
+position: relative;
 }
 #header .status {
 color: #888;
@@ -178,18 +179,52 @@ border-radius: 6px;
 display: none;
 max-width: 320px;
 }
-.enc-row {
+
+/* --- encryption widget in chat header --- */
+#enc-widget {
+margin-left: auto;
+position: relative;
+}
+#enc-btn {
+cursor: pointer;
+background: none;
+border: 1px solid transparent;
+border-radius: 4px;
+padding: 2px 6px;
+font-size: 16px;
+line-height: 1;
+}
+#enc-btn:hover {
+background: #f0f0f0;
+border-color: #ccc;
+}
+#enc-panel {
+position: absolute;
+top: calc(100% + 6px);
+right: 0;
+background: white;
+border: 1px solid #ccc;
+border-radius: 6px;
+padding: 10px;
+width: 300px;
+box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+z-index: 20;
 display: flex;
-gap: 4px;
-align-items: center;
+flex-direction: column;
+gap: 6px;
+}
+#enc-panel select,
+#enc-panel input {
+width: 100%;
+box-sizing: border-box;
+}
+#enc-actions {
+display: flex;
+gap: 6px;
 margin-top: 4px;
 }
-.enc-row input {
+#enc-actions button {
 flex: 1;
-min-width: 0;
-}
-#enc-status {
-font-weight: bold;
 }
 </style>
 </head>
@@ -223,27 +258,6 @@ Pending requests (<span id="pending-count">0</span>)
 <div class="hint">Start a new chat:</div>
 <input id="new-peer" placeholder="username" />
 <button id="new-peer-btn">Open</button>
-
-<hr />
-<div class="hint">
-Encryption: <span id="enc-status">off</span>
-</div>
-<div class="enc-row">
-<input
-id="enc-pass"
-type="password"
-placeholder="shared password"
-/>
-</div>
-<div class="enc-row">
-<button id="enc-enable-btn" style="flex: 1">Set / Enable</button>
-<button id="enc-disable-btn" style="flex: 1">Disable</button>
-</div>
-<div class="hint">
-Both sides must use the same password. Only affects new msgs.
-</div>
-
-<hr />
 <button id="logout-btn" style="margin-top: 10px">Log out</button>
 <button id="reload-btn" style="margin-top: 4px">Reload UI</button>
 <button id="delete-btn" style="margin-top: 4px">Delete account</button>
@@ -254,6 +268,35 @@ Both sides must use the same password. Only affects new msgs.
 <div id="header">
 <span id="peer-title">—</span>
 <span class="status" id="peer-status"></span>
+
+<div id="enc-widget">
+<button id="enc-btn" title="Encryption settings">🔓</button>
+<div id="enc-panel" style="display: none">
+<div class="hint">Encryption method</div>
+<select id="enc-method">
+<option value="none">None</option>
+<option value="shared_password">
+Shared password (ChaCha20-Poly1305)
+</option>
+</select>
+<div id="enc-secret-row" style="display: none">
+<input
+id="enc-secret"
+type="password"
+placeholder="shared password"
+autocomplete="new-password"
+/>
+<div class="hint">
+Both sides must use the same password. Affects new messages.
+</div>
+</div>
+<div id="enc-actions">
+<button id="enc-apply">Apply</button>
+<button id="enc-cancel">Cancel</button>
+</div>
+<div class="hint" id="enc-hint"></div>
+</div>
+</div>
 </div>
 <div id="messages"></div>
 <div id="composer">
@@ -297,7 +340,6 @@ const peers = new Set();
 const pending = new Set();
 const online = new Set();
 const msgCache = {};
-// Peers for which a pull_history is currently in flight.
 const pulling = new Set();
 
 // ---------- helpers ----------
@@ -328,7 +370,6 @@ div.textContent = text;
 return div.innerHTML;
 }
 
-// Newest *incoming* edit_ts for a peer (used as the `since` cursor).
 function lastReceivedEditTs(peer) {
 const msgs = msgCache[peer] || [];
 let max = 0;
@@ -338,7 +379,6 @@ if (m.direction === "in" && m.edit_ts > max) max = m.edit_ts;
 return max;
 }
 
-// Best-effort pull from a peer.
 async function autoPull(peer) {
 if (!peer || peer === me) return;
 if (pulling.has(peer)) return;
@@ -480,20 +520,56 @@ resetToLogin();
 
 // ---------- encryption ----------
 
-async function refreshEncryptionStatus() {
-try {
-const enabled = await invoke("get_encryption");
-document.getElementById("enc-status").textContent = enabled ? "on" : "off";
-} catch (_) {}
+function encIcon(method) {
+return method === "none" ? "🔓" : "🔒";
 }
 
-async function setEncryption(password) {
+async function refreshEncryptionStatus() {
 try {
-await invoke("set_encryption", { password });
+const info = await invoke("get_encryption");
+const btn = document.getElementById("enc-btn");
+btn.textContent = encIcon(info.method);
+btn.title = "Encryption: " + info.method;
+return info;
+} catch (_) {
+return { method: "none", has_secret: false };
+}
+}
+
+async function openEncPanel() {
+const info = await refreshEncryptionStatus();
+const methodSel = document.getElementById("enc-method");
+methodSel.value = info.method;
+
+const secretRow = document.getElementById("enc-secret-row");
+secretRow.style.display = info.method === "shared_password" ? "block" : "none";
+
+const secretInput = document.getElementById("enc-secret");
+secretInput.value = "";
+secretInput.placeholder = info.has_secret
+? "(unchanged)"
+: "shared password";
+
+document.getElementById("enc-hint").textContent = "";
+document.getElementById("enc-panel").style.display = "flex";
+}
+
+function closeEncPanel() {
+document.getElementById("enc-panel").style.display = "none";
+}
+
+async function applyEncryption() {
+const method = document.getElementById("enc-method").value;
+const raw = document.getElementById("enc-secret").value;
+const secret = raw ? raw : null;
+const hint = document.getElementById("enc-hint");
+try {
+await invoke("set_encryption", { method, secret });
 await refreshEncryptionStatus();
-toast(password ? "Encryption enabled" : "Encryption disabled");
+hint.textContent = "Applied.";
+setTimeout(closeEncPanel, 600);
 } catch (e) {
-toast("encryption error: " + e);
+hint.textContent = String(e);
 }
 }
 
@@ -607,6 +683,7 @@ pending.clear();
 online.clear();
 pulling.clear();
 for (const k of Object.keys(msgCache)) delete msgCache[k];
+closeEncPanel();
 document.getElementById("app").style.display = "none";
 document.getElementById("login").style.display = "flex";
 }
@@ -630,14 +707,36 @@ document.getElementById("new-peer-btn").onclick = () => {
 const p = document.getElementById("new-peer").value.trim();
 if (p) openPeer(p);
 };
-document.getElementById("enc-enable-btn").onclick = () => {
-const p = document.getElementById("enc-pass").value;
-if (!p) return toast("enter a shared password");
-setEncryption(p);
-};
-document.getElementById("enc-disable-btn").onclick = () => setEncryption(null);
 document.getElementById("msg").addEventListener("keydown", (e) => {
 if (e.key === "Enter") send();
+});
+
+// Encryption widget.
+document.getElementById("enc-btn").onclick = (ev) => {
+ev.stopPropagation();
+const panel = document.getElementById("enc-panel");
+if (panel.style.display === "flex") {
+closeEncPanel();
+} else {
+openEncPanel();
+}
+};
+document.getElementById("enc-method").onchange = (ev) => {
+const row = document.getElementById("enc-secret-row");
+row.style.display = ev.target.value === "shared_password"
+? "block"
+: "none";
+};
+document.getElementById("enc-cancel").onclick = closeEncPanel;
+document.getElementById("enc-apply").onclick = applyEncryption;
+
+// Click outside the panel closes it.
+document.addEventListener("click", (ev) => {
+const widget = document.getElementById("enc-widget");
+const panel = document.getElementById("enc-panel");
+if (panel.style.display !== "flex") return;
+if (widget && widget.contains(ev.target)) return;
+closeEncPanel();
 });
 
 window.addEventListener("beforeunload", () => {

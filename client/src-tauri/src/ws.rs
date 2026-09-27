@@ -10,7 +10,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
 use crate::state::AppState;
-use crate::util::{decrypt_payload, encrypt_payload};
 
 /// Opens a new WebSocket session, replacing any previous one.
 pub async fn connect(
@@ -165,16 +164,7 @@ async fn handle_incoming(
     kind: String,
     payload: String,
 ) {
-    let (stored, is_plaintext) = {
-        let enc = state.encryption.read().await;
-        match enc.key.as_ref() {
-            Some(key) => match decrypt_payload(key, &payload) {
-                Some(pt) => (pt, true),
-                None => (payload.clone(), false),
-            },
-            None => (payload.clone(), false),
-        }
-    };
+    let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
 
     state
         .db
@@ -199,40 +189,41 @@ async fn handle_incoming(
 async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
     let msgs = state.db.get_messages(&from).await;
     let me = state.me.read().await.clone().unwrap_or_default();
-    let key = state.encryption.read().await.key;
 
     let mut wire: Vec<StoredMsg> = Vec::with_capacity(msgs.len());
-    for m in msgs {
-        // Only messages newer than the caller's cursor.
-        if m.edit_ts <= since {
-            continue;
+    {
+        let enc = state.encryption.read().await;
+        for m in msgs {
+            if m.edit_ts <= since {
+                continue;
+            }
+
+            // Rows already stored as opaque are forwarded as-is; plaintext
+            // rows are re-encrypted for the wire if a cipher is active.
+            let payload = if !m.plaintext {
+                m.payload.clone()
+            } else if let Some(c) = enc.cipher.as_ref() {
+                c.encrypt(&m.payload).unwrap_or_else(|| m.payload.clone())
+            } else {
+                m.payload.clone()
+            };
+
+            let (from_user, to_user) = if m.direction == "out" {
+                (me.clone(), from.clone())
+            } else {
+                (from.clone(), me.clone())
+            };
+
+            wire.push(StoredMsg {
+                id: m.id,
+                from: from_user,
+                to: to_user,
+                ts: m.ts,
+                edit_ts: m.edit_ts,
+                kind: m.kind,
+                payload,
+            });
         }
-
-        // If the row is already opaque, forward as-is.
-        // Otherwise re-encrypt for the wire if we have a key.
-        let payload = if !m.plaintext {
-            m.payload.clone()
-        } else if let Some(k) = key.as_ref() {
-            encrypt_payload(k, &m.payload).unwrap_or_else(|| m.payload.clone())
-        } else {
-            m.payload.clone()
-        };
-
-        let (from_user, to_user) = if m.direction == "out" {
-            (me.clone(), from.clone())
-        } else {
-            (from.clone(), me.clone())
-        };
-
-        wire.push(StoredMsg {
-            id: m.id,
-            from: from_user,
-            to: to_user,
-            ts: m.ts,
-            edit_ts: m.edit_ts,
-            kind: m.kind,
-            payload,
-        });
     }
 
     let tx = { state.ws.lock().await.clone() };
@@ -249,18 +240,10 @@ async fn handle_history_response(
     messages: Vec<StoredMsg>,
 ) {
     let me = state.me.read().await.clone().unwrap_or_default();
-    let key = state.encryption.read().await.key;
 
     for m in messages {
         let direction = if m.from == me { "out" } else { "in" };
-
-        let (stored, is_plaintext) = match key.as_ref() {
-            Some(k) => match decrypt_payload(k, &m.payload) {
-                Some(pt) => (pt, true),
-                None => (m.payload.clone(), false),
-            },
-            None => (m.payload.clone(), false),
-        };
+        let (stored, is_plaintext) = state.decode_from_wire(&m.payload).await;
 
         state
             .db

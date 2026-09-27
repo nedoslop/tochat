@@ -5,22 +5,33 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+use crate::crypto::{build_cipher, Cipher, EncryptionConfig};
 use crate::db::Database;
 use crate::protocol::ClientMsg;
 
-/// In-memory encryption configuration.
-///
-/// `key` is the derived symmetric key; `password` is kept only so the UI can
-/// echo it back. Both are `None` when encryption is off.
-#[derive(Default)]
+/// Active encryption configuration + cipher instance.
 pub struct EncryptionState {
-    pub password: Option<String>,
-    pub key: Option<[u8; 32]>,
+    pub config: EncryptionConfig,
+    pub cipher: Option<Box<dyn Cipher>>,
+}
+
+impl Default for EncryptionState {
+    fn default() -> Self {
+        Self {
+            config: EncryptionConfig::default(),
+            cipher: None,
+        }
+    }
 }
 
 impl EncryptionState {
     pub fn is_enabled(&self) -> bool {
-        self.key.is_some()
+        self.cipher.is_some()
+    }
+
+    pub fn set(&mut self, config: EncryptionConfig) {
+        self.cipher = build_cipher(config.method, config.secret.as_deref());
+        self.config = config;
     }
 }
 
@@ -42,12 +53,14 @@ impl AppState {
         let db = Database::open(&data_dir.join("client.db"))
             .expect("failed to open local database");
 
-        // Load the persisted shared password (if any).
-        let password = std::fs::read_to_string(encryption_path(&data_dir))
+        // Load persisted encryption config (if any).
+        let config = std::fs::read_to_string(encryption_path(&data_dir))
             .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let key = password.as_deref().map(crate::util::derive_key);
+            .and_then(|s| serde_json::from_str::<EncryptionConfig>(&s).ok())
+            .unwrap_or_default();
+
+        let mut encryption = EncryptionState::default();
+        encryption.set(config);
 
         Self {
             app,
@@ -56,11 +69,53 @@ impl AppState {
             me: RwLock::new(None),
             ws: Mutex::new(None),
             ws_gen: AtomicU64::new(0),
-            encryption: RwLock::new(EncryptionState { password, key }),
+            encryption: RwLock::new(encryption),
+        }
+    }
+
+    /// Encrypts a plaintext payload for the wire.
+    ///
+    /// `Ok(payload)` on success; `Err` only if encryption is active but the
+    /// cipher itself failed (which callers treat as a hard error). With the
+    /// method `None` the plaintext is passed through unchanged.
+    pub async fn encrypt_for_wire(&self, plaintext: &str) -> Result<String, String> {
+        let enc = self.encryption.read().await;
+        match enc.cipher.as_ref() {
+            Some(c) => c
+                .encrypt(plaintext)
+                .ok_or_else(|| "encryption failed".to_string()),
+            None => Ok(plaintext.to_string()),
+        }
+    }
+
+    /// Re-encodes stored plaintext for the wire (used when serving a history
+    /// pull). Unlike [`encrypt_for_wire`], failures fall back to the raw text.
+    pub async fn reencode_for_wire(&self, plaintext: &str) -> String {
+        let enc = self.encryption.read().await;
+        match enc.cipher.as_ref() {
+            Some(c) => c.encrypt(plaintext).unwrap_or_else(|| plaintext.to_string()),
+            None => plaintext.to_string(),
+        }
+    }
+
+    /// Decodes a wire payload. Returns `(stored_text, is_plaintext)`.
+    ///
+    /// When decryption fails (wrong key, plaintext sent under an active
+    /// cipher, malformed input, or encryption disabled), the raw wire string
+    /// is kept and `is_plaintext` is `false` — the local DB then treats it
+    /// as opaque.
+    pub async fn decode_from_wire(&self, wire: &str) -> (String, bool) {
+        let enc = self.encryption.read().await;
+        match enc.cipher.as_ref() {
+            Some(c) => match c.decrypt(wire) {
+                Some(pt) => (pt, true),
+                None => (wire.to_string(), false),
+            },
+            None => (wire.to_string(), false),
         }
     }
 }
 
 pub fn encryption_path(dir: &std::path::Path) -> PathBuf {
-    dir.join("encryption.key")
+    dir.join("encryption.json")
 }
