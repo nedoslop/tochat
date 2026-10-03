@@ -881,10 +881,12 @@
 
                 await listen("error", (e) => {
                     const msg = String(e.payload);
-                    if (msg.includes("is offline")) {
-                        // Peer we tried to pull from is offline; clear the flag so we can
-                        // retry as soon as we see them come online.
-                        pulling.clear();
+                    // "peer <name> is offline, try again later" — only clear the specific
+                    // peer's guard. Previously this cleared every outstanding pull, which
+                    // allowed other in-flight pulls to be re-issued repeatedly.
+                    const m = msg.match(/^peer (.+?) is offline/);
+                    if (m) {
+                        pulling.delete(m[1]);
                         return;
                     }
                     toast(msg);
