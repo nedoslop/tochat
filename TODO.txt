@@ -8,6 +8,7 @@ Probably good:
  - New message notifications (just in UI)
  - Limit minimal window size (set like 100x100)
  - Reposition logout/reload/delete account button to not uselessly eat free space
+ - Some other DIFFERENT encryption methods (wtf is that hex?)
 Possible others:
  - Add special commands like /clear to clear chat (one locally, other for everyone?)
  - Android/IOS support
