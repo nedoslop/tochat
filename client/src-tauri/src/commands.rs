@@ -329,3 +329,48 @@ pub async fn set_encryption(
     enc.set(config);
     Ok(())
 }
+
+// ---------- theme ----------
+
+/// Reads the persisted theme preference. One of `"system"`, `"light"`,
+/// `"dark"`. Falls back to `"system"` if the file is missing, unreadable,
+/// or contains an invalid value.
+#[tauri::command]
+pub async fn get_theme(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let path = state.data_dir.join("theme.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    let theme = parsed
+        .get("theme")
+        .and_then(|v| v.as_str())
+        .unwrap_or("system");
+    if matches!(theme, "system" | "light" | "dark") {
+        Ok(theme.to_string())
+    } else {
+        Ok("system".to_string())
+    }
+}
+
+/// Persists the theme preference. Accepted values: `"system"`, `"light"`,
+/// `"dark"`.
+#[tauri::command]
+pub async fn set_theme(theme: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if !matches!(theme.as_str(), "system" | "light" | "dark") {
+        return Err("invalid theme".into());
+    }
+    let path = state.data_dir.join("theme.json");
+    let json = serde_json::to_string(&serde_json::json!({ "theme": theme }))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("persist error: {e}"))?;
+    Ok(())
+}
+
+// ---------- build info ----------
+
+/// True in release builds, false under `tauri dev`. Used by the frontend to
+/// enable/disable dev-only affordances (currently: block the right-click
+/// context menu).
+#[tauri::command]
+pub fn is_release() -> bool {
+    cfg!(not(debug_assertions))
+}

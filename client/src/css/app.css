@@ -19,11 +19,20 @@
 }
 
 .sidebar-head {
-  padding: 14px 14px 12px;
+  padding: 12px 12px 12px 14px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.me-badge { display: flex; align-items: center; gap: 10px; }
+.me-badge {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .me-info { min-width: 0; flex: 1; }
 .me-name {
   font-weight: 600;
@@ -31,6 +40,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
 .me-status {
   font-size: 12px;
@@ -46,6 +56,16 @@
   border-radius: 50%;
   background: currentColor;
 }
+
+#theme-btn {
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  opacity: 0.75;
+}
+#theme-btn:hover { opacity: 1; }
 
 .sidebar-search {
   display: flex;
@@ -76,7 +96,7 @@
   font-weight: 500;
   transition: background 0.15s;
 }
-.pending-btn:hover { background: #e0e7ff; }
+.pending-btn:hover { background: var(--accent-soft-hover); }
 
 .sidebar-section {
   flex: 1;
@@ -147,6 +167,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
 
 .sidebar-foot {
@@ -167,6 +188,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background: var(--bg);
 }
 
 .chat-view {
@@ -201,6 +223,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
 .chat-peer-status { font-size: 12px; color: var(--text-dim); }
 .chat-peer-status.online { color: var(--success); }
@@ -215,7 +238,6 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: var(--bg);
   min-height: 0;
 }
 
@@ -260,6 +282,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
+  color: var(--text);
 }
 .msg.out {
   align-self: flex-end;
@@ -267,10 +290,10 @@
   color: #fff;
   border-bottom-right-radius: 4px;
 }
-.msg.out .msg-time { color: rgba(255, 255, 255, 0.7); }
+.msg.out .msg-time { color: rgba(255, 255, 255, 0.75); }
 
 .msg.deleted .msg-body { font-style: italic; opacity: 0.7; }
-.msg.out.deleted { background: var(--text-faint); }
+.msg.out.deleted { background: var(--border-strong); }
 
 .msg-time {
   font-size: 10px;
@@ -300,7 +323,10 @@
   color: var(--text-dim);
   line-height: 1;
 }
-.msg-actions button:hover { background: var(--surface-3); color: var(--text); }
+.msg-actions button:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
 
 /* ============================================================
    Empty state
@@ -362,7 +388,7 @@
   flex-direction: column;
   gap: 10px;
 }
-.enc-title { font-weight: 600; font-size: 13px; }
+.enc-title { font-weight: 600; font-size: 13px; color: var(--text); }
 .enc-actions { display: flex; gap: 6px; margin-top: 2px; }
 .enc-actions .btn { flex: 1; }
 
@@ -408,4 +434,4 @@
   gap: 10px;
   min-width: 0;
 }
-.pending-left .name { font-weight: 500; }
+.pending-left .name { font-weight: 500; color: var(--text); }

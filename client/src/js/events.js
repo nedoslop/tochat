@@ -3,6 +3,7 @@
 import { invoke, listen } from "./api.js";
 import { state } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
+import { showAlert } from "./dialog.js";
 import {
   renderSidebar,
   renderMessages,
@@ -123,13 +124,20 @@ export async function setupEvents() {
     const reason = String(e.payload || "");
 
     if (reason === "account_deleted") {
-      alert("Account deleted.");
+      await showAlert("Your account has been deleted.", {
+        title: "Account deleted",
+      });
       try { await invoke("wipe_local_data"); } catch (_) {}
       await refreshEncryptionStatus();
     } else if (reason === "session_taken_over") {
-      alert("Session closed: you signed in from another window or device.");
+      await showAlert(
+        "You were signed in from another window or device. This session has been closed.",
+        { title: "Session closed" },
+      );
     } else {
-      alert("Session closed by server.");
+      await showAlert("The server closed this session.", {
+        title: "Session closed",
+      });
     }
 
     try { await invoke("disconnect"); } catch (_) {}

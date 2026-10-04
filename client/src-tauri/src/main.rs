@@ -37,6 +37,9 @@ fn main() {
             commands::wipe_local_data,
             commands::set_encryption,
             commands::get_encryption,
+            commands::get_theme,
+            commands::set_theme,
+            commands::is_release,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

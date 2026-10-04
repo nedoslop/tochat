@@ -15,6 +15,8 @@
   <!-- ===================== Login ===================== -->
   <div id="login-view" class="view login-view">
     <div class="login-card">
+      <button id="theme-btn-login" class="btn btn-ghost btn-icon theme-btn-float" title="Theme">🌓</button>
+
       <div class="brand">
         <div class="brand-icon">
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none"
@@ -30,17 +32,19 @@
       <div class="field">
         <label for="base-url">Server URL</label>
         <input id="base-url" type="text" value="http://localhost:8080"
-               placeholder="http://host:port" spellcheck="false" />
+               placeholder="http://host:port" spellcheck="false"
+               autocomplete="off" autocapitalize="off" autocorrect="off" />
       </div>
       <div class="field">
         <label for="user">Username</label>
         <input id="user" type="text" placeholder="your username"
-               autocomplete="username" spellcheck="false" />
+               spellcheck="false"
+               autocomplete="off" autocapitalize="off" autocorrect="off" />
       </div>
       <div class="field">
         <label for="pass">Password</label>
         <input id="pass" type="password" placeholder="••••••••"
-               autocomplete="current-password" />
+               autocomplete="new-password" spellcheck="false" />
       </div>
 
       <div class="login-actions">
@@ -62,10 +66,12 @@
             <div class="me-status">online</div>
           </div>
         </div>
+        <button id="theme-btn" class="btn btn-ghost btn-icon" title="Theme">🌓</button>
       </div>
 
       <div class="sidebar-search">
-        <input id="new-peer" placeholder="Start chat with…" spellcheck="false" />
+        <input id="new-peer" placeholder="Start chat with…" spellcheck="false"
+               autocomplete="off" autocapitalize="off" autocorrect="off" />
         <button id="new-peer-btn" class="btn btn-primary btn-icon" title="Open chat">+</button>
       </div>
 
@@ -165,6 +171,7 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+  <div id="modal-root"></div>
 
   <script type="module" src="js/main.js"></script>
 </body>

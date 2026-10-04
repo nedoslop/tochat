@@ -34,10 +34,12 @@ if '--client' in sys.argv:
     files.append('client/src/css/login.css')
     files.append('client/src/js/actions.js')
     files.append('client/src/js/api.js')
+    files.append('client/src/js/dialog.js')
     files.append('client/src/js/encryption.js')
     files.append('client/src/js/events.js')
     files.append('client/src/js/main.js')
     files.append('client/src/js/state.js')
+    files.append('client/src/js/theme.js')
     files.append('client/src/js/ui.js')
     files.append('client/src/js/utils.js')
 

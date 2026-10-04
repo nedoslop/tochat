@@ -1,4 +1,5 @@
-// Entry point — wires DOM events, then sets up Tauri listeners.
+// Entry point — wires DOM events, sets up theme, blocks the context menu
+// in release builds, then attaches Tauri listeners.
 
 import { invoke } from "./api.js";
 import { state } from "./state.js";
@@ -27,9 +28,35 @@ import {
   closeEncPanel,
   applyEncryption,
 } from "./encryption.js";
+import { initTheme, cycleTheme } from "./theme.js";
 import { setupEvents } from "./events.js";
 
+/**
+ * In release builds, prevent the browser context menu (Back, Reload,
+ * Inspect, etc.) from appearing on right-click. In dev we leave it alone
+ * so you can still use the devtools menu.
+ */
+async function installContextMenuGuard() {
+  try {
+    const isRelease = await invoke("is_release");
+    if (isRelease) {
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+  } catch (_) {
+    // If the command fails (older build?), stay silent — the context menu
+    // just behaves normally.
+  }
+}
+
 async function init() {
+  // ---- theme first so the login screen renders in the right palette ----
+  await initTheme();
+  document.getElementById("theme-btn").onclick = cycleTheme;
+  document.getElementById("theme-btn-login").onclick = cycleTheme;
+
+  // ---- release-only context menu block ----
+  await installContextMenuGuard();
+
   // ---- buttons ----
   document.getElementById("register-btn").onclick = register;
   document.getElementById("login-btn").onclick = login;

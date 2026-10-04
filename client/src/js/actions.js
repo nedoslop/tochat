@@ -3,6 +3,7 @@
 import { invoke } from "./api.js";
 import { state, resetState } from "./state.js";
 import { toast } from "./utils.js";
+import { showConfirm, showPrompt } from "./dialog.js";
 import {
   renderSidebar,
   renderMessages,
@@ -52,8 +53,17 @@ export async function reloadUI() {
 }
 
 export async function deleteAccount() {
-  const pw = prompt("Enter your password to delete the account");
+  const pw = await showPrompt(
+    "Enter your password to delete your account. This cannot be undone.",
+    {
+      title: "Delete account",
+      placeholder: "password",
+      okText: "Delete",
+      danger: true,
+    },
+  );
   if (pw === null) return;
+  if (!pw) return toast("Password required.");
   try {
     await invoke("delete_account", { password: pw });
   } catch (e) {
@@ -126,7 +136,14 @@ export async function editMessage(id) {
   const msg = (state.msgCache[peer] || []).find((m) => m.id === id);
   const currentText = msg ? msg.payload : "";
 
-  const next = prompt("Edit message (leave empty to delete):", currentText);
+  const next = await showPrompt(
+    "Leave empty to delete the message.",
+    {
+      title: "Edit message",
+      defaultValue: currentText,
+      okText: "Save",
+    },
+  );
   if (next === null) return;
 
   try {
@@ -145,7 +162,14 @@ export async function editMessage(id) {
 export async function deleteMessage(id) {
   const peer = state.currentPeer;
   if (!peer) return;
-  if (!confirm("Delete this message?")) return;
+
+  const ok = await showConfirm("Delete this message?", {
+    title: "Delete message",
+    okText: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
+
   try {
     await invoke("delete_message", { peer, id });
     state.msgCache[peer] = await invoke("get_messages", { peer });
