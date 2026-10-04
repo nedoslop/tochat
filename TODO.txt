@@ -1,4 +1,5 @@
 Probably good:
+ - FIXME: different servers = different chat histories
  - Fix right-click context menu syncing with system theme, not chosen one
  - Disable built-in browser shortcuts like Ctrl+Shift+P
  - Do not preload all the chat (like in Discord/Telegram?)
