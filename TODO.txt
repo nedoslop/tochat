@@ -5,7 +5,7 @@ Probably good:
  - Multiline messages
  - New message notifications (just in UI)
 Possible others:
- - Add special commands like /clear to clear chat
+ - Add special commands like /clear to clear chat (one locally, other for everyone?)
  - Allow to login into the same account from multiple devices at the same time
  - Support different media types
  - Better new message notifications (sounds, system notifications?)
