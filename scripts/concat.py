@@ -29,6 +29,17 @@ if '--client' in sys.argv:
     files.append('client/src-tauri/src/util.rs')
     files.append('client/src-tauri/src/ws.rs')
     files.append('client/src/index.html')
+    files.append('client/src/css/app.css')
+    files.append('client/src/css/base.css')
+    files.append('client/src/css/login.css')
+    files.append('client/src/js/actions.js')
+    files.append('client/src/js/api.js')
+    files.append('client/src/js/encryption.js')
+    files.append('client/src/js/events.js')
+    files.append('client/src/js/main.js')
+    files.append('client/src/js/state.js')
+    files.append('client/src/js/ui.js')
+    files.append('client/src/js/utils.js')
 
 out = open('joined.txt', 'w', encoding='utf-8')
 ret = ''
