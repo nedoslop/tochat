@@ -1,0 +1,14 @@
+Probably good:
+ - Fix right-click context menu syncing with system theme, not chosen one
+ - Disable built-in browser shortcuts like Ctrl+Shift+P
+ - Do not preload all the chat (like in Discord/Telegram?)
+ - Add ability to add notes (just keep local chat in db?)
+ - Multiline messages
+ - New message notifications (just in UI)
+Possible others:
+ - Add special commands like /clear to clear chat (one locally, other for everyone?)
+ - Allow to login into the same account from multiple devices at the same time
+ - Support different media types
+ - Better new message notifications (sounds, system notifications?)
+ - Status (Inactive, Busy etc like in Discord)
+ - Mark messages as sent/read by other user like in Telegram
