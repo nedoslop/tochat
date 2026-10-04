@@ -5,8 +5,10 @@ Probably good:
  - Add ability to add notes (just keep local chat in db?)
  - Multiline messages
  - New message notifications (just in UI)
+ - Limit minimal window size (set like 100x100)
 Possible others:
  - Add special commands like /clear to clear chat (one locally, other for everyone?)
+ - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
  - Support different media types
  - Better new message notifications (sounds, system notifications?)
