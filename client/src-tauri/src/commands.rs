@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
 use crate::protocol::{ClientMsg, MessageKind};
-use crate::state::{encryption_path, user_db_path, AppState};
+use crate::state::{encryption_path, read_theme, theme_path, user_db_path, AppState};
 use crate::util::{now_ms, random_id};
 use crate::ws;
 
@@ -337,32 +337,45 @@ pub async fn set_encryption(
 /// or contains an invalid value.
 #[tauri::command]
 pub async fn get_theme(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let path = state.data_dir.join("theme.json");
-    let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-    let theme = parsed
-        .get("theme")
-        .and_then(|v| v.as_str())
-        .unwrap_or("system");
-    if matches!(theme, "system" | "light" | "dark") {
-        Ok(theme.to_string())
-    } else {
-        Ok("system".to_string())
-    }
+    Ok(read_theme(&state.data_dir))
 }
 
-/// Persists the theme preference. Accepted values: `"system"`, `"light"`,
-/// `"dark"`.
+/// Persists the theme preference and immediately applies it to the
+/// native window (titlebar / decorations). Accepted values: `"system"`,
+/// `"light"`, `"dark"`.
 #[tauri::command]
 pub async fn set_theme(theme: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     if !matches!(theme.as_str(), "system" | "light" | "dark") {
         return Err("invalid theme".into());
     }
-    let path = state.data_dir.join("theme.json");
-    let json = serde_json::to_string(&serde_json::json!({ "theme": theme }))
-        .map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("persist error: {e}"))?;
+
+    let json = serde_json::to_string(&json!({ "theme": theme })).map_err(|e| e.to_string())?;
+    std::fs::write(theme_path(&state.data_dir), json)
+        .map_err(|e| format!("persist error: {e}"))?;
+
+    // Keep the native titlebar in sync with the HTML-side theme so the
+    // window decorations don't flash white/dark against the content.
+    apply_window_theme(&state.app, &theme);
     Ok(())
+}
+
+/// Pushes the theme preference to the main window's native decorations.
+///
+/// `"light"` / `"dark"` force the OS titlebar; `"system"` (or anything
+/// unexpected) hands control back to the OS so it tracks the user's
+/// system-wide preference. Failures are ignored — the in-app theme is
+/// still applied by the frontend, so the worst case is a mismatched
+/// titlebar, not a broken UI.
+pub fn apply_window_theme(app: &tauri::AppHandle, theme: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let t = match theme {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    let _ = window.set_theme(t);
 }
 
 // ---------- build info ----------
