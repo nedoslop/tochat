@@ -33,10 +33,6 @@ impl EncryptionState {
 }
 
 /// A live WebSocket session: outbound channel plus the two task handles.
-///
-/// We keep the `JoinHandle`s so we can `abort()` them and `await` their
-/// termination on logout / reconnect — that is what makes the logout button
-/// deterministic instead of racy.
 pub struct WsSession {
     pub id: u64,
     pub tx: mpsc::UnboundedSender<ClientMsg>,
@@ -60,8 +56,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(app: AppHandle, data_dir: PathBuf) -> Self {
-        // Encryption config is still global for now; per-user config is a
-        // natural future extension but was not requested.
         let config = std::fs::read_to_string(encryption_path(&data_dir))
             .ok()
             .and_then(|s| serde_json::from_str::<EncryptionConfig>(&s).ok())
@@ -115,6 +109,30 @@ impl AppState {
 
 pub fn encryption_path(dir: &Path) -> PathBuf {
     dir.join("encryption.json")
+}
+
+pub fn theme_path(dir: &Path) -> PathBuf {
+    dir.join("theme.json")
+}
+
+/// Reads the persisted theme preference. One of `"system"`, `"light"`,
+/// `"dark"`. Falls back to `"system"` on any error or invalid value.
+///
+/// This is the single source of truth for the theme on disk — both the
+/// startup path (which applies it to the native window) and the runtime
+/// Tauri command go through here.
+pub fn read_theme(dir: &Path) -> String {
+    let raw = std::fs::read_to_string(theme_path(dir)).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    let theme = parsed
+        .get("theme")
+        .and_then(|v| v.as_str())
+        .unwrap_or("system");
+    if matches!(theme, "system" | "light" | "dark") {
+        theme.to_string()
+    } else {
+        "system".to_string()
+    }
 }
 
 /// Path of the per-user local message database.

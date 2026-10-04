@@ -11,7 +11,7 @@ mod ws;
 use std::sync::Arc;
 use tauri::Manager;
 
-use crate::state::AppState;
+use crate::state::{read_theme, AppState};
 
 /// Application entry point: sets up state and registers commands.
 fn main() {
@@ -19,6 +19,15 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+
+            // Windows from `tauri.conf.json` are already created by the
+            // time `setup` runs, so we can sync the native titlebar with
+            // the persisted theme before the first frame is visible.
+            // Otherwise the titlebar would start in the OS default and
+            // only flip after the frontend calls `set_theme`.
+            let theme = read_theme(&dir);
+            commands::apply_window_theme(app.handle(), &theme);
+
             let state = AppState::new(app.handle().clone(), dir);
             app.manage(Arc::new(state));
             Ok(())
@@ -37,6 +46,9 @@ fn main() {
             commands::wipe_local_data,
             commands::set_encryption,
             commands::get_encryption,
+            commands::get_theme,
+            commands::set_theme,
+            commands::is_release,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
