@@ -87,6 +87,10 @@ impl Database {
 
     /// Returns up to `limit` messages strictly older than `before_ts`
     /// (or the newest `limit` if `before_ts` is None), oldest-first.
+    ///
+    /// IMPORTANT: `limit = None` is bound as `-1` (SQLite's "no limit"),
+    /// NOT NULL. `LIMIT NULL` is silently treated as `LIMIT 0` by SQLite,
+    /// which used to make every history-serve path return an empty set.
     pub async fn get_messages(
         &self,
         peer: &str,
@@ -94,7 +98,10 @@ impl Database {
         limit: Option<u32>,
     ) -> Vec<LocalMsg> {
         let conn = self.conn.lock().await;
-        let limit_i64: Option<i64> = limit.map(|l| l as i64);
+        let limit_i64: i64 = match limit {
+            Some(l) => l as i64,
+            None => -1,
+        };
         let mut stmt = match conn.prepare(
             "SELECT id, direction, ts, edit_ts, kind, payload, plaintext, read
              FROM messages

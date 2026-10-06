@@ -238,7 +238,6 @@ fn preview_for(kind: &str, text: &str) -> String {
         "image" => "📷 Photo".to_string(),
         "audio" => "🎤 Audio".to_string(),
         "file" => {
-            // Try to extract filename from JSON payload.
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
                 if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
                     return format!("📎 {n}");
@@ -283,7 +282,8 @@ async fn handle_pull_request(
     before: Option<i64>,
 ) {
     let Ok(db) = state.active_db().await else { return; };
-    // We need ALL messages when serving history, not just the last page.
+    // Serve the ENTIRE local history (limit=None → LIMIT -1 in SQL, i.e.
+    // truly unbounded). The requester applies its own paging.
     let msgs = db.get_messages(&from, None, None).await;
     let me = state.me.read().await.clone().unwrap_or_default();
 
@@ -296,6 +296,7 @@ async fn handle_pull_request(
     if let Some(lim) = limit {
         let lim = lim as usize;
         if filtered.len() > lim {
+            // Keep the NEWEST `lim` messages.
             let drop_count = filtered.len() - lim;
             filtered.drain(0..drop_count);
         }

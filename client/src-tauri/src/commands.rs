@@ -207,7 +207,6 @@ pub async fn pull_history(
 #[tauri::command]
 pub async fn mark_read(peer: String, up_to_ts: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     if peer == NOTES_PEER { return Ok(()); }
-    // Mark local incoming messages as read.
     if let Ok(db) = state.active_db().await {
         db.mark_incoming_read(&peer, up_to_ts).await;
     }
@@ -354,7 +353,11 @@ pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), Strin
         let _ = window.set_title(&title);
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            let _ = window.set_badge_count(Some(count));
+            if count > 0 {
+                let _ = window.set_badge_count(Some(count));
+            } else {
+                let _ = window.set_badge_count(None);
+            }
         }
         #[cfg(target_os = "macos")]
         {

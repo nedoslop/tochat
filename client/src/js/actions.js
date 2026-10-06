@@ -142,7 +142,10 @@ export async function send() {
         const msg = await invoke("send_message", { to: peer, text });
         input.value = "";
         input.style.height = "auto";
-        if (peer !== NOTES_PEER) state.pending.delete(peer);
+        if (peer !== NOTES_PEER) {
+            state.pending.delete(peer);
+            state.peers.add(peer);
+        }
         mergeSent(peer, msg);
         renderSidebar();
         if (state.currentPeer === peer) renderMessages();
@@ -154,18 +157,16 @@ export async function sendMedia(kind, payload) {
     if (!peer) return;
     try {
         const msg = await invoke("send_media", { to: peer, kind, payload });
-        if (peer !== NOTES_PEER) state.pending.delete(peer);
+        if (peer !== NOTES_PEER) {
+            state.pending.delete(peer);
+            state.peers.add(peer);
+        }
         mergeSent(peer, msg);
         renderSidebar();
         if (state.currentPeer === peer) renderMessages();
     } catch (e) { toast(`Send ${kind} error: ` + e); }
 }
 
-/**
- * Compresses an image data URL by re-encoding it as JPEG at a smaller
- * resolution if it's larger than `maxDim` px or already big on the wire.
- * Falls back to the original data URL if anything fails.
- */
 async function compressImage(dataUrl, maxDim = 1280, quality = 0.85) {
     try {
         const img = await new Promise((resolve, reject) => {
@@ -176,7 +177,7 @@ async function compressImage(dataUrl, maxDim = 1280, quality = 0.85) {
         });
 
         const needResize = img.width > maxDim || img.height > maxDim;
-        const needReencode = dataUrl.length > 400_000; // ~300 KB raw
+        const needReencode = dataUrl.length > 400_000;
         if (!needResize && !needReencode) return dataUrl;
 
         const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
@@ -329,6 +330,7 @@ export async function sendReadReceipt(peer) {
             if (m.direction === "in") m.read = true;
         }
         state.unread[peer] = 0;
+        renderSidebar();
         void updateBadge();
     } catch (_) {}
 }
@@ -336,45 +338,56 @@ export async function sendReadReceipt(peer) {
 export async function refreshReadState(peer) {
     if (!peer || peer === NOTES_PEER) return;
     try {
-        state.msgCache[peer] = await invoke("get_messages", {
+        const latest = await invoke("get_messages", {
             peer, beforeTs: null, limit: INITIAL_LIMIT,
         });
+        // Merge, don't replace — otherwise we'd drop older pages loaded
+        // via scroll-back pagination.
+        const existing = state.msgCache[peer] || [];
+        const byId = new Map();
+        for (const m of existing) byId.set(m.id, m);
+        for (const m of latest) byId.set(m.id, m);
+        state.msgCache[peer] = [...byId.values()].sort(
+            (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts
+        );
         if (state.currentPeer === peer) renderMessages();
     } catch (_) {}
 }
 
 // ---------- history sync ----------
 
+/**
+ * Ask the peer for their newest page of messages.
+ *
+ * No in-flight guard: the previous guard was the cause of the
+ * "peer never syncs" bug — the first attempt (fired right after the
+ * peer's PeerOnline arrived, potentially before their session was fully
+ * registered server-side) would fail, and every retry within the next
+ * 6 s was silently dropped because `state.pulling` still contained the
+ * peer. Duplicate pulls are safe: DB upsert is keyed on message id.
+ *
+ * Always uses `since: 0` (not a timestamp from our local cache). The
+ * cache is a strict subset of the peer's history, so asking "give me
+ * everything" and relying on id-keyed upsert to dedupe is both simpler
+ * and correct — including the offline→online flip where one side has
+ * a message the other has never seen.
+ */
 export async function autoPull(peer) {
     if (!peer || peer === state.me || peer === NOTES_PEER) return;
-    if (state.pulling.has(peer)) return;
-
-    state.pulling.add(peer);
     try {
+        // Cheap local warm-up: don't await network, just make sure the
+        // cache exists so the UI shows something while the sync flies.
         if (!state.msgCache[peer]) {
             state.msgCache[peer] = await invoke("get_messages", {
                 peer, beforeTs: null, limit: INITIAL_LIMIT,
             });
         }
-        const localMsgs = state.msgCache[peer];
-
-        if (localMsgs.length === 0) {
-            state.lastPullLimit[peer] = INITIAL_LIMIT;
-            await invoke("pull_history", {
-                from: peer, since: 0, limit: INITIAL_LIMIT, before: null,
-            });
-        } else {
-            const since = lastReceivedEditTs(peer);
-            state.lastPullLimit[peer] = null;
-            await invoke("pull_history", {
-                from: peer, since, limit: null, before: null,
-            });
-        }
-    } catch (_) {
-        state.pulling.delete(peer);
-        return;
+        await invoke("pull_history", {
+            from: peer, since: 0, limit: INITIAL_LIMIT, before: null,
+        });
+    } catch (e) {
+        console.warn("[autoPull] failed for", peer, e);
     }
-    setTimeout(() => state.pulling.delete(peer), 6000);
 }
 
 export async function loadOlder() {
