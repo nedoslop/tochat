@@ -497,3 +497,31 @@ Pending view
   min-width: 0;
 }
 .pending-left .name { font-weight: 500; color: var(--text); }
+
+/* ============================================================
+Load older / end-of-history
+============================================================ */
+.load-older {
+  align-self: center;
+  margin: 4px auto 12px;
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.load-older:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.load-older-note {
+  align-self: center;
+  margin: 4px auto 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+}

@@ -31,7 +31,6 @@ export function renderSidebar() {
   peersEl.innerHTML = "";
 
   const all = new Set([...state.peers, ...state.pending]);
-  // Notes always present.
   if (state.me) all.add(NOTES_PEER);
 
   if (all.size === 0) {
@@ -41,7 +40,6 @@ export function renderSidebar() {
     empty.textContent = "No chats yet.";
     peersEl.appendChild(empty);
   } else {
-    // Sort: notes first, then pending, then by name.
     const sorted = [...all].sort((a, b) => {
       if (a === NOTES_PEER) return -1;
       if (b === NOTES_PEER) return 1;
@@ -100,7 +98,6 @@ export function renderSidebar() {
   countEl.textContent = String(state.pending.size);
   countEl.dataset.empty = state.pending.size === 0 ? "true" : "false";
 
-  // Header state
   const titleEl = document.getElementById("peer-title");
   const statusEl = document.getElementById("peer-status");
   const peerAvatar = document.getElementById("peer-avatar");
@@ -147,21 +144,46 @@ export function renderMessages() {
     return;
   }
 
-  const msgs = (state.msgCache[state.currentPeer] || [])
+  const peer = state.currentPeer;
+  const msgs = (state.msgCache[peer] || [])
     .slice()
     .sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
 
   if (msgs.length === 0) {
     el.appendChild(
       emptyState(
-        state.currentPeer === NOTES_PEER ? "📝" : "📭",
-        state.currentPeer === NOTES_PEER ? "No notes yet" : "No messages yet",
-        state.currentPeer === NOTES_PEER
+        peer === NOTES_PEER ? "📝" : "📭",
+        peer === NOTES_PEER ? "No notes yet" : "No messages yet",
+        peer === NOTES_PEER
           ? "Anything you type here stays on this device."
-          : `Say hi to ${state.currentPeer}.`,
+          : `Say hi to ${peer}.`,
       )
     );
     return;
+  }
+
+  // Top-of-list controls: "Load older" button, or end-of-history marker.
+  if (peer !== NOTES_PEER) {
+    const loading = state.loadingOlder.has(peer);
+    const reachedStart = state.mightHaveMore[peer] === false;
+    if (loading) {
+      const b = document.createElement("div");
+      b.className = "load-older";
+      b.textContent = "Loading…";
+      el.appendChild(b);
+    } else if (reachedStart) {
+      const b = document.createElement("div");
+      b.className = "load-older-note";
+      b.textContent = "— start of conversation —";
+      el.appendChild(b);
+    } else {
+      const b = document.createElement("button");
+      b.id = "load-older-btn";
+      b.className = "load-older";
+      b.type = "button";
+      b.textContent = "Load older messages";
+      el.appendChild(b);
+    }
   }
 
   let lastDate = null;
@@ -174,7 +196,7 @@ export function renderMessages() {
       el.appendChild(sep);
       lastDate = dateStr;
     }
-    el.appendChild(messageEl(m, state.currentPeer === NOTES_PEER));
+    el.appendChild(messageEl(m, peer === NOTES_PEER));
   }
 
   el.scrollTop = el.scrollHeight;
@@ -241,7 +263,6 @@ function messageEl(m, isNotes) {
     div.appendChild(actions);
   }
 
-  // Silence unused warning for isNotes — kept for future use.
   void isNotes;
   return div;
 }

@@ -19,6 +19,7 @@ import {
   clearChat,
   leaveChat,
   blockUser,
+  loadOlder,
 } from "./actions.js";
 import {
   renderMessages,
@@ -45,15 +46,6 @@ async function installContextMenuGuard() {
   } catch (_) {}
 }
 
-/**
- * Blocks browser shortcuts that don't make sense inside the app.
- * Ctrl+R / F5 / Ctrl+Shift+R — reload
- * Ctrl+Shift+I / F12 / Ctrl+Shift+C / Ctrl+Shift+J — devtools
- * Ctrl+U — view source
- * Ctrl+P / Ctrl+Shift+P — print
- * Ctrl+N / Ctrl+T / Ctrl+W / Ctrl+Shift+W — new tab/window
- * Ctrl+= / Ctrl+- / Ctrl+0 — zoom (kept unblocked, browser handled)
- */
 function installShortcutGuard() {
   const block = (e) => {
     const k = e.key;
@@ -94,7 +86,6 @@ async function init() {
   await installContextMenuGuard();
   installShortcutGuard();
 
-  // ---- buttons ----
   document.getElementById("register-btn").onclick = register;
   document.getElementById("login-btn").onclick = login;
   document.getElementById("send-btn").onclick = send;
@@ -107,7 +98,6 @@ async function init() {
   };
   document.getElementById("pending-back-btn").onclick = () => showChatView();
 
-  // ---- settings menu ----
   document.getElementById("settings-btn").onclick = (ev) => {
     ev.stopPropagation();
     const m = document.getElementById("settings-menu");
@@ -119,7 +109,6 @@ async function init() {
   document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
   document.getElementById("delete-btn").onclick = () => { closeAllMenus(); deleteAccount(); };
 
-  // ---- chat menu ----
   document.getElementById("chat-menu-btn").onclick = (ev) => {
     ev.stopPropagation();
     const m = document.getElementById("chat-menu");
@@ -132,13 +121,11 @@ async function init() {
   document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
   document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
 
-  // ---- status menu ----
   document.getElementById("me-status").onclick = (ev) => {
     ev.stopPropagation();
     cycleMyStatus();
   };
 
-  // ---- new peer ----
   document.getElementById("new-peer-btn").onclick = () => {
     const p = document.getElementById("new-peer").value.trim();
     if (p) {
@@ -147,7 +134,6 @@ async function init() {
     }
   };
 
-  // ---- composer: textarea with auto-grow, Enter to send, Shift+Enter newline ----
   const msgInput = document.getElementById("msg");
   msgInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -177,7 +163,6 @@ async function init() {
     }
   });
 
-  // ---- peers list (delegation) ----
   document.getElementById("peers").addEventListener("click", (e) => {
     const el = e.target.closest("[data-peer]");
     if (!el) return;
@@ -187,8 +172,12 @@ async function init() {
     else openPeer(peer);
   });
 
-  // ---- message actions ----
+  // ---- messages: edit/del + "Load older" ----
   document.getElementById("messages").addEventListener("click", (e) => {
+    if (e.target.closest("#load-older-btn")) {
+      loadOlder();
+      return;
+    }
     const btn = e.target.closest("[data-act]");
     if (!btn) return;
     const msgEl = btn.closest(".msg");
@@ -198,14 +187,12 @@ async function init() {
     else if (btn.dataset.act === "del") deleteMessage(id);
   });
 
-  // ---- pending list ----
   document.getElementById("pending-list").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-accept]");
     if (!btn) return;
     acceptPending(btn.dataset.accept);
   });
 
-  // ---- encryption widget ----
   document.getElementById("enc-btn").onclick = (ev) => {
     ev.stopPropagation();
     const panel = document.getElementById("enc-panel");
@@ -220,7 +207,6 @@ async function init() {
   document.getElementById("enc-apply").onclick = applyEncryption;
   document.getElementById("enc-gen").onclick = generatePsk;
 
-  // Close menus when clicking anywhere else.
   document.addEventListener("click", (ev) => {
     const widget = document.getElementById("enc-widget");
     const panel = document.getElementById("enc-panel");
@@ -236,7 +222,6 @@ async function init() {
     try { invoke("disconnect"); } catch (_) {}
   });
 
-  // ---- async init ----
   await setupEvents();
   await refreshEncryptionStatus();
   renderMyStatus();
