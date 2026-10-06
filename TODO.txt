@@ -1,13 +1,7 @@
 (Some of them may be already implemented, but untested)
  - Do not preload all the chat (like in Discord/Telegram?)
- - Android/IOS support (before that, make adaptive UI)
- - Allow to login into the same account from multiple devices at the same time
- - Custom media files: show filename; allow do download files (ensure custom files also supported)
+ - Profile config (image (defaults to letter like now) which syncs for others when changed, delete account button here, some personal info etc)
+ - Android/IOS support (before that, make adaptive UI!!!!!)
+ - Custom media files: show filename; allow to download files (ensure custom files also supported). also maybe make a better look on audio player, add image viewer somehow???
  - Fix notifications (message count) after logging back not showing, taskbar not blinking (even with normal notifications) (there may be other issues probably with that)
- - Better new message notifications (sounds, system notifications?)
- - Status (Inactive, Busy etc like in Discord)
- - Mark messages as sent/read by other user like in Telegram
- - (Re/)Implement some good features:
-    1. Blocklist to see all the blocked users (with ability to unblock user/block user by name)
-    2. Sync notes from the different devices (like with the chats)
-    3. Chat prelocal should work by message count, not date and must preload automatically when scrolling up, not by button
+ - What to do when system notifications are disabled???
