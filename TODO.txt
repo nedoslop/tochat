@@ -1,3 +1,4 @@
+(Some of them may be already implemented, but untested)
  - Do not preload all the chat (like in Discord/Telegram?)
  - Add ability to clear chat (locally/globally), leave chat, block user etc
  - Android/IOS support
