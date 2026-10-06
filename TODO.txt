@@ -10,3 +10,4 @@
  - (Re/)Implement some good features:
     1. Blocklist to see all the blocked users (with ability to unblock user/block user by name)
     2. Sync notes from the different devices (like with the chats)
+    3. Chat prelocal should work by message count, not date and must preload automatically when scrolling up, not by button
