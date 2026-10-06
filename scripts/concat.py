@@ -38,6 +38,7 @@ if '--client' in sys.argv:
     files.append('client/src/js/encryption.js')
     files.append('client/src/js/events.js')
     files.append('client/src/js/main.js')
+    files.append('client/src/js/sound.js')
     files.append('client/src/js/state.js')
     files.append('client/src/js/theme.js')
     files.append('client/src/js/ui.js')

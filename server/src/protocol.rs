@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 pub enum MessageKind {
     #[default]
     Text,
+    Image,
+    Audio,
+    File,
 }
 
 /// User visibility status.
@@ -33,6 +36,16 @@ pub enum ClientMsg {
     },
     Edit {
         to: String,
+        id: String,
+        ts: i64,
+        edit_ts: i64,
+        #[serde(default)]
+        kind: MessageKind,
+        payload: String,
+    },
+    /// Send a message to all OTHER sessions belonging to the same user.
+    /// Used for syncing the "__notes__" chat across devices.
+    SendToSelf {
         id: String,
         ts: i64,
         edit_ts: i64,
@@ -71,6 +84,11 @@ pub enum ClientMsg {
         username: String,
     },
     ListBlocked,
+    /// Tell the peer that we've read all messages they sent us up to `up_to_ts`.
+    ReadReceipt {
+        to: String,
+        up_to_ts: i64,
+    },
 }
 
 /// A stored message as relayed by the server.
@@ -118,6 +136,14 @@ pub enum ServerMsg {
         kind: MessageKind,
         payload: String,
     },
+    /// A `__notes__` payload from one of our own other devices.
+    NoteMessage {
+        id: String,
+        ts: i64,
+        edit_ts: i64,
+        kind: MessageKind,
+        payload: String,
+    },
     PullHistoryRequest {
         from: String,
         since: i64,
@@ -129,6 +155,10 @@ pub enum ServerMsg {
     HistoryResponse {
         from: String,
         messages: Vec<StoredMsg>,
+    },
+    ReadReceipt {
+        from: String,
+        up_to_ts: i64,
     },
     Error {
         msg: String,

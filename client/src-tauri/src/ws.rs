@@ -13,6 +13,8 @@ use crate::db::Database;
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
 use crate::state::{user_db_path, AppState, WsSession};
 
+pub const NOTES_PEER: &str = "__notes__";
+
 pub async fn connect(
     state: Arc<AppState>,
     base_url: String,
@@ -161,9 +163,10 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             let _ = state.app.emit("peer-offline", json!(username));
         }
         ServerMsg::StatusUpdate { username, status } => {
-            let _ = state
-                .app
-                .emit("status-update", json!({ "username": username, "status": status.as_str() }));
+            let _ = state.app.emit(
+                "status-update",
+                json!({ "username": username, "status": status.as_str() }),
+            );
         }
         ServerMsg::Message {
             id,
@@ -184,6 +187,16 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             )
             .await;
         }
+        ServerMsg::NoteMessage {
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
+            handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload)
+                .await;
+        }
         ServerMsg::PullHistoryRequest {
             from,
             since,
@@ -194,6 +207,15 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
         ServerMsg::HistoryResponse { from, messages } => {
             handle_history_response(state, from, messages).await;
+        }
+        ServerMsg::ReadReceipt { from, up_to_ts } => {
+            if let Ok(db) = state.active_db().await {
+                db.mark_read_up_to(&from, up_to_ts).await;
+            }
+            let _ = state.app.emit(
+                "read-receipt",
+                json!({ "peer": from, "up_to_ts": up_to_ts }),
+            );
         }
         ServerMsg::Error { msg } => {
             let _ = state.app.emit("error", json!(msg));
@@ -223,8 +245,18 @@ async fn handle_incoming(
     let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
 
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(&from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext)
-            .await;
+        db.upsert_message(
+            &from,
+            &id,
+            "in",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            true,
+        )
+        .await;
     }
 
     let focused = state
@@ -265,6 +297,43 @@ async fn handle_incoming(
     );
 }
 
+async fn handle_note_incoming(
+    state: &Arc<AppState>,
+    id: String,
+    ts: i64,
+    edit_ts: i64,
+    kind: String,
+    payload: String,
+) {
+    let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
+    if let Ok(db) = state.active_db().await {
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            true,
+        )
+        .await;
+    }
+    let _ = state.app.emit(
+        "note-message",
+        json!({
+            "id": id,
+            "peer": NOTES_PEER,
+            "direction": "out",
+            "ts": ts,
+            "edit_ts": edit_ts,
+            "kind": kind,
+            "payload": stored,
+        }),
+    );
+}
+
 async fn handle_pull_request(
     state: &Arc<AppState>,
     from: String,
@@ -278,15 +347,12 @@ async fn handle_pull_request(
     let msgs = db.get_messages(&from).await;
     let me = state.me.read().await.clone().unwrap_or_default();
 
-    // Filter by edit_ts > since and (if `before` is set) ts < before.
-    // `get_messages` already returns rows sorted ascending by (ts, edit_ts).
     let mut filtered: Vec<_> = msgs
         .into_iter()
         .filter(|m| m.edit_ts > since)
         .filter(|m| before.map_or(true, |b| m.ts < b))
         .collect();
 
-    // If a limit was given, keep only the *most recent* `limit` items.
     if let Some(lim) = limit {
         let lim = lim as usize;
         if filtered.len() > lim {
@@ -313,13 +379,20 @@ async fn handle_pull_request(
                 (from.clone(), me.clone())
             };
 
+            let kind = match m.kind.as_str() {
+                "image" => crate::protocol::MessageKind::Image,
+                "audio" => crate::protocol::MessageKind::Audio,
+                "file" => crate::protocol::MessageKind::File,
+                _ => crate::protocol::MessageKind::Text,
+            };
+
             wire.push(StoredMsg {
                 id: m.id,
                 from: from_user,
                 to: to_user,
                 ts: m.ts,
                 edit_ts: m.edit_ts,
-                kind: crate::protocol::MessageKind::Text,
+                kind,
                 payload,
             });
         }
@@ -351,6 +424,7 @@ async fn handle_history_response(state: &Arc<AppState>, from: String, messages: 
                 m.kind.as_str(),
                 &stored,
                 is_plaintext,
+                direction == "in",
             )
             .await;
         }

@@ -1,195 +1,203 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chat</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/base.css" />
-  <link rel="stylesheet" href="css/login.css" />
-  <link rel="stylesheet" href="css/app.css" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/login.css" />
+    <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
 <!-- ===================== Login ===================== -->
 <div id="login-view" class="view login-view">
-  <div class="login-card">
-    <button id="theme-btn-login" class="btn btn-ghost btn-icon theme-btn-float" title="Theme">🌓</button>
+    <div class="login-card">
+        <button id="theme-btn-login" class="btn btn-ghost btn-icon theme-btn-float" title="Theme">🌓</button>
 
-    <div class="brand">
-      <div class="brand-icon">
-        <svg width="30" height="30" viewBox="0 0 24 24" fill="none"
-             stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-      </div>
-      <h1>Chat</h1>
-      <p class="brand-sub">Private peer-to-peer messaging</p>
-    </div>
+        <div class="brand">
+            <div class="brand-icon">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+            </div>
+            <h1>Chat</h1>
+            <p class="brand-sub">Private peer-to-peer messaging</p>
+        </div>
 
-    <div class="field">
-      <label for="base-url">Server URL</label>
-      <input id="base-url" type="text" value="http://localhost:8080"
-             placeholder="http://host:port" spellcheck="false"
-             autocomplete="off" autocapitalize="off" autocorrect="off" />
-    </div>
-    <div class="field">
-      <label for="user">Username</label>
-      <input id="user" type="text" placeholder="your username"
-             spellcheck="false"
-             autocomplete="off" autocapitalize="off" autocorrect="off" />
-    </div>
-    <div class="field">
-      <label for="pass">Password</label>
-      <input id="pass" type="password" placeholder="••••••••"
-             autocomplete="new-password" spellcheck="false" />
-    </div>
+        <div class="field">
+            <label for="base-url">Server URL</label>
+            <input id="base-url" type="text" value="http://localhost:8080"
+                   placeholder="http://host:port" spellcheck="false"
+                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+        </div>
+        <div class="field">
+            <label for="user">Username</label>
+            <input id="user" type="text" placeholder="your username"
+                   spellcheck="false"
+                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+        </div>
+        <div class="field">
+            <label for="pass">Password</label>
+            <input id="pass" type="password" placeholder="••••••••"
+                   autocomplete="new-password" spellcheck="false" />
+        </div>
 
-    <div class="login-actions">
-      <button id="login-btn" class="btn btn-primary btn-lg">Sign in</button>
-      <button id="register-btn" class="btn btn-ghost btn-lg">Register</button>
+        <div class="login-actions">
+            <button id="login-btn" class="btn btn-primary btn-lg">Sign in</button>
+            <button id="register-btn" class="btn btn-ghost btn-lg">Register</button>
+        </div>
+        <p class="hint center">New here? Register first, then sign in.</p>
     </div>
-    <p class="hint center">New here? Register first, then sign in.</p>
-  </div>
 </div>
 
 <!-- ===================== App ===================== -->
 <div id="app-view" class="view app-view" hidden>
-  <aside class="sidebar">
-    <div class="sidebar-head">
-      <div class="me-badge">
-        <div class="avatar" id="me-avatar">?</div>
-        <div class="me-info">
-          <div class="me-name" id="me-name">—</div>
-          <button id="me-status" class="me-status" title="Change status">
-            <span class="status-dot" id="me-status-dot"></span>
-            <span id="me-status-label">online</span>
-          </button>
-        </div>
-      </div>
-      <div class="head-actions">
-        <button id="notes-btn" class="btn btn-ghost btn-icon" title="Notes">📝</button>
-        <button id="theme-btn" class="btn btn-ghost btn-icon" title="Theme">🌓</button>
-        <div class="menu-wrap">
-          <button id="settings-btn" class="btn btn-ghost btn-icon" title="Settings">⋯</button>
-          <div id="settings-menu" class="menu" hidden>
-            <button class="menu-item" id="reload-btn">Reload UI</button>
-            <button class="menu-item" id="logout-btn">Log out</button>
-            <button class="menu-item danger" id="delete-btn">Delete account…</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="sidebar-search">
-      <input id="new-peer" placeholder="Start chat with…" spellcheck="false"
-             autocomplete="off" autocapitalize="off" autocorrect="off" />
-      <button id="new-peer-btn" class="btn btn-primary btn-icon" title="Open chat">+</button>
-    </div>
-
-    <button id="pending-btn" class="pending-btn">
-      <span class="pending-label">Pending requests</span>
-      <span class="badge" id="pending-count">0</span>
-    </button>
-
-    <div class="sidebar-section">
-      <div class="section-title">Chats</div>
-      <div id="peers" class="peer-list"></div>
-    </div>
-  </aside>
-
-  <main class="main">
-    <!-- ---- Chat view ---- -->
-    <section id="chat-view" class="chat-view">
-      <header class="chat-header">
-        <div class="chat-peer">
-          <div class="avatar" id="peer-avatar">?</div>
-          <div class="chat-peer-meta">
-            <div class="chat-peer-name" id="peer-title">Select a chat</div>
-            <div class="chat-peer-status" id="peer-status"></div>
-          </div>
-        </div>
-        <div class="header-actions">
-          <div id="enc-widget" class="enc-widget">
-            <button id="enc-btn" class="btn btn-ghost btn-icon" title="Encryption settings">🔓</button>
-            <div id="enc-panel" class="enc-panel" hidden>
-              <div class="enc-title">Encryption</div>
-              <div class="field">
-                <label for="enc-method">Method</label>
-                <select id="enc-method">
-                  <option value="none">None (plaintext)</option>
-                  <option value="shared_password">Shared password (ChaCha20-Poly1305)</option>
-                  <option value="pre_shared_key">Pre-shared key (hex, ChaCha20-Poly1305)</option>
-                </select>
-              </div>
-              <div class="field" id="enc-secret-row" hidden>
-                <label for="enc-secret">Secret</label>
-                <div class="secret-row">
-                  <input id="enc-secret" type="password" placeholder="secret"
-                         autocomplete="new-password" />
-                  <button type="button" id="enc-gen" class="btn btn-ghost btn-sm" hidden>Generate</button>
+    <aside class="sidebar">
+        <div class="sidebar-head">
+            <div class="me-badge">
+                <div class="avatar" id="me-avatar">?</div>
+                <div class="me-info">
+                    <div class="me-name" id="me-name">—</div>
+                    <button id="me-status" class="me-status" title="Change status">
+                        <span class="status-dot" id="me-status-dot"></span>
+                        <span id="me-status-label">online</span>
+                    </button>
                 </div>
-                <div class="hint" id="enc-secret-hint">Both sides must use the same secret.</div>
-              </div>
-              <div class="enc-actions">
-                <button id="enc-apply" class="btn btn-primary btn-sm">Apply</button>
-                <button id="enc-cancel" class="btn btn-ghost btn-sm">Cancel</button>
-              </div>
-              <div class="hint" id="enc-hint"></div>
             </div>
-          </div>
-          <div class="menu-wrap">
-            <button id="chat-menu-btn" class="btn btn-ghost btn-icon" title="Chat actions">⋮</button>
-            <div id="chat-menu" class="menu" hidden>
-              <button class="menu-item" id="clear-chat-btn">Clear chat locally…</button>
-              <button class="menu-item danger" id="leave-chat-btn">Leave chat…</button>
-              <button class="menu-item danger" id="block-user-btn">Block user…</button>
+            <div class="head-actions">
+                <button id="notes-btn" class="btn btn-ghost btn-icon" title="Notes">📝</button>
+                <button id="theme-btn" class="btn btn-ghost btn-icon" title="Theme">🌓</button>
+                <div class="menu-wrap">
+                    <button id="settings-btn" class="btn btn-ghost btn-icon" title="Settings">⋯</button>
+                    <div id="settings-menu" class="menu" hidden>
+                        <button class="menu-item" id="reload-btn">Reload UI</button>
+                        <button class="menu-item" id="logout-btn">Log out</button>
+                        <button class="menu-item danger" id="delete-btn">Delete account…</button>
+                    </div>
+                </div>
             </div>
-          </div>
         </div>
-      </header>
 
-      <div id="messages" class="messages"></div>
+        <div class="sidebar-search">
+            <input id="new-peer" placeholder="Start chat with…" spellcheck="false"
+                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+            <button id="new-peer-btn" class="btn btn-primary btn-icon" title="Open chat">+</button>
+        </div>
 
-      <div id="composer" class="composer">
-        <textarea id="msg" placeholder="Type a message… (Shift+Enter for newline)"
-                  rows="1" autocomplete="off"></textarea>
-        <button id="send-btn" class="btn btn-primary btn-icon" title="Send">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
+        <button id="pending-btn" class="pending-btn">
+            <span class="pending-label">Pending requests</span>
+            <span class="badge" id="pending-count">0</span>
         </button>
-      </div>
-    </section>
 
-    <!-- ---- Pending view ---- -->
-    <section id="pending-view" class="pending-view" hidden>
-      <header class="chat-header">
-        <div class="chat-peer">
-          <div class="chat-peer-meta">
-            <div class="chat-peer-name">Pending chats</div>
-            <div class="chat-peer-status">Users who messaged you first</div>
-          </div>
+        <div class="sidebar-section">
+            <div class="section-title">Chats</div>
+            <div id="peers" class="peer-list"></div>
         </div>
-        <div class="pending-actions">
-          <button id="refresh-pending-btn" class="btn btn-ghost btn-sm">Refresh</button>
-          <button id="pending-back-btn" class="btn btn-ghost btn-sm">Back</button>
-        </div>
-      </header>
-      <div class="pending-body">
-        <p class="hint">
-          These users messaged you first. Pull history to accept the chat
-          and open the direct connection.
-        </p>
-        <div id="pending-list" class="pending-list"></div>
-      </div>
-    </section>
-  </main>
+    </aside>
+
+    <main class="main">
+        <!-- ---- Chat view ---- -->
+        <section id="chat-view" class="chat-view">
+            <header class="chat-header">
+                <div class="chat-peer">
+                    <div class="avatar" id="peer-avatar">?</div>
+                    <div class="chat-peer-meta">
+                        <div class="chat-peer-name" id="peer-title">Select a chat</div>
+                        <div class="chat-peer-status" id="peer-status"></div>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <div id="enc-widget" class="enc-widget">
+                        <button id="enc-btn" class="btn btn-ghost btn-icon" title="Encryption settings">🔓</button>
+                        <div id="enc-panel" class="enc-panel" hidden>
+                            <div class="enc-title">Encryption</div>
+                            <div class="field">
+                                <label for="enc-method">Method</label>
+                                <select id="enc-method">
+                                    <option value="none">None (plaintext)</option>
+                                    <option value="shared_password">Shared password (ChaCha20-Poly1305)</option>
+                                    <option value="pre_shared_key">Pre-shared key (hex, ChaCha20-Poly1305)</option>
+                                </select>
+                            </div>
+                            <div class="field" id="enc-secret-row" hidden>
+                                <label for="enc-secret">Secret</label>
+                                <div class="secret-row">
+                                    <input id="enc-secret" type="password" placeholder="secret"
+                                           autocomplete="new-password" />
+                                    <button type="button" id="enc-gen" class="btn btn-ghost btn-sm" hidden>Generate</button>
+                                </div>
+                                <div class="hint" id="enc-secret-hint">Both sides must use the same secret.</div>
+                            </div>
+                            <div class="enc-actions">
+                                <button id="enc-apply" class="btn btn-primary btn-sm">Apply</button>
+                                <button id="enc-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+                            </div>
+                            <div class="hint" id="enc-hint"></div>
+                        </div>
+                    </div>
+                    <div class="menu-wrap">
+                        <button id="chat-menu-btn" class="btn btn-ghost btn-icon" title="Chat actions">⋮</button>
+                        <div id="chat-menu" class="menu" hidden>
+                            <button class="menu-item" id="clear-chat-btn">Clear chat locally…</button>
+                            <button class="menu-item danger" id="leave-chat-btn">Leave chat…</button>
+                            <button class="menu-item danger" id="block-user-btn">Block user…</button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <div id="messages" class="messages"></div>
+
+            <div id="composer" class="composer">
+                <input id="image-input" type="file" accept="image/*" hidden />
+                <button id="attach-btn" class="btn btn-ghost btn-icon" title="Send image">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                    </svg>
+                </button>
+                <textarea id="msg" placeholder="Type a message… (Shift+Enter for newline)"
+                          rows="1" autocomplete="off"></textarea>
+                <button id="send-btn" class="btn btn-primary btn-icon" title="Send">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </section>
+
+        <!-- ---- Pending view ---- -->
+        <section id="pending-view" class="pending-view" hidden>
+            <header class="chat-header">
+                <div class="chat-peer">
+                    <div class="chat-peer-meta">
+                        <div class="chat-peer-name">Pending chats</div>
+                        <div class="chat-peer-status">Users who messaged you first</div>
+                    </div>
+                </div>
+                <div class="pending-actions">
+                    <button id="refresh-pending-btn" class="btn btn-ghost btn-sm">Refresh</button>
+                    <button id="pending-back-btn" class="btn btn-ghost btn-sm">Back</button>
+                </div>
+            </header>
+            <div class="pending-body">
+                <p class="hint">
+                    These users messaged you first. Pull history to accept the chat
+                    and open the direct connection.
+                </p>
+                <div id="pending-list" class="pending-list"></div>
+            </div>
+        </section>
+    </main>
 </div>
 
 <div id="toast" class="toast" hidden></div>

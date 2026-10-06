@@ -59,20 +59,55 @@ pub async fn send_message(
     text: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    if text.is_empty() {
+    send_media(to, "text".into(), text, state).await
+}
+
+#[tauri::command]
+pub async fn send_media(
+    to: String,
+    kind: String,
+    payload: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if payload.is_empty() {
         return Err("empty message".into());
     }
+    let k = match kind.as_str() {
+        "image" => MessageKind::Image,
+        "audio" => MessageKind::Audio,
+        "file" => MessageKind::File,
+        _ => MessageKind::Text,
+    };
+
     if to == NOTES_PEER {
         let db = state.active_db().await?;
         let id = random_id();
         let ts = now_ms();
-        db.upsert_message(&to, &id, "out", ts, ts, "text", &text, true)
+        // Notes are always stored as plaintext locally, but broadcast to
+        // our other devices so the notes chat stays in sync. We wrap it
+        // through our own encryption so the server can't read it either.
+        db.upsert_message(&to, &id, "out", ts, ts, k.as_str(), &payload, true, true)
             .await;
+        let wire = state.encrypt_for_wire(&payload).await?;
+        let tx = {
+            let ws = state.ws.lock().await;
+            ws.as_ref().map(|s| s.tx.clone())
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(ClientMsg::SendToSelf {
+                id,
+                ts,
+                edit_ts: ts,
+                kind: k,
+                payload: wire,
+            });
+        }
         return Ok(());
     }
+
     let id = random_id();
     let ts = now_ms();
-    send_outgoing(&state, &to, &id, ts, ts, &text, false).await
+    send_outgoing(&state, &to, &id, ts, ts, k, &payload, false).await
 }
 
 #[tauri::command]
@@ -86,20 +121,40 @@ pub async fn edit_message(
         return Err("empty message".into());
     }
     let db = state.active_db().await?;
-    let ts = db
+    let (ts, kind) = db
         .get_messages(&peer)
         .await
         .iter()
         .find(|m| m.id == id)
-        .map(|m| m.ts)
-        .unwrap_or_else(now_ms);
+        .map(|m| (m.ts, m.kind.clone()))
+        .unwrap_or_else(|| (now_ms(), "text".into()));
+    let k = match kind.as_str() {
+        "image" => MessageKind::Image,
+        "audio" => MessageKind::Audio,
+        "file" => MessageKind::File,
+        _ => MessageKind::Text,
+    };
     let edit_ts = now_ms();
     if peer == NOTES_PEER {
-        db.upsert_message(&peer, &id, "out", ts, edit_ts, "text", &text, true)
+        db.upsert_message(&peer, &id, "out", ts, edit_ts, k.as_str(), &text, true, true)
             .await;
+        let wire = state.encrypt_for_wire(&text).await?;
+        let tx = {
+            let ws = state.ws.lock().await;
+            ws.as_ref().map(|s| s.tx.clone())
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(ClientMsg::SendToSelf {
+                id,
+                ts,
+                edit_ts,
+                kind: k,
+                payload: wire,
+            });
+        }
         return Ok(());
     }
-    send_outgoing(&state, &peer, &id, ts, edit_ts, &text, true).await
+    send_outgoing(&state, &peer, &id, ts, edit_ts, k, &text, true).await
 }
 
 #[tauri::command]
@@ -109,20 +164,40 @@ pub async fn delete_message(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let db = state.active_db().await?;
-    let ts = db
+    let (ts, kind) = db
         .get_messages(&peer)
         .await
         .iter()
         .find(|m| m.id == id)
-        .map(|m| m.ts)
-        .unwrap_or_else(now_ms);
+        .map(|m| (m.ts, m.kind.clone()))
+        .unwrap_or_else(|| (now_ms(), "text".into()));
+    let k = match kind.as_str() {
+        "image" => MessageKind::Image,
+        "audio" => MessageKind::Audio,
+        "file" => MessageKind::File,
+        _ => MessageKind::Text,
+    };
     let edit_ts = now_ms();
     if peer == NOTES_PEER {
-        db.upsert_message(&peer, &id, "out", ts, edit_ts, "text", "", true)
+        db.upsert_message(&peer, &id, "out", ts, edit_ts, k.as_str(), "", true, true)
             .await;
+        let wire = state.encrypt_for_wire("").await?;
+        let tx = {
+            let ws = state.ws.lock().await;
+            ws.as_ref().map(|s| s.tx.clone())
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(ClientMsg::SendToSelf {
+                id,
+                ts,
+                edit_ts,
+                kind: k,
+                payload: wire,
+            });
+        }
         return Ok(());
     }
-    send_outgoing(&state, &peer, &id, ts, edit_ts, "", true).await
+    send_outgoing(&state, &peer, &id, ts, edit_ts, k, "", true).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,14 +207,25 @@ async fn send_outgoing(
     id: &str,
     ts: i64,
     edit_ts: i64,
+    kind: MessageKind,
     plaintext: &str,
     is_edit: bool,
 ) -> Result<(), String> {
     let db = state.active_db().await?;
     let wire_payload = state.encrypt_for_wire(plaintext).await?;
 
-    db.upsert_message(to, id, "out", ts, edit_ts, "text", plaintext, true)
-        .await;
+    db.upsert_message(
+        to,
+        id,
+        "out",
+        ts,
+        edit_ts,
+        kind.as_str(),
+        plaintext,
+        true,
+        false,
+    )
+    .await;
 
     let tx = {
         let ws = state.ws.lock().await;
@@ -154,7 +240,7 @@ async fn send_outgoing(
             id: id.to_string(),
             ts,
             edit_ts,
-            kind: MessageKind::Text,
+            kind,
             payload: wire_payload,
         }
     } else {
@@ -162,7 +248,7 @@ async fn send_outgoing(
             to: to.to_string(),
             id: id.to_string(),
             ts,
-            kind: MessageKind::Text,
+            kind,
             payload: wire_payload,
         }
     };
@@ -195,6 +281,28 @@ pub async fn pull_history(
         before,
     })
     .map_err(|_| "connection closed".to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mark_read(
+    peer: String,
+    up_to_ts: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if peer == NOTES_PEER {
+        return Ok(());
+    }
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::ReadReceipt {
+            to: peer,
+            up_to_ts,
+        });
+    }
     Ok(())
 }
 
