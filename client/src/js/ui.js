@@ -78,9 +78,12 @@ export function renderSidebar() {
             if (isNotes) {
                 av.textContent = "📝";
                 av.style.background = "#8b5cf6";
-            } else {
-                av.style.background = avatarFor(p) ? "var(--surface-3)" : avatarColor(p);
+            } else if (avatarFor(p)) {
+                av.style.background = "var(--surface-3)";
                 renderAvatar(av, p, initial(p));
+            } else {
+                av.style.background = avatarColor(p);
+                av.textContent = initial(p);
             }
 
             const body = document.createElement("div");
@@ -122,13 +125,14 @@ export function renderSidebar() {
         const isNotes = state.currentPeer === NOTES_PEER;
         titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
         if (isNotes) {
-            peerAvatar.textContent = "📝";
-            peerAvatar.style.background = "#8b5cf6";
             peerAvatar.innerHTML = "📝";
-        } else {
-            peerAvatar.style.background = avatarFor(state.currentPeer)
-                ? "var(--surface-3)" : avatarColor(state.currentPeer);
+            peerAvatar.style.background = "#8b5cf6";
+        } else if (avatarFor(state.currentPeer)) {
+            peerAvatar.style.background = "var(--surface-3)";
             renderAvatar(peerAvatar, state.currentPeer, initial(state.currentPeer));
+        } else {
+            peerAvatar.style.background = avatarColor(state.currentPeer);
+            peerAvatar.textContent = initial(state.currentPeer);
         }
         if (isNotes) {
             statusEl.textContent = "synced across your devices";
@@ -277,13 +281,29 @@ function messageEl(m, isNotes, isFresh = false) {
     if (deleted) {
         body.textContent = "(deleted)";
     } else if (m.kind === "image") {
-        const img = document.createElement("img");
-        img.className = "msg-image";
-        img.src = m.payload;
-        img.alt = "image";
-        img.loading = "lazy";
-        img.addEventListener("click", () => openImageViewer(m.payload));
-        body.appendChild(img);
+        // Encryption mismatch produces a payload that isn't a data URL;
+        // show a clear placeholder instead of a broken image icon.
+        if (!/^data:image\//i.test(m.payload)) {
+            const err = document.createElement("div");
+            err.className = "msg-image-error";
+            err.textContent = "🔒 Cannot display image — encryption key mismatch?";
+            body.appendChild(err);
+        } else {
+            const img = document.createElement("img");
+            img.className = "msg-image";
+            img.src = m.payload;
+            img.alt = "image";
+            img.loading = "lazy";
+            img.addEventListener("error", () => {
+                body.innerHTML = "";
+                const err = document.createElement("div");
+                err.className = "msg-image-error";
+                err.textContent = "⚠️ Image failed to load.";
+                body.appendChild(err);
+            });
+            img.addEventListener("click", () => openImageViewer(m.payload));
+            body.appendChild(img);
+        }
     } else if (m.kind === "audio") {
         const wrap = document.createElement("div");
         wrap.className = "msg-audio-wrap";

@@ -141,6 +141,11 @@ Sidebar
 .peer.active .peer-name { color: var(--accent); }
 .peer.offline { opacity: 0.55; }
 
+/* ------------------------------------------------------------
+   Peer avatar — round, with a status dot in the bottom-right.
+   NOTE: overflow is intentionally visible so the ::after dot
+   isn't clipped. The image itself carries the border-radius.
+   ------------------------------------------------------------ */
 .peer-avatar {
     width: 34px;
     height: 34px;
@@ -153,7 +158,14 @@ Sidebar
     color: #fff;
     flex-shrink: 0;
     position: relative;
-    overflow: hidden;
+    /* overflow: visible (default) — dot must be visible */
+}
+.peer-avatar .avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    display: block;
 }
 .peer-avatar::after {
     content: "";
@@ -166,6 +178,7 @@ Sidebar
     background: var(--success);
     border: 2px solid var(--surface);
     display: none;
+    z-index: 2;
 }
 .peer.online .peer-avatar::after { display: block; }
 .peer.status-away .peer-avatar::after { background: var(--warning); }
@@ -249,7 +262,7 @@ Main
 /* Hamburger — hidden on desktop, shown on mobile */
 .hamburger { display: none; }
 
-/* Sidebar backdrop — hidden on desktop, used as overlay on mobile */
+/* Sidebar backdrop — used as overlay on mobile */
 .sidebar-backdrop {
     position: fixed;
     inset: 0;
@@ -336,11 +349,7 @@ Messages
     line-height: 1.45;
 }
 
-/* Only freshly-inserted messages animate. This is what prevents the
-   "blink" during re-renders and history syncs. */
-.msg.fresh {
-    animation: msg-in 0.15s ease;
-}
+.msg.fresh { animation: msg-in 0.15s ease; }
 @keyframes msg-in {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
@@ -408,6 +417,16 @@ Media messages
     border-radius: var(--radius-sm);
     cursor: zoom-in;
     object-fit: contain;
+}
+
+.msg-image-error {
+    padding: 14px 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    background: var(--surface-3);
+    border-radius: var(--radius-sm);
+    text-align: center;
+    max-width: 280px;
 }
 
 .msg-audio-wrap {
@@ -505,10 +524,8 @@ Composer
     transition: border-color 0.15s, box-shadow 0.15s;
     overflow-x: hidden;
     overflow-y: auto;
-    /* NOTE: no `scrollbar-gutter: stable` here — reserving space
-       caused a phantom scrollbar on the very first line of text.
-       We also set a min-height so the pill is never smaller than
-       the padding + one line. */
+    /* No `scrollbar-gutter: stable` here — reserving gutter space
+       caused a phantom scrollbar on the very first line. */
     min-height: 40px;
 }
 .composer textarea:focus {

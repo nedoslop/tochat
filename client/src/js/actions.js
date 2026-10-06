@@ -91,7 +91,6 @@ export async function openPeer(peer) {
     state.unread[peer] = 0;
     showChatView();
 
-    // Lazy-load: pull only the newest page.
     try {
         state.msgCache[peer] = await invoke("get_messages", {
             peer, beforeTs: null, limit: INITIAL_LIMIT,
@@ -100,7 +99,6 @@ export async function openPeer(peer) {
         state.msgCache[peer] = state.msgCache[peer] || [];
     }
 
-    // Ask the server for the peer's profile if we don't have it yet.
     if (!state.profiles[peer]) {
         try { await invoke("get_profile", { username: peer }); } catch (_) {}
     }
@@ -163,7 +161,45 @@ export async function sendMedia(kind, payload) {
     } catch (e) { toast(`Send ${kind} error: ` + e); }
 }
 
-export async function sendImage(dataUrl) { await sendMedia("image", dataUrl); }
+/**
+ * Compresses an image data URL by re-encoding it as JPEG at a smaller
+ * resolution if it's larger than `maxDim` px or already big on the wire.
+ * Falls back to the original data URL if anything fails.
+ */
+async function compressImage(dataUrl, maxDim = 1280, quality = 0.85) {
+    try {
+        const img = await new Promise((resolve, reject) => {
+            const i = new Image();
+            i.onload = () => resolve(i);
+            i.onerror = () => reject(new Error("invalid image"));
+            i.src = dataUrl;
+        });
+
+        const needResize = img.width > maxDim || img.height > maxDim;
+        const needReencode = dataUrl.length > 400_000; // ~300 KB raw
+        if (!needResize && !needReencode) return dataUrl;
+
+        const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL("image/jpeg", quality);
+        return out.length < dataUrl.length ? out : dataUrl;
+    } catch (_) {
+        return dataUrl;
+    }
+}
+
+export async function sendImage(dataUrl) {
+    const compressed = await compressImage(dataUrl);
+    await sendMedia("image", compressed);
+}
+
 export async function sendAudio(dataUrl) { await sendMedia("audio", dataUrl); }
 
 export async function sendFile(file) {
@@ -289,7 +325,6 @@ export async function sendReadReceipt(peer) {
     if (upTo <= 0) return;
     try {
         await invoke("mark_read", { peer, upToTs: upTo });
-        // Locally we just marked all our incoming messages as read.
         for (const m of state.msgCache[peer] || []) {
             if (m.direction === "in") m.read = true;
         }
@@ -357,8 +392,6 @@ export async function loadOlder() {
     state.suppressScrollLoad = true;
 
     try {
-        // Load older messages from the local DB; if the DB is exhausted,
-        // ask the peer for their older history too.
         const older = await invoke("get_messages", {
             peer, beforeTs: oldestTs, limit: INITIAL_LIMIT,
         });
@@ -373,7 +406,6 @@ export async function loadOlder() {
             return;
         }
 
-        // Local DB has nothing older; ask peer for older history.
         state.lastPullLimit[peer] = INITIAL_LIMIT;
         await invoke("pull_history", {
             from: peer, since: 0, limit: INITIAL_LIMIT, before: oldestTs,

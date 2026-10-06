@@ -255,6 +255,8 @@ Utility
 /* ============================================================
 Avatar & badge
 ============================================================ */
+/* Generic avatar used for header ("me" and chat peer). No status dot
+   on top of these, so we can safely clip. */
 .avatar {
     width: 38px;
     height: 38px;
@@ -271,13 +273,10 @@ Avatar & badge
     overflow: hidden;
 }
 
-/* Avatar rendered as an <img> (profile picture) */
-.avatar-img,
-.peer-avatar .avatar-img {
+.avatar-img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    border-radius: 50%;
     display: block;
 }
 
@@ -445,6 +444,15 @@ Profile modal specifics
     font-size: 34px !important;
 }
 .profile-avatar-actions { display: flex; gap: 6px; }
+
+.profile-danger-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+}
 
 /* ============================================================
 Image viewer (lightbox)
