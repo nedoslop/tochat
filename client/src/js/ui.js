@@ -134,14 +134,21 @@ export function renderSidebar() {
 }
 
 /**
- * Renders the messages list. Optionally preserves scroll position when
- * older pages are prepended (pass `preserveScroll=true`).
+ * Renders the messages list.
+ *
+ * `preserveScroll=true` keeps the scroll position at the same offset from
+ * the bottom (used after prepending older messages). Otherwise we only
+ * stick to the bottom if the user was already there.
+ *
+ * Animation is applied only to messages that are new since the last
+ * render — this is what prevents the "blink" when the list is re-rendered.
  */
 export function renderMessages(preserveScroll = false) {
     const el = document.getElementById("messages");
     const prevHeight = el.scrollHeight;
     const prevTop = el.scrollTop;
-    const prevFocused = state.suppressScrollLoad;
+    const prevClientHeight = el.clientHeight;
+    const wasAtBottom = prevHeight - prevTop - prevClientHeight < 60;
 
     el.innerHTML = "";
 
@@ -169,6 +176,10 @@ export function renderMessages(preserveScroll = false) {
         );
         return;
     }
+
+    // Track which message ids we've already drawn so we don't re-animate
+    // them. The set persists per-peer in state.
+    const seen = state.seenIds[peer] || (state.seenIds[peer] = new Set());
 
     // Top-of-list controls.
     if (peer !== NOTES_PEER) {
@@ -202,18 +213,44 @@ export function renderMessages(preserveScroll = false) {
             el.appendChild(sep);
             lastDate = dateStr;
         }
-        el.appendChild(messageEl(m, peer === NOTES_PEER));
+        const isFresh = !seen.has(m.id);
+        seen.add(m.id);
+        el.appendChild(messageEl(m, peer === NOTES_PEER, isFresh));
     }
 
     if (preserveScroll) {
         const newHeight = el.scrollHeight;
         el.scrollTop = newHeight - prevHeight + prevTop;
-    } else {
+    } else if (wasAtBottom) {
         el.scrollTop = el.scrollHeight;
     }
 
-    // Restore suppression flag if it was set externally.
-    if (prevFocused) state.suppressScrollLoad = true;
+    // Keep the seen set from growing without bound (drop entries no longer present).
+    if (seen.size > msgs.length * 2 + 200) {
+        const live = new Set(msgs.map((m) => m.id));
+        state.seenIds[peer] = live;
+    }
+}
+
+/** Updates only the read-indicator label of outgoing message bubbles. */
+export function updateReadIndicators(peer) {
+    if (state.currentPeer !== peer) return;
+    const el = document.getElementById("messages");
+    if (!el) return;
+    for (const m of state.msgCache[peer] || []) {
+        if (m.direction !== "out" || m.payload === "") continue;
+        const node = el.querySelector(`.msg[data-id="${cssEscape(m.id)}"] .msg-time`);
+        if (!node) continue;
+        const label = formatTime(m.ts) + (m.read ? "  ✓✓" : "  ✓");
+        if (node.textContent !== label) node.textContent = label;
+    }
+}
+
+function cssEscape(s) {
+    if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(s);
+    }
+    return String(s).replace(/["\\]/g, "\\$&");
 }
 
 function emptyState(icon, title, sub) {
@@ -238,14 +275,15 @@ function emptyState(icon, title, sub) {
     return d;
 }
 
-function messageEl(m, isNotes) {
+function messageEl(m, isNotes, isFresh = false) {
     const div = document.createElement("div");
     const deleted = m.payload === "";
     div.className =
         "msg " +
         (m.direction === "out" ? "out" : "in") +
         (deleted ? " deleted" : "") +
-        (m.kind && m.kind !== "text" ? " kind-" + m.kind : "");
+        (m.kind && m.kind !== "text" ? " kind-" + m.kind : "") +
+        (isFresh ? " fresh" : "");
     div.dataset.id = m.id;
 
     const body = document.createElement("div");
@@ -259,7 +297,6 @@ function messageEl(m, isNotes) {
         img.src = m.payload;
         img.alt = "image";
         img.loading = "lazy";
-        // Click to open full size in a new window/tab.
         img.addEventListener("click", () => {
             window.open(m.payload, "_blank");
         });
@@ -276,6 +313,7 @@ function messageEl(m, isNotes) {
         a.href = m.payload;
         a.target = "_blank";
         a.rel = "noopener";
+        a.download = "file";
         a.textContent = "Download file";
         body.appendChild(a);
     } else {
@@ -286,7 +324,6 @@ function messageEl(m, isNotes) {
     time.className = "msg-time";
     let label = formatTime(m.ts);
     if (m.direction === "out" && !deleted) {
-        // Sent / read indicator.
         label += m.read ? "  ✓✓" : "  ✓";
     }
     time.textContent = label;
@@ -298,7 +335,6 @@ function messageEl(m, isNotes) {
         const actions = document.createElement("div");
         actions.className = "msg-actions";
 
-        // Image/file/audio don't support text edit; only offer delete.
         if (m.kind === "text" || !m.kind) {
             const editBtn = document.createElement("button");
             editBtn.dataset.act = "edit";
@@ -363,10 +399,6 @@ export function renderPendingList() {
     }
 }
 
-/**
- * Returns the ts of the most recent inbound message for a peer (0 if none).
- * Used to compute the "up to which timestamp" read receipt to send.
- */
 export function latestInboundTs(peer) {
     const msgs = state.msgCache[peer] || [];
     let max = 0;

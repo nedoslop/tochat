@@ -10,6 +10,7 @@ import {
     renderPendingList,
     renderMyStatus,
     showChatView,
+    updateReadIndicators,
 } from "./ui.js";
 import {
     autoPull,
@@ -19,8 +20,6 @@ import {
     openPeer,
 } from "./actions.js";
 import { refreshEncryptionStatus } from "./encryption.js";
-import { playNotificationSound } from "./sound.js";
-import { showMessageToast, clearAllToasts } from "./notifications.js";
 
 export async function setupEvents() {
     await listen("auth-ok", (e) => {
@@ -113,6 +112,7 @@ export async function setupEvents() {
         state.peers.delete(peer);
         state.pending.delete(peer);
         delete state.msgCache[peer];
+        delete state.seenIds[peer];
         delete state.mightHaveMore[peer];
         delete state.lastPullLimit[peer];
         state.unread[peer] = 0;
@@ -154,20 +154,11 @@ export async function setupEvents() {
             state.unread[m.peer] = (state.unread[m.peer] || 0) + 1;
         }
 
-        // Alerting rules:
-        //   * never when busy
-        //   * suppress sound+toast only if the window is focused AND this
-        //     is the currently-open chat (the user is already looking at it)
-        const suppressVisual = isInbound && isOpen && windowFocused;
-        if (isInbound && !busy && !suppressVisual) {
-            playNotificationSound();
-            showMessageToast({
-                peer: m.peer,
-                text: m.payload,
-                kind: m.kind,
-                onClick: () => openPeer(m.peer),
-            });
-        }
+        // The Rust side already handles: sound, OS notification, taskbar
+        // flash — and it applies the same rules (busy / focused / open).
+        // We just make sure we don't double-process anything here.
+        void busy;
+        void windowFocused;
 
         renderSidebar();
         renderPendingList();
@@ -178,7 +169,6 @@ export async function setupEvents() {
     });
 
     await listen("note-message", async (e) => {
-        const m = e.payload;
         state.peers.add(NOTES_PEER);
         try {
             state.msgCache[NOTES_PEER] = await invoke("get_messages", {
@@ -190,32 +180,42 @@ export async function setupEvents() {
     });
 
     await listen("read-receipt", (e) => {
-        const { peer } = e.payload;
-        (async () => {
-            try {
-                state.msgCache[peer] = await invoke("get_messages", { peer });
-                if (state.currentPeer === peer) renderMessages();
-            } catch (_) {}
-        })();
+        const { peer, up_to_ts } = e.payload;
+        const msgs = state.msgCache[peer] || [];
+        let changed = false;
+        for (const m of msgs) {
+            if (m.direction === "out" && !m.read && m.ts <= up_to_ts) {
+                m.read = true;
+                changed = true;
+            }
+        }
+        if (changed) {
+            updateReadIndicators(peer);
+        }
     });
 
     await listen("history-received", async (e) => {
         const peer = e.payload;
         state.pulling.delete(peer);
 
-        const prevLen = (state.msgCache[peer] || []).length;
         try {
             state.msgCache[peer] = await invoke("get_messages", { peer });
         } catch (_) {
             state.msgCache[peer] = state.msgCache[peer] || [];
         }
-        const newLen = state.msgCache[peer].length;
-        const added = newLen - prevLen;
 
+        // We don't know how many were actually "new" from the pull alone,
+        // so compute it from the previous cache length.
         const limit = state.lastPullLimit[peer];
         const wasLoadingOlder = state.loadingOlder.has(peer);
+
         if (limit != null) {
-            state.mightHaveMore[peer] = added >= limit;
+            // We got back at most `limit` messages. If fewer, we're at the
+            // start of history.
+            const msgs = state.msgCache[peer] || [];
+            const oldestTs = msgs.length ? msgs[0].ts : 0;
+            // Heuristic: exactly-hit-limit means there may be more.
+            state.mightHaveMore[peer] = msgs.length >= limit && oldestTs > 0;
             delete state.lastPullLimit[peer];
         }
         state.loadingOlder.delete(peer);
@@ -255,7 +255,6 @@ export async function setupEvents() {
 
     await listen("session-closed", async (e) => {
         const reason = String(e.payload || "");
-        clearAllToasts();
 
         if (reason === "account_deleted") {
             await showAlert("Your account has been deleted.", {
@@ -279,7 +278,6 @@ export async function setupEvents() {
     });
 
     await listen("disconnected", () => {
-        clearAllToasts();
         if (state.me) resetToLogin();
     });
 }

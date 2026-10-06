@@ -11,6 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::db::Database;
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
+use crate::sound::play_notification_chirp;
 use crate::state::{user_db_path, AppState, WsSession};
 
 pub const NOTES_PEER: &str = "__notes__";
@@ -233,17 +234,37 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     }
 }
 
-/// Should we alert the user (sound / OS notification / taskbar flash)?
-/// Only when we're not in `busy` status.
+/// Alert the user only if we're not in "busy" mode.
 async fn should_alert(state: &Arc<AppState>) -> bool {
     !matches!(*state.my_status.read().await, UserStatus::Busy)
 }
 
-/// Flashes the taskbar / dock icon (like Discord). No-op if unsupported.
+/// Flashes the taskbar / dock until the window regains focus (or we give up).
+/// Called whenever an alert-worthy message arrives while the window is
+/// unfocused. `UserAttentionType::Critical` on Windows keeps flashing until
+/// focus; on macOS it bounces the dock icon; on Linux it sets urgency.
 fn request_attention(state: &Arc<AppState>) {
-    if let Some(window) = state.app.get_webview_window("main") {
-        let _ = window.request_user_attention(Some(UserAttentionType::Critical));
-    }
+    let app = state.app.clone();
+    tokio::spawn(async move {
+        // Up to ~30 seconds of flashing, checking every 1.5s whether the
+        // user has alt-tabbed back.
+        for _ in 0..20 {
+            let Some(window) = app.get_webview_window("main") else {
+                return;
+            };
+            if window.is_focused().unwrap_or(false) {
+                // Explicitly cancel any ongoing attention request.
+                let _ = window.request_user_attention(None);
+                return;
+            }
+            let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        // Timeout reached — stop flashing so we don't annoy the user forever.
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.request_user_attention(None);
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -279,8 +300,7 @@ async fn handle_incoming(
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
 
-    // Emit the raw event first so the frontend can always update its state
-    // (badges, unread counts, etc.) regardless of alert settings.
+    // Always emit the raw event so the UI can update unread counts etc.
     let _ = state.app.emit(
         "message",
         json!({
@@ -295,30 +315,46 @@ async fn handle_incoming(
         }),
     );
 
-    // Only actually alert the user when appropriate:
-    //   * status is not "busy"
-    //   * window is not focused (otherwise they're already looking at it)
-    if !focused && should_alert(state).await {
-        // Native OS notification.
-        let preview = if stored.is_empty() {
-            "(empty)".to_string()
-        } else if stored.chars().count() > 60 {
-            let mut s: String = stored.chars().take(57).collect();
-            s.push_str("...");
-            s
-        } else {
-            stored.clone()
-        };
-        let _ = state
-            .app
-            .notification()
-            .builder()
-            .title(format!("New message from {from}"))
-            .body(preview)
-            .show();
+    if focused {
+        return;
+    }
+    if !should_alert(state).await {
+        return;
+    }
 
-        // Taskbar / dock attention (Discord-style flash).
-        request_attention(state);
+    // 1. Short chirp (Rust-side, independent of the webview).
+    play_notification_chirp();
+
+    // 2. Native OS notification.
+    let preview = preview_for(&kind, &stored);
+    let _ = state
+        .app
+        .notification()
+        .builder()
+        .title(format!("New message from {from}"))
+        .body(preview)
+        .show();
+
+    // 3. Taskbar / dock flash (Discord-style).
+    request_attention(state);
+}
+
+fn preview_for(kind: &str, text: &str) -> String {
+    match kind {
+        "image" => "📷 Photo".to_string(),
+        "audio" => "🎤 Audio".to_string(),
+        "file" => "📎 File".to_string(),
+        _ => {
+            if text.is_empty() {
+                "(empty)".to_string()
+            } else if text.chars().count() > 80 {
+                let mut s: String = text.chars().take(77).collect();
+                s.push_str("...");
+                s
+            } else {
+                text.to_string()
+            }
+        }
     }
 }
 

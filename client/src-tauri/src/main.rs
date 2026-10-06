@@ -4,6 +4,7 @@ mod commands;
 mod crypto;
 mod db;
 mod protocol;
+mod sound;
 mod state;
 mod util;
 mod ws;

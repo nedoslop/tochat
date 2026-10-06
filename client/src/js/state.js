@@ -12,32 +12,21 @@ export const state = {
     pending: new Set(),
     blocked: new Set(),
     online: new Set(),
-    /** peer -> status string ("online" | "away" | "busy" | "invisible"). */
     peerStatus: {},
-    /** peer -> array of LocalMsg-shaped objects. */
     msgCache: {},
-    /** Peers for which a pull request is in flight. */
     pulling: new Set(),
-    /** peer -> unread message count. */
     unread: {},
-    /** My own status. */
     myStatus: "online",
-    /**
-     * peer -> boolean. `false` means we know we've reached the start of
-     * history; `undefined` or `true` means there may be more. Populated by
-     * bounded pulls (initial load, scroll-up).
-     */
     mightHaveMore: {},
-    /** Peers with a paginated pull currently in flight. */
     loadingOlder: new Set(),
-    /** peer -> the limit used for the last bounded pull (null if unbounded). */
     lastPullLimit: {},
-    /**
-     * Set to `true` while a renderMessages() call is restoring scroll
-     * position, to suppress the scroll handler that would trigger another
-     * loadOlder().
-     */
     suppressScrollLoad: false,
+    /**
+     * peer -> Set of message ids already rendered at least once. Used to
+     * skip the entry animation for messages that were already on screen —
+     * this is what prevents the visual "blink" during re-renders.
+     */
+    seenIds: {},
 };
 
 export function resetState() {
@@ -53,5 +42,7 @@ export function resetState() {
     state.mightHaveMore = {};
     state.loadingOlder.clear();
     state.lastPullLimit = {};
+    state.suppressScrollLoad = false;
     for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
+    for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
 }
