@@ -5,15 +5,9 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-/// One locally stored message.
-///
-/// `plaintext` is `true` when `payload` is known to be readable text. When
-/// `false`, the payload is opaque (either real ciphertext we couldn't
-/// decrypt, or something we simply didn't try to decrypt).
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalMsg {
     pub id: String,
-    /// "in" or "out".
     pub direction: String,
     pub ts: i64,
     pub edit_ts: i64,
@@ -57,7 +51,6 @@ impl Database {
         })
     }
 
-    /// Inserts or updates a message. Keyed by `(peer, id)`.
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_message(
         &self,
@@ -73,7 +66,7 @@ impl Database {
         let conn = self.conn.lock().await;
         let _ = conn.execute(
             "INSERT INTO messages
-                (peer, id, direction, ts, edit_ts, kind, payload, plaintext)
+             (peer, id, direction, ts, edit_ts, kind, payload, plaintext)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(peer, id) DO UPDATE SET
                 ts        = excluded.ts,
@@ -118,6 +111,12 @@ impl Database {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Removes all messages with a given peer.
+    pub async fn clear_peer(&self, peer: &str) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute("DELETE FROM messages WHERE peer = ?1", [peer]);
     }
 
     pub async fn wipe_all(&self) {

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -12,27 +13,17 @@ use crate::db::Database;
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
 use crate::state::{user_db_path, AppState, WsSession};
 
-/// Opens a new WebSocket session, replacing any previous one.
-///
-/// Steps:
-///   1. Fully tear down any existing session (abort + await tasks).
-///   2. Open the per-user local database.
-///   3. Establish the WebSocket connection.
-///   4. Publish state (db, me, ws) and spawn the reader/writer tasks.
 pub async fn connect(
     state: Arc<AppState>,
     base_url: String,
     username: String,
     password: String,
 ) -> Result<(), String> {
-    // 1. Shut down any previous session *before* we touch anything else.
     shutdown_current_session(&state).await;
 
-    // 2. Open the per-user DB.
-    let db_path = user_db_path(&state.data_dir, &username);
+    let db_path = user_db_path(&state.data_dir, &username, &base_url);
     let db = Database::open(&db_path).map_err(|e| format!("open db: {e}"))?;
 
-    // 3. Establish the WebSocket connection.
     let ws_url = to_ws_url(&base_url)?;
     let mut req = ws_url
         .into_client_request()
@@ -48,7 +39,6 @@ pub async fn connect(
         .await
         .map_err(|e| format!("ws connect failed: {e}"))?;
 
-    // 4. Publish state and spawn tasks.
     let (mut sink, mut source) = stream.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let session_id = state
@@ -57,8 +47,8 @@ pub async fn connect(
 
     *state.db.write().await = Some(Arc::new(db));
     *state.me.write().await = Some(username.clone());
+    *state.server_url.write().await = Some(base_url.clone());
 
-    // Writer: drain outbound messages to the socket.
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let s = match serde_json::to_string(&m) {
@@ -69,11 +59,9 @@ pub async fn connect(
                 break;
             }
         }
-        // Graceful close on the way out.
         let _ = sink.close().await;
     });
 
-    // Reader: parse and dispatch inbound messages.
     let reader_state = state.clone();
     let reader_username = username.clone();
     let reader = tokio::spawn(async move {
@@ -97,8 +85,6 @@ pub async fn connect(
             }
         }
 
-        // If this session is still the active one, clear it so no commands
-        // can try to use the dead sender.
         {
             let mut ws = reader_state.ws.lock().await;
             if ws.as_ref().map(|s| s.id == session_id).unwrap_or(false) {
@@ -120,33 +106,24 @@ pub async fn connect(
     Ok(())
 }
 
-/// Explicitly tears the current session down. Used by the logout button.
 pub async fn disconnect(state: &Arc<AppState>) -> Result<(), String> {
     shutdown_current_session(state).await;
     *state.db.write().await = None;
     *state.me.write().await = None;
+    *state.server_url.write().await = None;
     Ok(())
 }
 
-/// Takes the active session (if any) and guarantees its tasks are stopped.
 async fn shutdown_current_session(state: &Arc<AppState>) {
     let old = state.ws.lock().await.take();
     let Some(s) = old else { return };
 
-    // Drop the sender so the writer's recv loop finishes on its own and can
-    // send a proper WebSocket close frame.
     drop(s.tx);
-
-    // Give the writer a brief window to close gracefully, then move on.
     let _ = tokio::time::timeout(Duration::from_millis(500), s.writer).await;
-
-    // Abort the reader, then wait for it to actually stop. After this returns,
-    // no old task can touch state.
     s.reader.abort();
     let _ = s.reader.await;
 }
 
-/// Converts "http(s)://host:port" to a ws(s) URL for `/login`.
 fn to_ws_url(base: &str) -> Result<String, String> {
     let trimmed = base.trim().trim_end_matches('/');
     if let Some(rest) = trimmed.strip_prefix("https://") {
@@ -183,6 +160,11 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         ServerMsg::PeerOffline { username } => {
             let _ = state.app.emit("peer-offline", json!(username));
         }
+        ServerMsg::StatusUpdate { username, status } => {
+            let _ = state
+                .app
+                .emit("status-update", json!({ "username": username, "status": status.as_str() }));
+        }
         ServerMsg::Message {
             id,
             from,
@@ -213,13 +195,16 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
         ServerMsg::Close { reason } => {
             let _ = state.app.emit("session-closed", json!(reason));
-            // The reader loop will notice `is_close` and break; its cleanup
-            // path handles the rest.
+        }
+        ServerMsg::ChatLeft { peer } => {
+            let _ = state.app.emit("chat-left", json!(peer));
+        }
+        ServerMsg::Blocked { users } => {
+            let _ = state.app.emit("blocked", json!(users));
         }
     }
 }
 
-/// Decrypts (if possible) and stores an incoming message/edit, then emits it.
 #[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     state: &Arc<AppState>,
@@ -232,10 +217,34 @@ async fn handle_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
 
-    // If we no longer have a local DB (logout race), just drop silently.
     if let Ok(db) = state.active_db().await {
         db.upsert_message(&from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext)
             .await;
+    }
+
+    // System notification only if window is not focused.
+    let focused = state
+        .app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    if !focused {
+        let preview = if stored.is_empty() {
+            "(empty)".to_string()
+        } else if stored.chars().count() > 60 {
+            let mut s: String = stored.chars().take(57).collect();
+            s.push_str("...");
+            s
+        } else {
+            stored.clone()
+        };
+        let _ = state
+            .app
+            .notification()
+            .builder()
+            .title(format!("New message from {from}"))
+            .body(preview)
+            .show();
     }
 
     let _ = state.app.emit(
@@ -252,7 +261,6 @@ async fn handle_incoming(
     );
 }
 
-/// Serves a peer's pull request from our local store.
 async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
     let Ok(db) = state.active_db().await else {
         return;
@@ -268,8 +276,6 @@ async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
                 continue;
             }
 
-            // Opaque rows are forwarded as-is; plaintext rows are re-encrypted
-            // for the wire if a cipher is active.
             let payload = if !m.plaintext {
                 m.payload.clone()
             } else if let Some(c) = enc.cipher.as_ref() {
@@ -305,8 +311,6 @@ async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
     }
 }
 
-/// Handles an incoming history response, storing the messages and notifying
-/// the UI.
 async fn handle_history_response(state: &Arc<AppState>, from: String, messages: Vec<StoredMsg>) {
     let me = state.me.read().await.clone().unwrap_or_default();
 

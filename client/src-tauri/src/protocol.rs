@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Kind of message payload. Currently only text is supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -16,7 +15,36 @@ impl MessageKind {
     }
 }
 
-/// Messages sent by the client to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UserStatus {
+    #[default]
+    Online,
+    Away,
+    Busy,
+    Invisible,
+}
+
+impl UserStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Away => "away",
+            Self::Busy => "busy",
+            Self::Invisible => "invisible",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "away" => Self::Away,
+            "busy" => Self::Busy,
+            "invisible" => Self::Invisible,
+            _ => Self::Online,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -47,6 +75,19 @@ pub enum ClientMsg {
     DeleteAccount {
         password: String,
     },
+    SetStatus {
+        status: UserStatus,
+    },
+    LeaveChat {
+        peer: String,
+    },
+    BlockUser {
+        username: String,
+    },
+    UnblockUser {
+        username: String,
+    },
+    ListBlocked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +102,6 @@ pub struct StoredMsg {
     pub payload: String,
 }
 
-/// Messages sent by the server to the client.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
@@ -80,6 +120,10 @@ pub enum ServerMsg {
     },
     PeerOffline {
         username: String,
+    },
+    StatusUpdate {
+        username: String,
+        status: UserStatus,
     },
     Message {
         id: String,
@@ -102,5 +146,11 @@ pub enum ServerMsg {
     },
     Close {
         reason: String,
+    },
+    ChatLeft {
+        peer: String,
+    },
+    Blocked {
+        users: Vec<String>,
     },
 }

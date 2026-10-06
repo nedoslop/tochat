@@ -6,7 +6,15 @@
   "build": { "frontendDist": "../src" },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "Chat", "width": 900, "height": 650 }],
+    "windows": [
+      {
+        "title": "Chat",
+        "width": 900,
+        "height": 650,
+        "minWidth": 320,
+        "minHeight": 200
+      }
+    ],
     "security": { "csp": null }
   }
 }

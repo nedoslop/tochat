@@ -1,6 +1,6 @@
-// Pure rendering helpers — no Tauri calls, no side effects beyond DOM.
+// Pure rendering helpers.
 
-import { state } from "./state.js";
+import { state, NOTES_PEER } from "./state.js";
 import {
   avatarColor,
   initial,
@@ -19,11 +19,20 @@ export function showPendingView() {
   renderPendingList();
 }
 
+export function renderMyStatus() {
+  const el = document.getElementById("me-status");
+  if (!el) return;
+  el.dataset.status = state.myStatus;
+  document.getElementById("me-status-label").textContent = state.myStatus;
+}
+
 export function renderSidebar() {
   const peersEl = document.getElementById("peers");
   peersEl.innerHTML = "";
 
   const all = new Set([...state.peers, ...state.pending]);
+  // Notes always present.
+  if (state.me) all.add(NOTES_PEER);
 
   if (all.size === 0) {
     const empty = document.createElement("div");
@@ -32,31 +41,51 @@ export function renderSidebar() {
     empty.textContent = "No chats yet.";
     peersEl.appendChild(empty);
   } else {
-    for (const p of all) {
+    // Sort: notes first, then pending, then by name.
+    const sorted = [...all].sort((a, b) => {
+      if (a === NOTES_PEER) return -1;
+      if (b === NOTES_PEER) return 1;
+      const pa = state.pending.has(a) ? 0 : 1;
+      const pb = state.pending.has(b) ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      return a.localeCompare(b);
+    });
+
+    for (const p of sorted) {
       const d = document.createElement("div");
-      const isOnline = state.online.has(p) || state.pending.has(p);
+      const isNotes = p === NOTES_PEER;
+      const status = state.peerStatus[p] || (state.online.has(p) ? "online" : null);
+      const isOnline = isNotes || state.online.has(p) || state.pending.has(p);
       d.className =
         "peer" +
         (p === state.currentPeer ? " active" : "") +
-        (isOnline ? " online" : " offline");
+        (isOnline ? " online" : " offline") +
+        (status === "away" ? " status-away" : "") +
+        (status === "busy" ? " status-busy" : "");
       d.dataset.peer = p;
 
       const av = document.createElement("div");
       av.className = "peer-avatar";
-      av.style.background = avatarColor(p);
-      av.textContent = initial(p);
+      av.style.background = isNotes ? "#8b5cf6" : avatarColor(p);
+      av.textContent = isNotes ? "📝" : initial(p);
 
       const body = document.createElement("div");
       body.className = "peer-body";
       const name = document.createElement("div");
       name.className = "peer-name";
-      name.textContent = p;
+      name.textContent = isNotes ? "Notes" : p;
       body.appendChild(name);
 
       d.appendChild(av);
       d.appendChild(body);
 
-      if (state.pending.has(p)) {
+      const unread = state.unread[p] || 0;
+      if (unread > 0) {
+        const b = document.createElement("span");
+        b.className = "peer-unread";
+        b.textContent = String(unread);
+        d.appendChild(b);
+      } else if (state.pending.has(p)) {
         const b = document.createElement("span");
         b.className = "badge";
         b.textContent = "new";
@@ -77,22 +106,33 @@ export function renderSidebar() {
   const peerAvatar = document.getElementById("peer-avatar");
 
   if (state.currentPeer) {
-    titleEl.textContent = state.currentPeer;
-    peerAvatar.textContent = initial(state.currentPeer);
-    peerAvatar.style.background = avatarColor(state.currentPeer);
-    if (state.online.has(state.currentPeer)) {
-      statusEl.textContent = "online";
-      statusEl.classList.add("online");
+    const isNotes = state.currentPeer === NOTES_PEER;
+    titleEl.textContent = isNotes ? "Notes" : state.currentPeer;
+    peerAvatar.textContent = isNotes ? "📝" : initial(state.currentPeer);
+    peerAvatar.style.background = isNotes
+      ? "#8b5cf6"
+      : avatarColor(state.currentPeer);
+    if (isNotes) {
+      statusEl.textContent = "local only";
+      statusEl.classList.remove("online", "away", "busy");
     } else {
-      statusEl.textContent = "offline";
-      statusEl.classList.remove("online");
+      const st = state.peerStatus[state.currentPeer];
+      if (state.online.has(state.currentPeer)) {
+        statusEl.textContent = st && st !== "online" ? st : "online";
+        statusEl.classList.toggle("online", !st || st === "online");
+        statusEl.classList.toggle("away", st === "away");
+        statusEl.classList.toggle("busy", st === "busy");
+      } else {
+        statusEl.textContent = "offline";
+        statusEl.classList.remove("online", "away", "busy");
+      }
     }
   } else {
     titleEl.textContent = "Select a chat";
     peerAvatar.textContent = "?";
     peerAvatar.style.background = "var(--border-strong)";
     statusEl.textContent = "";
-    statusEl.classList.remove("online");
+    statusEl.classList.remove("online", "away", "busy");
   }
 }
 
@@ -113,7 +153,13 @@ export function renderMessages() {
 
   if (msgs.length === 0) {
     el.appendChild(
-      emptyState("📭", "No messages yet", `Say hi to ${state.currentPeer}.`)
+      emptyState(
+        state.currentPeer === NOTES_PEER ? "📝" : "📭",
+        state.currentPeer === NOTES_PEER ? "No notes yet" : "No messages yet",
+        state.currentPeer === NOTES_PEER
+          ? "Anything you type here stays on this device."
+          : `Say hi to ${state.currentPeer}.`,
+      )
     );
     return;
   }
@@ -128,7 +174,7 @@ export function renderMessages() {
       el.appendChild(sep);
       lastDate = dateStr;
     }
-    el.appendChild(messageEl(m));
+    el.appendChild(messageEl(m, state.currentPeer === NOTES_PEER));
   }
 
   el.scrollTop = el.scrollHeight;
@@ -156,7 +202,7 @@ function emptyState(icon, title, sub) {
   return d;
 }
 
-function messageEl(m) {
+function messageEl(m, isNotes) {
   const div = document.createElement("div");
   const deleted = m.payload === "";
   div.className =
@@ -195,6 +241,8 @@ function messageEl(m) {
     div.appendChild(actions);
   }
 
+  // Silence unused warning for isNotes — kept for future use.
+  void isNotes;
   return div;
 }
 

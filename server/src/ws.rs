@@ -14,13 +14,12 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
+use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
 use crate::state::{AppState, OnlineSession};
 use crate::util::{hash_password, now_ms};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// HTTP handler: verifies credentials then upgrades the request to a WebSocket.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: HeaderMap,
@@ -42,7 +41,6 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user_id, username, last_seen))
 }
 
-/// Builds a 401 Unauthorized response.
 fn reject(msg: &str) -> axum::response::Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -51,7 +49,6 @@ fn reject(msg: &str) -> axum::response::Response {
         .into_response()
 }
 
-/// Runs the WebSocket session: handshake, send/recv pumps, cleanup.
 async fn handle_socket(
     socket: WebSocket,
     state: AppState,
@@ -73,12 +70,14 @@ async fn handle_socket(
             e.insert(OnlineSession {
                 tx: tx.clone(),
                 session_id,
+                status: UserStatus::Online,
             });
         }
         Entry::Vacant(v) => {
             v.insert(OnlineSession {
                 tx: tx.clone(),
                 session_id,
+                status: UserStatus::Online,
             });
         }
     }
@@ -90,10 +89,12 @@ async fn handle_socket(
     });
     let peers = state.db.list_peers(user_id).await;
     let pending = state.db.list_pending_chats(user_id).await;
+    let blocked = state.db.list_blocks(user_id).await;
     let _ = tx.send(ServerMsg::Peers {
         peers: peers.clone(),
     });
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
+    let _ = tx.send(ServerMsg::Blocked { users: blocked });
 
     // Cross-notify online peers.
     for p in &peers {
@@ -112,7 +113,7 @@ async fn handle_socket(
         }
     }
 
-    // Writer: forward queued ServerMsg to the socket.
+    // Writer task.
     let mut send_task = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let is_close = matches!(m, ServerMsg::Close { .. });
@@ -130,7 +131,7 @@ async fn handle_socket(
         }
     });
 
-    // Reader: parse ClientMsg and dispatch.
+    // Reader task.
     let state2 = state.clone();
     let username2 = username.clone();
     let tx2 = tx.clone();
@@ -154,7 +155,6 @@ async fn handle_socket(
         _ = &mut recv_task => send_task.abort(),
     }
 
-    // Cleanup only if this session is still the active one.
     let still_current = state
         .online
         .get(&user_id)
@@ -177,7 +177,6 @@ async fn handle_socket(
     }
 }
 
-/// Dispatches a single client message.
 async fn handle_client(
     cm: ClientMsg,
     me_id: i64,
@@ -214,10 +213,41 @@ async fn handle_client(
         ClientMsg::DeleteAccount { password } => {
             handle_delete_account(me_id, me, &password, state, tx).await
         }
+        ClientMsg::SetStatus { status } => {
+            if let Some(mut s) = state.online.get_mut(&me_id) {
+                s.status = status;
+            }
+            broadcast_status(state, me_id, me, status).await;
+        }
+        ClientMsg::LeaveChat { peer } => handle_leave_chat(me_id, me, &peer, state, tx).await,
+        ClientMsg::BlockUser { username } => {
+            handle_block(me_id, me, &username, state, tx).await
+        }
+        ClientMsg::UnblockUser { username } => {
+            handle_unblock(me_id, me, &username, state, tx).await
+        }
+        ClientMsg::ListBlocked => {
+            let users = state.db.list_blocks(me_id).await;
+            let _ = tx.send(ServerMsg::Blocked { users });
+        }
     }
 }
 
-/// After a relationship becomes established, notify both sides (if online).
+async fn broadcast_status(state: &AppState, me_id: i64, me: &str, status: UserStatus) {
+    let peers = state.db.list_peers(me_id).await;
+    for p in &peers {
+        let Some(pid) = state.db.user_id(p).await else {
+            continue;
+        };
+        if let Some(peer) = state.online.get(&pid) {
+            let _ = peer.tx.send(ServerMsg::StatusUpdate {
+                username: me.to_string(),
+                status,
+            });
+        }
+    }
+}
+
 async fn notify_peer_pair(state: &AppState, me_id: i64, me: &str, to_id: i64, to: &str) {
     let to_online = state.online.contains_key(&to_id);
     let me_online = state.online.contains_key(&me_id);
@@ -237,7 +267,6 @@ async fn notify_peer_pair(state: &AppState, me_id: i64, me: &str, to_id: i64, to
     }
 }
 
-/// Handles a new message from `me` to `to`.
 async fn handle_send(
     me_id: i64,
     me: &str,
@@ -268,6 +297,11 @@ async fn handle_send(
         return;
     };
 
+    // If they've blocked me, pretend nothing happened.
+    if state.db.is_blocked(to_id, me_id).await {
+        return;
+    }
+
     let deliverable = match state.db.get_relationship(me_id, to_id).await {
         None => {
             state.db.ensure_relationship_initiated(me_id, to_id).await;
@@ -297,7 +331,6 @@ async fn handle_send(
     }
 }
 
-/// Handles an edit/delete of an existing message.
 async fn handle_edit(
     me_id: i64,
     me: &str,
@@ -319,6 +352,9 @@ async fn handle_edit(
         });
         return;
     };
+    if state.db.is_blocked(to_id, me_id).await {
+        return;
+    }
     let established = matches!(
         state.db.get_relationship(me_id, to_id).await,
         Some((_, true))
@@ -338,7 +374,6 @@ async fn handle_edit(
     }
 }
 
-/// Forwards a history pull request to a peer if the relationship allows it.
 async fn handle_pull_history(
     me_id: i64,
     me: &str,
@@ -359,7 +394,14 @@ async fn handle_pull_history(
         });
         return;
     };
-    let Some((initiator_id, established)) = state.db.get_relationship(me_id, from_id).await else {
+    if state.db.is_blocked(from_id, me_id).await {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("{} has blocked you", from),
+        });
+        return;
+    }
+    let Some((initiator_id, established)) = state.db.get_relationship(me_id, from_id).await
+    else {
         let _ = tx.send(ServerMsg::Error {
             msg: format!("no chat with {}", from),
         });
@@ -386,7 +428,6 @@ async fn handle_pull_history(
     }
 }
 
-/// Delivers a history response to the requester, establishing if needed.
 async fn handle_history_response(
     me_id: i64,
     me: &str,
@@ -400,6 +441,9 @@ async fn handle_history_response(
     let Some(to_id) = state.db.user_id(to).await else {
         return;
     };
+    if state.db.is_blocked(to_id, me_id).await {
+        return;
+    }
     if let Some((_, established)) = state.db.get_relationship(me_id, to_id).await {
         if !established {
             state.db.establish_relationship(me_id, to_id).await;
@@ -414,7 +458,74 @@ async fn handle_history_response(
     }
 }
 
-/// Deletes the caller's account after verifying their password.
+async fn handle_leave_chat(
+    me_id: i64,
+    me: &str,
+    peer: &str,
+    state: &AppState,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+) {
+    let Some(peer_id) = state.db.user_id(peer).await else {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user '{}' does not exist", peer),
+        });
+        return;
+    };
+    state.db.delete_relationship(me_id, peer_id).await;
+    let _ = tx.send(ServerMsg::ChatLeft {
+        peer: peer.to_string(),
+    });
+    if let Some(p) = state.online.get(&peer_id) {
+        let _ = p.tx.send(ServerMsg::ChatLeft {
+            peer: me.to_string(),
+        });
+    }
+}
+
+async fn handle_block(
+    me_id: i64,
+    me: &str,
+    username: &str,
+    state: &AppState,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+) {
+    if me == username {
+        return;
+    }
+    let Some(uid) = state.db.user_id(username).await else {
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user '{}' does not exist", username),
+        });
+        return;
+    };
+    state.db.add_block(me_id, uid).await;
+    let users = state.db.list_blocks(me_id).await;
+    let _ = tx.send(ServerMsg::Blocked { users });
+    let _ = tx.send(ServerMsg::ChatLeft {
+        peer: username.to_string(),
+    });
+    if let Some(p) = state.online.get(&uid) {
+        let _ = p.tx.send(ServerMsg::ChatLeft {
+            peer: me.to_string(),
+        });
+    }
+}
+
+async fn handle_unblock(
+    me_id: i64,
+    _me: &str,
+    username: &str,
+    state: &AppState,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+) {
+    let Some(uid) = state.db.user_id(username).await else {
+        return;
+    };
+    state.db.remove_block(me_id, uid).await;
+    let users = state.db.list_blocks(me_id).await;
+    let _ = tx.send(ServerMsg::Blocked { users });
+}
+
 async fn handle_delete_account(
     me_id: i64,
     me: &str,
@@ -434,7 +545,6 @@ async fn handle_delete_account(
         });
         return;
     }
-    // Resolve peer ids before deletion (relationships cascade away after).
     let peers = state.db.list_peers(me_id).await;
     let mut peer_ids = Vec::with_capacity(peers.len());
     for p in &peers {

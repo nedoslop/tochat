@@ -1,13 +1,14 @@
-// Tauri event listeners — translate server pushes into UI updates.
+// Tauri event listeners.
 
 import { invoke, listen } from "./api.js";
-import { state } from "./state.js";
+import { state, NOTES_PEER } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
   renderSidebar,
   renderMessages,
   renderPendingList,
+  renderMyStatus,
   showChatView,
 } from "./ui.js";
 import { autoPull, resetToLogin } from "./actions.js";
@@ -27,6 +28,7 @@ export async function setupEvents() {
     document.getElementById("login-view").hidden = true;
     document.getElementById("app-view").hidden = false;
 
+    renderMyStatus();
     showChatView();
     renderSidebar();
     renderMessages();
@@ -34,9 +36,9 @@ export async function setupEvents() {
 
   await listen("peers", (e) => {
     for (const p of e.payload) state.peers.add(p);
+    // Do NOT auto-pull here — only pull for chats we already have local
+    // history with. Other chats will be pulled on demand (open / peer-online).
     renderSidebar();
-    // Kick off history pull for every peer we know about.
-    for (const p of e.payload) autoPull(p);
   });
 
   await listen("pending-chats", (e) => {
@@ -48,19 +50,56 @@ export async function setupEvents() {
     renderPendingList();
   });
 
+  await listen("blocked", (e) => {
+    state.blocked.clear();
+    for (const p of e.payload) state.blocked.add(p);
+    renderSidebar();
+  });
+
   await listen("peer-online", (e) => {
     const name = e.payload;
     state.online.add(name);
+    state.peerStatus[name] = state.peerStatus[name] || "online";
     // Reset stale "pulling" so a previously-failed pull can be retried.
     state.pulling.delete(name);
     if (!state.pending.has(name)) state.peers.add(name);
     renderSidebar();
-    if (!state.pending.has(name)) autoPull(name);
+    // Only auto-pull peers we already have a chat with (or the current chat).
+    const engaged =
+      name === state.currentPeer ||
+      (state.msgCache[name] && state.msgCache[name].length > 0);
+    if (!state.pending.has(name) && engaged) autoPull(name);
   });
 
   await listen("peer-offline", (e) => {
     state.online.delete(e.payload);
+    delete state.peerStatus[e.payload];
     renderSidebar();
+  });
+
+  await listen("status-update", (e) => {
+    const { username, status } = e.payload;
+    state.peerStatus[username] = status;
+    if (status === "invisible") {
+      state.online.delete(username);
+    } else {
+      state.online.add(username);
+    }
+    renderSidebar();
+  });
+
+  await listen("chat-left", (e) => {
+    const peer = e.payload;
+    state.peers.delete(peer);
+    state.pending.delete(peer);
+    delete state.msgCache[peer];
+    state.unread[peer] = 0;
+    if (state.currentPeer === peer) {
+      state.currentPeer = null;
+      renderMessages();
+    }
+    renderSidebar();
+    toast(`Chat with ${peer} was closed.`);
   });
 
   await listen("message", (e) => {
@@ -82,6 +121,11 @@ export async function setupEvents() {
 
     if (idx >= 0) state.msgCache[m.peer][idx] = entry;
     else state.msgCache[m.peer].push(entry);
+
+    // Unread bookkeeping.
+    if (m.direction === "in" && state.currentPeer !== m.peer) {
+      state.unread[m.peer] = (state.unread[m.peer] || 0) + 1;
+    }
 
     renderSidebar();
     renderPendingList();
@@ -110,8 +154,6 @@ export async function setupEvents() {
   await listen("error", (e) => {
     const msg = String(e.payload);
 
-    // "peer <name> is offline, try again later" — only clear the specific
-    // peer's guard so other in-flight pulls stay throttled.
     const m = msg.match(/^peer (.+?) is offline/);
     if (m) {
       state.pulling.delete(m[1]);
@@ -148,3 +190,5 @@ export async function setupEvents() {
     if (state.me) resetToLogin();
   });
 }
+
+export { NOTES_PEER };
