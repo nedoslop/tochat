@@ -119,7 +119,6 @@ export async function openPeer(peer) {
     renderSidebar();
     renderMessages();
     autoPull(peer);
-    // Once we've shown a peer's messages, tell them we read everything.
     void sendReadReceipt(peer);
 }
 
@@ -160,14 +159,17 @@ export async function send() {
     }
 }
 
-/** Send an image (as a data URL) to the current peer. */
-export async function sendImage(dataUrl) {
+/**
+ * Generic media send. `kind` is "image" | "audio" | "file".
+ * `payload` must be a data URL.
+ */
+export async function sendMedia(kind, payload) {
     if (!state.currentPeer) return;
     try {
         await invoke("send_media", {
             to: state.currentPeer,
-            kind: "image",
-            payload: dataUrl,
+            kind,
+            payload,
         });
         if (state.currentPeer !== NOTES_PEER) state.pending.delete(state.currentPeer);
         state.msgCache[state.currentPeer] = await invoke("get_messages", {
@@ -176,8 +178,16 @@ export async function sendImage(dataUrl) {
         renderSidebar();
         renderMessages();
     } catch (e) {
-        toast("Send image error: " + e);
+        toast(`Send ${kind} error: ` + e);
     }
+}
+
+export async function sendImage(dataUrl) {
+    await sendMedia("image", dataUrl);
+}
+
+export async function sendAudio(dataUrl) {
+    await sendMedia("audio", dataUrl);
 }
 
 export async function editMessage(id) {
@@ -300,11 +310,6 @@ export async function blockUser() {
 
 // ---------- read receipts ----------
 
-/**
- * Tells the peer we've read every message of theirs we have locally.
- * Safe to call repeatedly; the server just forwards to whichever of
- * their devices are online.
- */
 export async function sendReadReceipt(peer) {
     if (!peer || peer === NOTES_PEER) return;
     if (!state.me) return;
@@ -317,7 +322,6 @@ export async function sendReadReceipt(peer) {
     }
 }
 
-/** Called when a peer comes back online — refresh read state for open chat. */
 export async function refreshReadState(peer) {
     if (!peer || peer === NOTES_PEER) return;
     try {
@@ -328,15 +332,6 @@ export async function refreshReadState(peer) {
 
 // ---------- history sync ----------
 
-/**
- * Syncs a peer's history.
- *
- * - If we already have local messages with this peer, we pull only what's
- *   new since the last inbound edit_ts we've seen (unbounded; we need
- *   every new message).
- * - If we have no local messages, we pull only the last INITIAL_LIMIT
- *   messages — the rest can be fetched on demand when scrolling up.
- */
 export async function autoPull(peer) {
     if (!peer || peer === state.me || peer === NOTES_PEER) return;
     if (state.pulling.has(peer)) return;
@@ -349,7 +344,6 @@ export async function autoPull(peer) {
         const localMsgs = state.msgCache[peer];
 
         if (localMsgs.length === 0) {
-            // Bounded initial load.
             state.lastPullLimit[peer] = INITIAL_LIMIT;
             await invoke("pull_history", {
                 from: peer,
@@ -358,7 +352,6 @@ export async function autoPull(peer) {
                 before: null,
             });
         } else {
-            // Incremental sync: everything newer than what we already have.
             const since = lastReceivedEditTs(peer);
             state.lastPullLimit[peer] = null;
             await invoke("pull_history", {
@@ -375,11 +368,6 @@ export async function autoPull(peer) {
     setTimeout(() => state.pulling.delete(peer), 6000);
 }
 
-/**
- * Fetches the previous page of history for the currently-open peer,
- * older than the oldest message we already have. Triggered automatically
- * when the user scrolls near the top of the message list.
- */
 export async function loadOlder() {
     const peer = state.currentPeer;
     if (!peer || peer === NOTES_PEER) return;
@@ -393,7 +381,6 @@ export async function loadOlder() {
 
     state.loadingOlder.add(peer);
     state.lastPullLimit[peer] = INITIAL_LIMIT;
-    // Mark so renderMessages preserves scroll after the prepend.
     state.suppressScrollLoad = true;
 
     try {
