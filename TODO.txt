@@ -13,7 +13,7 @@ Possible others:
  - Add ability to clear chat (locally/globally), leave chat, block user etc
  - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
- - Support different media types
+ - Support different media types (image/audio)
  - Better new message notifications (sounds, system notifications?)
  - Status (Inactive, Busy etc like in Discord)
  - Mark messages as sent/read by other user like in Telegram
