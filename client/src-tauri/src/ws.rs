@@ -184,8 +184,13 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             )
             .await;
         }
-        ServerMsg::PullHistoryRequest { from, since } => {
-            handle_pull_request(state, from, since).await;
+        ServerMsg::PullHistoryRequest {
+            from,
+            since,
+            limit,
+            before,
+        } => {
+            handle_pull_request(state, from, since, limit, before).await;
         }
         ServerMsg::HistoryResponse { from, messages } => {
             handle_history_response(state, from, messages).await;
@@ -222,7 +227,6 @@ async fn handle_incoming(
             .await;
     }
 
-    // System notification only if window is not focused.
     let focused = state
         .app
         .get_webview_window("main")
@@ -261,21 +265,40 @@ async fn handle_incoming(
     );
 }
 
-async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
+async fn handle_pull_request(
+    state: &Arc<AppState>,
+    from: String,
+    since: i64,
+    limit: Option<u32>,
+    before: Option<i64>,
+) {
     let Ok(db) = state.active_db().await else {
         return;
     };
     let msgs = db.get_messages(&from).await;
     let me = state.me.read().await.clone().unwrap_or_default();
 
-    let mut wire: Vec<StoredMsg> = Vec::with_capacity(msgs.len());
+    // Filter by edit_ts > since and (if `before` is set) ts < before.
+    // `get_messages` already returns rows sorted ascending by (ts, edit_ts).
+    let mut filtered: Vec<_> = msgs
+        .into_iter()
+        .filter(|m| m.edit_ts > since)
+        .filter(|m| before.map_or(true, |b| m.ts < b))
+        .collect();
+
+    // If a limit was given, keep only the *most recent* `limit` items.
+    if let Some(lim) = limit {
+        let lim = lim as usize;
+        if filtered.len() > lim {
+            let drop_count = filtered.len() - lim;
+            filtered.drain(0..drop_count);
+        }
+    }
+
+    let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
     {
         let enc = state.encryption.read().await;
-        for m in msgs {
-            if m.edit_ts <= since {
-                continue;
-            }
-
+        for m in filtered {
             let payload = if !m.plaintext {
                 m.payload.clone()
             } else if let Some(c) = enc.cipher.as_ref() {

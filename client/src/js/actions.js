@@ -1,7 +1,7 @@
 // User-initiated actions.
 
 import { invoke } from "./api.js";
-import { state, resetState, NOTES_PEER } from "./state.js";
+import { state, resetState, NOTES_PEER, INITIAL_LIMIT } from "./state.js";
 import { toast } from "./utils.js";
 import { showConfirm, showPrompt } from "./dialog.js";
 import {
@@ -211,18 +211,17 @@ export async function deleteMessage(id) {
 
 export async function clearChat() {
   const peer = state.currentPeer;
-  if (!peer || peer === NOTES_PEER) {
-    if (peer === NOTES_PEER) {
-      const ok = await showConfirm("Clear all notes?", {
-        title: "Clear notes", okText: "Clear", danger: true,
-      });
-      if (!ok) return;
-      try {
-        await invoke("clear_chat", { peer: NOTES_PEER });
-        state.msgCache[NOTES_PEER] = [];
-        renderMessages();
-      } catch (e) { toast("Clear error: " + e); }
-    }
+  if (!peer) return;
+  if (peer === NOTES_PEER) {
+    const ok = await showConfirm("Clear all notes?", {
+      title: "Clear notes", okText: "Clear", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await invoke("clear_chat", { peer: NOTES_PEER });
+      state.msgCache[NOTES_PEER] = [];
+      renderMessages();
+    } catch (e) { toast("Clear error: " + e); }
     return;
   }
   const ok = await showConfirm(
@@ -278,6 +277,15 @@ export async function blockUser() {
 
 // ---------- history sync ----------
 
+/**
+ * Syncs a peer's history.
+ *
+ * - If we already have local messages with this peer, we pull only what's
+ *   new since the last inbound edit_ts we've seen (unbounded; we need
+ *   every new message).
+ * - If we have no local messages, we pull only the last INITIAL_LIMIT
+ *   messages — the rest can be fetched on demand via {@link loadOlder}.
+ */
 export async function autoPull(peer) {
   if (!peer || peer === state.me || peer === NOTES_PEER) return;
   if (state.pulling.has(peer)) return;
@@ -287,13 +295,66 @@ export async function autoPull(peer) {
     if (!state.msgCache[peer]) {
       state.msgCache[peer] = await invoke("get_messages", { peer });
     }
-    const since = lastReceivedEditTs(peer);
-    await invoke("pull_history", { from: peer, since });
+    const localMsgs = state.msgCache[peer];
+
+    if (localMsgs.length === 0) {
+      // Bounded initial load.
+      state.lastPullLimit[peer] = INITIAL_LIMIT;
+      await invoke("pull_history", {
+        from: peer,
+        since: 0,
+        limit: INITIAL_LIMIT,
+        before: null,
+      });
+    } else {
+      // Incremental sync: everything newer than what we already have.
+      const since = lastReceivedEditTs(peer);
+      state.lastPullLimit[peer] = null;
+      await invoke("pull_history", {
+        from: peer,
+        since,
+        limit: null,
+        before: null,
+      });
+    }
   } catch (_) {
     state.pulling.delete(peer);
     return;
   }
   setTimeout(() => state.pulling.delete(peer), 6000);
+}
+
+/**
+ * Fetches the previous page of history for the currently-open peer,
+ * older than the oldest message we already have. Triggered by the
+ * "Load older messages" button.
+ */
+export async function loadOlder() {
+  const peer = state.currentPeer;
+  if (!peer || peer === NOTES_PEER) return;
+  if (state.loadingOlder.has(peer)) return;
+
+  const msgs = state.msgCache[peer] || [];
+  if (msgs.length === 0) return;
+
+  const oldestTs = msgs.reduce((min, m) => (m.ts < min ? m.ts : min), msgs[0].ts);
+
+  state.loadingOlder.add(peer);
+  state.lastPullLimit[peer] = INITIAL_LIMIT;
+
+  try {
+    await invoke("pull_history", {
+      from: peer,
+      since: 0,
+      limit: INITIAL_LIMIT,
+      before: oldestTs,
+    });
+  } catch (e) {
+    state.loadingOlder.delete(peer);
+    delete state.lastPullLimit[peer];
+    toast("Load older error: " + e);
+    renderMessages();
+  }
 }
 
 export function lastReceivedEditTs(peer) {

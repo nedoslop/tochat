@@ -66,6 +66,10 @@ pub enum ClientMsg {
     PullHistory {
         from: String,
         since: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        before: Option<i64>,
     },
     HistoryResponse {
         to: String,
@@ -136,6 +140,10 @@ pub enum ServerMsg {
     PullHistoryRequest {
         from: String,
         since: i64,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        before: Option<i64>,
     },
     HistoryResponse {
         from: String,

@@ -175,6 +175,8 @@ async fn send_outgoing(
 pub async fn pull_history(
     from: String,
     since: i64,
+    limit: Option<u32>,
+    before: Option<i64>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     if from == NOTES_PEER {
@@ -186,8 +188,13 @@ pub async fn pull_history(
             .map(|s| s.tx.clone())
             .ok_or_else(|| "not connected".to_string())?
     };
-    tx.send(ClientMsg::PullHistory { from, since })
-        .map_err(|_| "connection closed".to_string())?;
+    tx.send(ClientMsg::PullHistory {
+        from,
+        since,
+        limit,
+        before,
+    })
+    .map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
 
@@ -434,8 +441,7 @@ pub async fn set_theme(theme: String, state: State<'_, Arc<AppState>>) -> Result
     }
 
     let json = serde_json::to_string(&json!({ "theme": theme })).map_err(|e| e.to_string())?;
-    std::fs::write(theme_path(&state.data_dir), json)
-        .map_err(|e| format!("persist error: {e}"))?;
+    std::fs::write(theme_path(&state.data_dir), json).map_err(|e| format!("persist error: {e}"))?;
 
     apply_window_theme(&state.app, &theme);
     Ok(())

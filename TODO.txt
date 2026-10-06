@@ -3,6 +3,10 @@
  - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
  - Support different media types (image/audio)
+ - Fix notifications (message count) after logging back not showing (probably other issues)
  - Better new message notifications (sounds, system notifications?)
  - Status (Inactive, Busy etc like in Discord)
  - Mark messages as sent/read by other user like in Telegram
+ - (Re/)Implement some good features:
+    1. Blocklist to see all the blocked users (with ability to unblock user/block user by name)
+    2. Sync notes from the different devices (like with the chats)

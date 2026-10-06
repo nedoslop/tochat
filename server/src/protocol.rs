@@ -40,9 +40,15 @@ pub enum ClientMsg {
         kind: MessageKind,
         payload: String,
     },
+    /// Ask the peer for messages. `since` is a lower bound on edit_ts,
+    /// `before` is an upper bound on ts, `limit` caps to the most recent N.
     PullHistory {
         from: String,
         since: i64,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        before: Option<i64>,
     },
     HistoryResponse {
         to: String,
@@ -52,23 +58,18 @@ pub enum ClientMsg {
     DeleteAccount {
         password: String,
     },
-    /// Update my status; broadcast to online peers.
     SetStatus {
         status: UserStatus,
     },
-    /// Ask the server to tear down a relationship with `peer`.
     LeaveChat {
         peer: String,
     },
-    /// Block a user; the server will stop delivering their messages to me.
     BlockUser {
         username: String,
     },
-    /// Unblock a previously blocked user.
     UnblockUser {
         username: String,
     },
-    /// Query the current block list.
     ListBlocked,
 }
 
@@ -105,7 +106,6 @@ pub enum ServerMsg {
     PeerOffline {
         username: String,
     },
-    /// Broadcast status change for a peer (or yourself).
     StatusUpdate {
         username: String,
         status: UserStatus,
@@ -121,6 +121,10 @@ pub enum ServerMsg {
     PullHistoryRequest {
         from: String,
         since: i64,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        before: Option<i64>,
     },
     HistoryResponse {
         from: String,
@@ -129,17 +133,13 @@ pub enum ServerMsg {
     Error {
         msg: String,
     },
-    /// Server-initiated close. `reason` is `"session_taken_over"` or `"account_deleted"`.
     Close {
         reason: String,
     },
-    /// Confirms that a chat was torn down at the server.
     ChatLeft {
         peer: String,
     },
-    /// Current block list.
     Blocked {
         users: Vec<String>,
     },
 }
-

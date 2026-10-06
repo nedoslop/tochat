@@ -60,7 +60,6 @@ async fn handle_socket(
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Take over any existing session for this user.
     match state.online.entry(user_id) {
         Entry::Occupied(mut e) => {
             let old = e.get();
@@ -82,7 +81,6 @@ async fn handle_socket(
         }
     }
 
-    // Handshake.
     let _ = tx.send(ServerMsg::AuthOk {
         username: username.clone(),
         last_seen,
@@ -96,7 +94,6 @@ async fn handle_socket(
     let _ = tx.send(ServerMsg::PendingChats { users: pending });
     let _ = tx.send(ServerMsg::Blocked { users: blocked });
 
-    // Cross-notify online peers.
     for p in &peers {
         let Some(peer_id) = state.db.user_id(p).await else {
             continue;
@@ -113,7 +110,6 @@ async fn handle_socket(
         }
     }
 
-    // Writer task.
     let mut send_task = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let is_close = matches!(m, ServerMsg::Close { .. });
@@ -131,7 +127,6 @@ async fn handle_socket(
         }
     });
 
-    // Reader task.
     let state2 = state.clone();
     let username2 = username.clone();
     let tx2 = tx.clone();
@@ -200,8 +195,13 @@ async fn handle_client(
             kind,
             payload,
         } => handle_edit(me_id, me, &to, id, ts, edit_ts, kind, payload, state, tx).await,
-        ClientMsg::PullHistory { from, since } => {
-            handle_pull_history(me_id, me, &from, since, state, tx).await
+        ClientMsg::PullHistory {
+            from,
+            since,
+            limit,
+            before,
+        } => {
+            handle_pull_history(me_id, me, &from, since, limit, before, state, tx).await
         }
         ClientMsg::HistoryResponse { to, messages } => {
             handle_history_response(me_id, me, &to, messages, state).await
@@ -297,7 +297,6 @@ async fn handle_send(
         return;
     };
 
-    // If they've blocked me, pretend nothing happened.
     if state.db.is_blocked(to_id, me_id).await {
         return;
     }
@@ -374,11 +373,14 @@ async fn handle_edit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_pull_history(
     me_id: i64,
     me: &str,
     from: &str,
     since: i64,
+    limit: Option<u32>,
+    before: Option<i64>,
     state: &AppState,
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
@@ -418,6 +420,8 @@ async fn handle_pull_history(
             let _ = peer.tx.send(ServerMsg::PullHistoryRequest {
                 from: me.to_string(),
                 since,
+                limit,
+                before,
             });
         }
         None => {

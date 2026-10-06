@@ -36,8 +36,7 @@ export async function setupEvents() {
 
   await listen("peers", (e) => {
     for (const p of e.payload) state.peers.add(p);
-    // Do NOT auto-pull here — only pull for chats we already have local
-    // history with. Other chats will be pulled on demand (open / peer-online).
+    // No bulk pull here — chats are fetched lazily.
     renderSidebar();
   });
 
@@ -60,11 +59,11 @@ export async function setupEvents() {
     const name = e.payload;
     state.online.add(name);
     state.peerStatus[name] = state.peerStatus[name] || "online";
-    // Reset stale "pulling" so a previously-failed pull can be retried.
     state.pulling.delete(name);
     if (!state.pending.has(name)) state.peers.add(name);
     renderSidebar();
-    // Only auto-pull peers we already have a chat with (or the current chat).
+    // Only auto-sync peers we already have local history with, or the
+    // currently-open chat. Everything else waits for the user to open it.
     const engaged =
       name === state.currentPeer ||
       (state.msgCache[name] && state.msgCache[name].length > 0);
@@ -93,6 +92,8 @@ export async function setupEvents() {
     state.peers.delete(peer);
     state.pending.delete(peer);
     delete state.msgCache[peer];
+    delete state.mightHaveMore[peer];
+    delete state.lastPullLimit[peer];
     state.unread[peer] = 0;
     if (state.currentPeer === peer) {
       state.currentPeer = null;
@@ -122,7 +123,6 @@ export async function setupEvents() {
     if (idx >= 0) state.msgCache[m.peer][idx] = entry;
     else state.msgCache[m.peer].push(entry);
 
-    // Unread bookkeeping.
     if (m.direction === "in" && state.currentPeer !== m.peer) {
       state.unread[m.peer] = (state.unread[m.peer] || 0) + 1;
     }
@@ -136,11 +136,23 @@ export async function setupEvents() {
     const peer = e.payload;
     state.pulling.delete(peer);
 
+    const prevLen = (state.msgCache[peer] || []).length;
     try {
       state.msgCache[peer] = await invoke("get_messages", { peer });
     } catch (_) {
       state.msgCache[peer] = state.msgCache[peer] || [];
     }
+    const newLen = state.msgCache[peer].length;
+    const added = newLen - prevLen;
+
+    // If we requested a bounded page and got fewer rows than the limit,
+    // we've reached the beginning of history.
+    const limit = state.lastPullLimit[peer];
+    if (limit != null) {
+      state.mightHaveMore[peer] = added >= limit;
+      delete state.lastPullLimit[peer];
+    }
+    state.loadingOlder.delete(peer);
 
     if (state.pending.has(peer)) {
       state.pending.delete(peer);
@@ -157,6 +169,7 @@ export async function setupEvents() {
     const m = msg.match(/^peer (.+?) is offline/);
     if (m) {
       state.pulling.delete(m[1]);
+      state.loadingOlder.delete(m[1]);
       return;
     }
     toast(msg);
