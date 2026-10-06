@@ -3,7 +3,7 @@
  - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
  - Custom media files: show filename
- - Fix notifications (message count) after logging back not showing (there may be other issues probably with that)
+ - Fix notifications (message count) after logging back not showing, taskbar not blinking )even with normal notifications) (there may be other issues probably with that)
  - Better new message notifications (sounds, system notifications?)
  - Status (Inactive, Busy etc like in Discord)
  - Mark messages as sent/read by other user like in Telegram
