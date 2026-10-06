@@ -1,10 +1,9 @@
 (Some of them may be already implemented, but untested)
  - Do not preload all the chat (like in Discord/Telegram?)
- - Add ability to clear chat (locally/globally), leave chat, block user etc
  - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
- - Support different media types (image/audio)
- - Fix notifications (message count) after logging back not showing (probably other issues)
+ - Custom media files: show filename
+ - Fix notifications (message count) after logging back not showing (there may be other issues probably with that)
  - Better new message notifications (sounds, system notifications?)
  - Status (Inactive, Busy etc like in Discord)
  - Mark messages as sent/read by other user like in Telegram

@@ -22,6 +22,7 @@ import {
     loadOlder,
     sendImage,
     sendAudio,
+    sendMedia,
 } from "./actions.js";
 import {
     renderMessages,
@@ -80,12 +81,51 @@ function closeAllMenus() {
     }
 }
 
-/**
- * Wires a hidden <input type="file"> to a button. When the user picks a
- * file, its contents are read as a data URL and handed to `onPayload`.
- * Enforces a simple max size to avoid blowing up the socket.
- */
-function wireFilePicker({ buttonId, inputId, acceptPrefix, maxBytes, onPayload }) {
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
+
+function readAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("read error"));
+        reader.readAsDataURL(file);
+    });
+}
+
+function kindForFile(file) {
+    if (file.type.startsWith("image/")) return "image";
+    if (file.type.startsWith("audio/")) return "audio";
+    return "file";
+}
+
+function limitForKind(kind) {
+    if (kind === "image") return MAX_IMAGE_BYTES;
+    if (kind === "audio") return MAX_AUDIO_BYTES;
+    return MAX_FILE_BYTES;
+}
+
+async function dispatchFiles(files) {
+    for (const file of files) {
+        const kind = kindForFile(file);
+        const limit = limitForKind(kind);
+        if (file.size > limit) {
+            toast(`File too large (max ${Math.round(limit / (1024 * 1024))} MiB).`);
+            continue;
+        }
+        try {
+            const dataUrl = await readAsDataUrl(file);
+            if (kind === "image") await sendImage(dataUrl);
+            else if (kind === "audio") await sendAudio(dataUrl);
+            else await sendMedia("file", dataUrl);
+        } catch (e) {
+            toast("Send file error: " + e);
+        }
+    }
+}
+
+function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
     const btn = document.getElementById(buttonId);
     const input = document.getElementById(inputId);
     if (!btn || !input) return;
@@ -95,26 +135,77 @@ function wireFilePicker({ buttonId, inputId, acceptPrefix, maxBytes, onPayload }
         input.click();
     });
 
-    input.addEventListener("change", () => {
-        const file = input.files && input.files[0];
-        if (!file) return;
-        if (!file.type.startsWith(acceptPrefix)) {
-            toast("Unsupported file type.");
+    input.addEventListener("change", async () => {
+        const files = input.files;
+        if (!files || files.length === 0) return;
+        const file = files[0];
+        const limit = limitForKind(kind);
+        if (file.size > limit) {
+            toast(`File too large (max ${Math.round(limit / (1024 * 1024))} MiB).`);
             return;
         }
-        if (file.size > maxBytes) {
-            const mb = Math.round(maxBytes / (1024 * 1024));
-            toast(`File too large (max ${mb} MiB).`);
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-            const dataUrl = String(reader.result || "");
+        try {
+            const dataUrl = await readAsDataUrl(file);
             if (!dataUrl.startsWith("data:")) return;
             onPayload(dataUrl);
-        };
-        reader.onerror = () => toast("Failed to read file.");
-        reader.readAsDataURL(file);
+        } catch (e) {
+            toast("Failed to read file: " + e);
+        }
+    });
+}
+
+/**
+ * Installs drag-and-drop file handling. Requires `dragDropEnabled: false`
+ * in tauri.conf.json so the webview receives native DnD events.
+ */
+function installDragDrop() {
+    const overlay = document.getElementById("drop-overlay");
+    let dragDepth = 0;
+
+    const showOverlay = () => {
+        if (overlay) overlay.hidden = false;
+    };
+    const hideOverlay = () => {
+        if (overlay) overlay.hidden = true;
+    };
+
+    const hasFiles = (e) => {
+        const dt = e.dataTransfer;
+        if (!dt) return false;
+        if (dt.types && Array.from(dt.types).includes("Files")) return true;
+        return false;
+    };
+
+    window.addEventListener("dragenter", (e) => {
+        if (!state.currentPeer) return;
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth++;
+        showOverlay();
+    });
+
+    window.addEventListener("dragover", (e) => {
+        if (!state.currentPeer) return;
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    });
+
+    window.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) hideOverlay();
+    });
+
+    window.addEventListener("drop", (e) => {
+        if (!state.currentPeer) return;
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth = 0;
+        hideOverlay();
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+        void dispatchFiles(files);
     });
 }
 
@@ -149,15 +240,13 @@ async function init() {
     wireFilePicker({
         buttonId: "attach-image-btn",
         inputId: "image-input",
-        acceptPrefix: "image/",
-        maxBytes: 8 * 1024 * 1024,
+        kind: "image",
         onPayload: (dataUrl) => sendImage(dataUrl),
     });
     wireFilePicker({
         buttonId: "attach-audio-btn",
         inputId: "audio-input",
-        acceptPrefix: "audio/",
-        maxBytes: 16 * 1024 * 1024,
+        kind: "audio",
         onPayload: (dataUrl) => sendAudio(dataUrl),
     });
 
@@ -224,13 +313,7 @@ async function init() {
                 e.preventDefault();
                 const file = it.getAsFile();
                 if (!file) return;
-                if (file.size > 8 * 1024 * 1024) {
-                    toast("Image too large (max 8 MiB).");
-                    return;
-                }
-                const reader = new FileReader();
-                reader.onload = () => sendImage(String(reader.result || ""));
-                reader.readAsDataURL(file);
+                void dispatchFiles([file]);
                 return;
             }
         }
@@ -308,6 +391,7 @@ async function init() {
     });
 
     installScrollPagination();
+    installDragDrop();
 
     await setupEvents();
     await refreshEncryptionStatus();

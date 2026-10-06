@@ -138,45 +138,43 @@ export async function refreshPending() {
     }
 }
 
+/** Helper: merge a LocalMsg returned by the backend into our cache. */
+function mergeSent(peer, msg) {
+    const cache = state.msgCache[peer] || (state.msgCache[peer] = []);
+    const idx = cache.findIndex((x) => x.id === msg.id);
+    if (idx >= 0) cache[idx] = msg;
+    else cache.push(msg);
+}
+
 export async function send() {
     if (!state.currentPeer) return;
     const input = document.getElementById("msg");
     const text = input.value;
     if (!text.trim()) return;
 
+    const peer = state.currentPeer;
     try {
-        await invoke("send_message", { to: state.currentPeer, text });
+        const msg = await invoke("send_message", { to: peer, text });
         input.value = "";
         input.style.height = "auto";
-        if (state.currentPeer !== NOTES_PEER) state.pending.delete(state.currentPeer);
-        state.msgCache[state.currentPeer] = await invoke("get_messages", {
-            peer: state.currentPeer,
-        });
+        if (peer !== NOTES_PEER) state.pending.delete(peer);
+        mergeSent(peer, msg);
         renderSidebar();
-        renderMessages();
+        if (state.currentPeer === peer) renderMessages();
     } catch (e) {
         toast("Send error: " + e);
     }
 }
 
-/**
- * Generic media send. `kind` is "image" | "audio" | "file".
- * `payload` must be a data URL.
- */
 export async function sendMedia(kind, payload) {
-    if (!state.currentPeer) return;
+    const peer = state.currentPeer;
+    if (!peer) return;
     try {
-        await invoke("send_media", {
-            to: state.currentPeer,
-            kind,
-            payload,
-        });
-        if (state.currentPeer !== NOTES_PEER) state.pending.delete(state.currentPeer);
-        state.msgCache[state.currentPeer] = await invoke("get_messages", {
-            peer: state.currentPeer,
-        });
+        const msg = await invoke("send_media", { to: peer, kind, payload });
+        if (peer !== NOTES_PEER) state.pending.delete(peer);
+        mergeSent(peer, msg);
         renderSidebar();
-        renderMessages();
+        if (state.currentPeer === peer) renderMessages();
     } catch (e) {
         toast(`Send ${kind} error: ` + e);
     }
@@ -208,13 +206,11 @@ export async function editMessage(id) {
     if (next === null) return;
 
     try {
-        if (next === "") {
-            await invoke("delete_message", { peer, id });
-        } else {
-            await invoke("edit_message", { peer, id, text: next });
-        }
-        state.msgCache[peer] = await invoke("get_messages", { peer });
-        renderMessages();
+        const updated = next === ""
+            ? await invoke("delete_message", { peer, id })
+            : await invoke("edit_message", { peer, id, text: next });
+        mergeSent(peer, updated);
+        if (state.currentPeer === peer) renderMessages();
     } catch (e) {
         toast("Edit error: " + e);
     }
@@ -232,9 +228,9 @@ export async function deleteMessage(id) {
     if (!ok) return;
 
     try {
-        await invoke("delete_message", { peer, id });
-        state.msgCache[peer] = await invoke("get_messages", { peer });
-        renderMessages();
+        const updated = await invoke("delete_message", { peer, id });
+        mergeSent(peer, updated);
+        if (state.currentPeer === peer) renderMessages();
     } catch (e) {
         toast("Delete error: " + e);
     }
@@ -253,6 +249,7 @@ export async function clearChat() {
         try {
             await invoke("clear_chat", { peer: NOTES_PEER });
             state.msgCache[NOTES_PEER] = [];
+            state.seenIds[NOTES_PEER] = new Set();
             renderMessages();
         } catch (e) { toast("Clear error: " + e); }
         return;
@@ -265,6 +262,7 @@ export async function clearChat() {
     try {
         await invoke("clear_chat", { peer });
         state.msgCache[peer] = [];
+        state.seenIds[peer] = new Set();
         renderMessages();
     } catch (e) {
         toast("Clear error: " + e);
@@ -301,6 +299,7 @@ export async function blockUser() {
         state.pending.delete(peer);
         state.currentPeer = null;
         delete state.msgCache[peer];
+        delete state.seenIds[peer];
         renderSidebar();
         renderMessages();
     } catch (e) {
@@ -317,9 +316,7 @@ export async function sendReadReceipt(peer) {
     if (upTo <= 0) return;
     try {
         await invoke("mark_read", { peer, upToTs: upTo });
-    } catch (_) {
-        /* best effort */
-    }
+    } catch (_) {}
 }
 
 export async function refreshReadState(peer) {

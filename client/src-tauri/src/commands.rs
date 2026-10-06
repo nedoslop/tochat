@@ -53,12 +53,21 @@ pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 
 // ---------- messaging ----------
 
+fn kind_from_str(s: &str) -> MessageKind {
+    match s {
+        "image" => MessageKind::Image,
+        "audio" => MessageKind::Audio,
+        "file" => MessageKind::File,
+        _ => MessageKind::Text,
+    }
+}
+
 #[tauri::command]
 pub async fn send_message(
     to: String,
     text: String,
     state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+) -> Result<LocalMsg, String> {
     send_media(to, "text".into(), text, state).await
 }
 
@@ -68,24 +77,16 @@ pub async fn send_media(
     kind: String,
     payload: String,
     state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+) -> Result<LocalMsg, String> {
     if payload.is_empty() {
         return Err("empty message".into());
     }
-    let k = match kind.as_str() {
-        "image" => MessageKind::Image,
-        "audio" => MessageKind::Audio,
-        "file" => MessageKind::File,
-        _ => MessageKind::Text,
-    };
+    let k = kind_from_str(&kind);
 
     if to == NOTES_PEER {
         let db = state.active_db().await?;
         let id = random_id();
         let ts = now_ms();
-        // Notes are always stored as plaintext locally, but broadcast to
-        // our other devices so the notes chat stays in sync. We wrap it
-        // through our own encryption so the server can't read it either.
         db.upsert_message(&to, &id, "out", ts, ts, k.as_str(), &payload, true, true)
             .await;
         let wire = state.encrypt_for_wire(&payload).await?;
@@ -95,19 +96,38 @@ pub async fn send_media(
         };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
-                id,
+                id: id.clone(),
                 ts,
                 edit_ts: ts,
                 kind: k,
                 payload: wire,
             });
         }
-        return Ok(());
+        return Ok(LocalMsg {
+            id,
+            direction: "out".into(),
+            ts,
+            edit_ts: ts,
+            kind: k.as_str().into(),
+            payload,
+            plaintext: true,
+            read: true,
+        });
     }
 
     let id = random_id();
     let ts = now_ms();
-    send_outgoing(&state, &to, &id, ts, ts, k, &payload, false).await
+    send_outgoing(&state, &to, &id, ts, ts, k, &payload, false).await?;
+    Ok(LocalMsg {
+        id,
+        direction: "out".into(),
+        ts,
+        edit_ts: ts,
+        kind: k.as_str().into(),
+        payload,
+        plaintext: true,
+        read: false,
+    })
 }
 
 #[tauri::command]
@@ -116,25 +136,21 @@ pub async fn edit_message(
     id: String,
     text: String,
     state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+) -> Result<LocalMsg, String> {
     if text.is_empty() {
         return Err("empty message".into());
     }
     let db = state.active_db().await?;
-    let (ts, kind) = db
+    let (ts, kind, read) = db
         .get_messages(&peer)
         .await
         .iter()
         .find(|m| m.id == id)
-        .map(|m| (m.ts, m.kind.clone()))
-        .unwrap_or_else(|| (now_ms(), "text".into()));
-    let k = match kind.as_str() {
-        "image" => MessageKind::Image,
-        "audio" => MessageKind::Audio,
-        "file" => MessageKind::File,
-        _ => MessageKind::Text,
-    };
+        .map(|m| (m.ts, m.kind.clone(), m.read))
+        .unwrap_or_else(|| (now_ms(), "text".into(), false));
+    let k = kind_from_str(&kind);
     let edit_ts = now_ms();
+
     if peer == NOTES_PEER {
         db.upsert_message(&peer, &id, "out", ts, edit_ts, k.as_str(), &text, true, true)
             .await;
@@ -145,16 +161,36 @@ pub async fn edit_message(
         };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
-                id,
+                id: id.clone(),
                 ts,
                 edit_ts,
                 kind: k,
                 payload: wire,
             });
         }
-        return Ok(());
+        return Ok(LocalMsg {
+            id,
+            direction: "out".into(),
+            ts,
+            edit_ts,
+            kind: k.as_str().into(),
+            payload: text,
+            plaintext: true,
+            read: true,
+        });
     }
-    send_outgoing(&state, &peer, &id, ts, edit_ts, k, &text, true).await
+
+    send_outgoing(&state, &peer, &id, ts, edit_ts, k, &text, true).await?;
+    Ok(LocalMsg {
+        id,
+        direction: "out".into(),
+        ts,
+        edit_ts,
+        kind: k.as_str().into(),
+        payload: text,
+        plaintext: true,
+        read,
+    })
 }
 
 #[tauri::command]
@@ -162,22 +198,18 @@ pub async fn delete_message(
     peer: String,
     id: String,
     state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+) -> Result<LocalMsg, String> {
     let db = state.active_db().await?;
-    let (ts, kind) = db
+    let (ts, kind, read) = db
         .get_messages(&peer)
         .await
         .iter()
         .find(|m| m.id == id)
-        .map(|m| (m.ts, m.kind.clone()))
-        .unwrap_or_else(|| (now_ms(), "text".into()));
-    let k = match kind.as_str() {
-        "image" => MessageKind::Image,
-        "audio" => MessageKind::Audio,
-        "file" => MessageKind::File,
-        _ => MessageKind::Text,
-    };
+        .map(|m| (m.ts, m.kind.clone(), m.read))
+        .unwrap_or_else(|| (now_ms(), "text".into(), false));
+    let k = kind_from_str(&kind);
     let edit_ts = now_ms();
+
     if peer == NOTES_PEER {
         db.upsert_message(&peer, &id, "out", ts, edit_ts, k.as_str(), "", true, true)
             .await;
@@ -188,16 +220,36 @@ pub async fn delete_message(
         };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
-                id,
+                id: id.clone(),
                 ts,
                 edit_ts,
                 kind: k,
                 payload: wire,
             });
         }
-        return Ok(());
+        return Ok(LocalMsg {
+            id,
+            direction: "out".into(),
+            ts,
+            edit_ts,
+            kind: k.as_str().into(),
+            payload: String::new(),
+            plaintext: true,
+            read: true,
+        });
     }
-    send_outgoing(&state, &peer, &id, ts, edit_ts, k, "", true).await
+
+    send_outgoing(&state, &peer, &id, ts, edit_ts, k, "", true).await?;
+    Ok(LocalMsg {
+        id,
+        direction: "out".into(),
+        ts,
+        edit_ts,
+        kind: k.as_str().into(),
+        payload: String::new(),
+        plaintext: true,
+        read,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -526,7 +578,6 @@ pub async fn set_encryption(
     Ok(())
 }
 
-/// Generates a random 64-hex-char pre-shared key.
 #[tauri::command]
 pub fn generate_psk() -> String {
     use rand::RngCore;

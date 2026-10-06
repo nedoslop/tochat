@@ -12,7 +12,6 @@
     <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
-<!-- ===================== Login ===================== -->
 <div id="login-view" class="view login-view">
     <div class="login-card">
         <button id="theme-btn-login" class="btn btn-ghost btn-icon theme-btn-float" title="Theme">🌓</button>
@@ -55,7 +54,6 @@
     </div>
 </div>
 
-<!-- ===================== App ===================== -->
 <div id="app-view" class="view app-view" hidden>
     <aside class="sidebar">
         <div class="sidebar-head">
@@ -101,7 +99,6 @@
     </aside>
 
     <main class="main">
-        <!-- ---- Chat view ---- -->
         <section id="chat-view" class="chat-view">
             <header class="chat-header">
                 <div class="chat-peer">
@@ -187,7 +184,6 @@
             </div>
         </section>
 
-        <!-- ---- Pending view ---- -->
         <section id="pending-view" class="pending-view" hidden>
             <header class="chat-header">
                 <div class="chat-peer">
@@ -213,7 +209,9 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
-<div id="notif-stack" class="notif-stack"></div>
+<div id="drop-overlay" class="drop-overlay" hidden>
+    <div class="drop-overlay-inner">Drop files to send</div>
+</div>
 <div id="modal-root"></div>
 
 <script type="module" src="js/main.js"></script>
