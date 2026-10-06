@@ -1,7 +1,7 @@
-// User-initiated actions: register, login, send, edit, delete, pull, logout.
+// User-initiated actions.
 
 import { invoke } from "./api.js";
-import { state, resetState } from "./state.js";
+import { state, resetState, NOTES_PEER } from "./state.js";
 import { toast } from "./utils.js";
 import { showConfirm, showPrompt } from "./dialog.js";
 import {
@@ -73,13 +73,40 @@ export async function deleteAccount() {
 
 // ---------- chats ----------
 
+export async function openNotes() {
+  state.currentPeer = NOTES_PEER;
+  state.peers.add(NOTES_PEER);
+  state.unread[NOTES_PEER] = 0;
+  showChatView();
+  try {
+    state.msgCache[NOTES_PEER] = await invoke("get_messages", { peer: NOTES_PEER });
+  } catch (_) {
+    state.msgCache[NOTES_PEER] = state.msgCache[NOTES_PEER] || [];
+  }
+  renderSidebar();
+  renderMessages();
+}
+
 export async function openPeer(peer) {
   if (!peer) return;
   if (peer === state.me) return toast("You can't chat with yourself.");
+  if (state.blocked.has(peer)) {
+    const unblock = await showConfirm(
+      `${peer} is blocked. Unblock to open the chat?`,
+      { title: "Blocked user", okText: "Unblock" },
+    );
+    if (!unblock) return;
+    try { await invoke("unblock_user", { username: peer }); } catch (e) {
+      toast("Unblock error: " + e);
+      return;
+    }
+    state.blocked.delete(peer);
+  }
 
   state.pending.delete(peer);
   state.currentPeer = peer;
   state.peers.add(peer);
+  state.unread[peer] = 0;
   showChatView();
 
   try {
@@ -118,7 +145,8 @@ export async function send() {
   try {
     await invoke("send_message", { to: state.currentPeer, text });
     input.value = "";
-    state.pending.delete(state.currentPeer);
+    input.style.height = "auto";
+    if (state.currentPeer !== NOTES_PEER) state.pending.delete(state.currentPeer);
     state.msgCache[state.currentPeer] = await invoke("get_messages", {
       peer: state.currentPeer,
     });
@@ -179,19 +207,79 @@ export async function deleteMessage(id) {
   }
 }
 
+// ---------- chat management ----------
+
+export async function clearChat() {
+  const peer = state.currentPeer;
+  if (!peer || peer === NOTES_PEER) {
+    if (peer === NOTES_PEER) {
+      const ok = await showConfirm("Clear all notes?", {
+        title: "Clear notes", okText: "Clear", danger: true,
+      });
+      if (!ok) return;
+      try {
+        await invoke("clear_chat", { peer: NOTES_PEER });
+        state.msgCache[NOTES_PEER] = [];
+        renderMessages();
+      } catch (e) { toast("Clear error: " + e); }
+    }
+    return;
+  }
+  const ok = await showConfirm(
+    `Delete all local messages with ${peer}? The other side keeps their copy.`,
+    { title: "Clear chat", okText: "Clear", danger: true },
+  );
+  if (!ok) return;
+  try {
+    await invoke("clear_chat", { peer });
+    state.msgCache[peer] = [];
+    renderMessages();
+  } catch (e) {
+    toast("Clear error: " + e);
+  }
+}
+
+export async function leaveChat() {
+  const peer = state.currentPeer;
+  if (!peer || peer === NOTES_PEER) return;
+  const ok = await showConfirm(
+    `Leave the chat with ${peer}? Both sides will lose the relationship and local history will be deleted on your side. You can start a new chat later.`,
+    { title: "Leave chat", okText: "Leave", danger: true },
+  );
+  if (!ok) return;
+  try {
+    await invoke("leave_chat", { peer });
+  } catch (e) {
+    toast("Leave error: " + e);
+  }
+}
+
+export async function blockUser() {
+  const peer = state.currentPeer;
+  if (!peer || peer === NOTES_PEER) return;
+  const ok = await showConfirm(
+    `Block ${peer}? They won't be able to send you messages. You can unblock later by trying to open the chat.`,
+    { title: "Block user", okText: "Block", danger: true },
+  );
+  if (!ok) return;
+  try {
+    await invoke("block_user", { username: peer });
+    state.blocked.add(peer);
+    state.peers.delete(peer);
+    state.pending.delete(peer);
+    state.currentPeer = null;
+    delete state.msgCache[peer];
+    renderSidebar();
+    renderMessages();
+  } catch (e) {
+    toast("Block error: " + e);
+  }
+}
+
 // ---------- history sync ----------
 
-/**
- * Asks `peer` for any messages we don't already have.
- *
- * `since` is the largest `edit_ts` we've seen *for inbound messages from
- * that peer*. Using inbound-only means:
- *   - We don't leak our local outbound edit_ts into the cutoff.
- *   - If we sent something offline and it later gets pulled back from the
- *     peer (who received it), it will have a fresh edit_ts and be included.
- */
 export async function autoPull(peer) {
-  if (!peer || peer === state.me) return;
+  if (!peer || peer === state.me || peer === NOTES_PEER) return;
   if (state.pulling.has(peer)) return;
 
   state.pulling.add(peer);
@@ -205,7 +293,6 @@ export async function autoPull(peer) {
     state.pulling.delete(peer);
     return;
   }
-  // Safety net in case the response never arrives.
   setTimeout(() => state.pulling.delete(peer), 6000);
 }
 
@@ -225,6 +312,8 @@ export function resetToLogin() {
   document.getElementById("app-view").hidden = true;
   document.getElementById("login-view").hidden = false;
   document.getElementById("enc-panel").hidden = true;
+  document.getElementById("settings-menu").hidden = true;
+  document.getElementById("chat-menu").hidden = true;
   renderSidebar();
   renderMessages();
 }

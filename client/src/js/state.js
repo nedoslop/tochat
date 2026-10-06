@@ -1,21 +1,24 @@
-// Single shared mutable state object. Everything else imports this and
-// mutates it in place.
+// Single shared mutable state object.
+
+export const NOTES_PEER = "__notes__";
 
 export const state = {
-  /** Currently logged-in username (or null). */
   me: null,
-  /** Username of the currently-open chat (or null). */
   currentPeer: null,
-  /** Established peers (usernames). */
   peers: new Set(),
-  /** Users who messaged us first — pending acceptance. */
   pending: new Set(),
-  /** Peers currently believed to be online. */
+  blocked: new Set(),
   online: new Set(),
+  /** peer -> status string ("online" | "away" | "busy" | "invisible"). */
+  peerStatus: {},
   /** peer -> array of LocalMsg-shaped objects. */
   msgCache: {},
   /** Peers for which a pull request is in flight. */
   pulling: new Set(),
+  /** peer -> unread message count. */
+  unread: {},
+  /** My own status. */
+  myStatus: "online",
 };
 
 export function resetState() {
@@ -23,7 +26,10 @@ export function resetState() {
   state.currentPeer = null;
   state.peers.clear();
   state.pending.clear();
+  state.blocked.clear();
   state.online.clear();
+  state.peerStatus = {};
   state.pulling.clear();
+  state.unread = {};
   for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
 }

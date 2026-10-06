@@ -1,12 +1,12 @@
 /* ============================================================
-   App shell
-   ============================================================ */
+App shell
+============================================================ */
 .view { height: 100vh; }
 .app-view { display: flex; height: 100vh; }
 
 /* ============================================================
-   Sidebar
-   ============================================================ */
+Sidebar
+============================================================ */
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
@@ -43,29 +43,31 @@
   color: var(--text);
 }
 .me-status {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 2px;
   font-size: 12px;
   color: var(--success);
   display: flex;
   align-items: center;
   gap: 5px;
+  cursor: pointer;
 }
-.me-status::before {
-  content: "";
+.status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: currentColor;
+  display: inline-block;
 }
+.me-status[data-status="away"]    { color: var(--warning); }
+.me-status[data-status="busy"]    { color: var(--danger); }
+.me-status[data-status="invisible"] { color: var(--text-faint); }
 
-#theme-btn {
-  font-size: 16px;
-  line-height: 1;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  opacity: 0.75;
-}
-#theme-btn:hover { opacity: 1; }
+.head-actions { display: flex; align-items: center; gap: 2px; }
+.head-actions .btn-icon { width: 32px; height: 32px; font-size: 16px; padding: 0; opacity: 0.75; }
+.head-actions .btn-icon:hover { opacity: 1; }
 
 .sidebar-search {
   display: flex;
@@ -159,6 +161,8 @@
   display: none;
 }
 .peer.online .peer-avatar::after { display: block; }
+.peer.status-away .peer-avatar::after { background: var(--warning); }
+.peer.status-busy .peer-avatar::after { background: var(--danger); }
 
 .peer-body { flex: 1; min-width: 0; }
 .peer-name {
@@ -170,18 +174,20 @@
   color: var(--text);
 }
 
-.sidebar-foot {
-  padding: 10px 14px 14px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.peer-unread {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 18px;
+  text-align: center;
 }
-.sidebar-foot .btn { justify-content: flex-start; }
 
 /* ============================================================
-   Main
-   ============================================================ */
+Main
+============================================================ */
 .main {
   flex: 1;
   display: flex;
@@ -227,10 +233,47 @@
 }
 .chat-peer-status { font-size: 12px; color: var(--text-dim); }
 .chat-peer-status.online { color: var(--success); }
+.chat-peer-status.away { color: var(--warning); }
+.chat-peer-status.busy { color: var(--danger); }
+
+.header-actions { display: flex; align-items: center; gap: 4px; }
 
 /* ============================================================
-   Messages
-   ============================================================ */
+Menu (dropdown)
+============================================================ */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  min-width: 180px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.menu-item {
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.menu-item:hover { background: var(--surface-3); }
+.menu-item.danger { color: var(--danger); }
+.menu-item.danger:hover { background: var(--danger-soft); }
+
+/* ============================================================
+Messages
+============================================================ */
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -329,8 +372,8 @@
 }
 
 /* ============================================================
-   Empty state
-   ============================================================ */
+Empty state
+============================================================ */
 .empty-state {
   margin: auto;
   text-align: center;
@@ -346,8 +389,8 @@
 .empty-sub { font-size: 13px; }
 
 /* ============================================================
-   Composer
-   ============================================================ */
+Composer
+============================================================ */
 .composer {
   display: flex;
   gap: 8px;
@@ -355,11 +398,26 @@
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  align-items: flex-end;
 }
-.composer input {
+.composer textarea {
   flex: 1;
   padding: 10px 16px;
   border-radius: 20px;
+  resize: none;
+  max-height: 180px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.composer textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .composer .btn-icon {
   width: 40px;
@@ -369,15 +427,15 @@
 }
 
 /* ============================================================
-   Encryption widget
-   ============================================================ */
+Encryption widget
+============================================================ */
 .enc-widget { position: relative; flex-shrink: 0; }
 
 .enc-panel {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  width: 300px;
+  width: 320px;
   padding: 14px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -392,9 +450,13 @@
 .enc-actions { display: flex; gap: 6px; margin-top: 2px; }
 .enc-actions .btn { flex: 1; }
 
+.secret-row { display: flex; gap: 6px; align-items: stretch; }
+.secret-row input { flex: 1; min-width: 0; }
+.secret-row .btn { white-space: nowrap; }
+
 /* ============================================================
-   Pending view
-   ============================================================ */
+Pending view
+============================================================ */
 .pending-view {
   flex: 1;
   display: flex;

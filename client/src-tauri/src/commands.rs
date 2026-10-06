@@ -6,10 +6,12 @@ use tauri::{Manager, State};
 
 use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
-use crate::protocol::{ClientMsg, MessageKind};
+use crate::protocol::{ClientMsg, MessageKind, UserStatus};
 use crate::state::{encryption_path, read_theme, theme_path, user_db_path, AppState};
 use crate::util::{now_ms, random_id};
 use crate::ws;
+
+pub const NOTES_PEER: &str = "__notes__";
 
 // ---------- auth ----------
 
@@ -60,6 +62,14 @@ pub async fn send_message(
     if text.is_empty() {
         return Err("empty message".into());
     }
+    if to == NOTES_PEER {
+        let db = state.active_db().await?;
+        let id = random_id();
+        let ts = now_ms();
+        db.upsert_message(&to, &id, "out", ts, ts, "text", &text, true)
+            .await;
+        return Ok(());
+    }
     let id = random_id();
     let ts = now_ms();
     send_outgoing(&state, &to, &id, ts, ts, &text, false).await
@@ -84,6 +94,11 @@ pub async fn edit_message(
         .map(|m| m.ts)
         .unwrap_or_else(now_ms);
     let edit_ts = now_ms();
+    if peer == NOTES_PEER {
+        db.upsert_message(&peer, &id, "out", ts, edit_ts, "text", &text, true)
+            .await;
+        return Ok(());
+    }
     send_outgoing(&state, &peer, &id, ts, edit_ts, &text, true).await
 }
 
@@ -102,13 +117,14 @@ pub async fn delete_message(
         .map(|m| m.ts)
         .unwrap_or_else(now_ms);
     let edit_ts = now_ms();
+    if peer == NOTES_PEER {
+        db.upsert_message(&peer, &id, "out", ts, edit_ts, "text", "", true)
+            .await;
+        return Ok(());
+    }
     send_outgoing(&state, &peer, &id, ts, edit_ts, "", true).await
 }
 
-/// Shared logic for new messages and edits/deletes.
-///
-/// Locally the plaintext (or empty, for deletes) is stored with
-/// `plaintext = true`. The wire payload is encrypted if a cipher is active.
 #[allow(clippy::too_many_arguments)]
 async fn send_outgoing(
     state: &Arc<AppState>,
@@ -161,6 +177,9 @@ pub async fn pull_history(
     since: i64,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    if from == NOTES_PEER {
+        return Ok(());
+    }
     let tx = {
         let ws = state.ws.lock().await;
         ws.as_ref()
@@ -201,6 +220,83 @@ pub async fn delete_account(
     Ok(())
 }
 
+// ---------- status / block / leave / clear ----------
+
+#[tauri::command]
+pub async fn set_status(status: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let s = UserStatus::parse(&status);
+    *state.my_status.write().await = s;
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::SetStatus { status: s });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_chat(peer: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let db = state.active_db().await?;
+    db.clear_peer(&peer).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn leave_chat(peer: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let db = state.active_db().await?;
+    db.clear_peer(&peer).await;
+    drop(db);
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::LeaveChat { peer });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn block_user(username: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let db = state.active_db().await?;
+    db.clear_peer(&username).await;
+    drop(db);
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::BlockUser { username });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unblock_user(username: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::UnblockUser { username });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_blocked(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let tx = {
+        let ws = state.ws.lock().await;
+        ws.as_ref().map(|s| s.tx.clone())
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ClientMsg::ListBlocked);
+    }
+    Ok(())
+}
+
 // ---------- local storage ----------
 
 #[tauri::command]
@@ -212,12 +308,8 @@ pub async fn get_messages(
     Ok(db.get_messages(&peer).await)
 }
 
-/// Wipes the current user's local data (messages + DB file) and resets
-/// encryption to defaults. Best-effort: works even if the user has already
-/// been logged out.
 #[tauri::command]
 pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    // Wipe rows through the active handle, if any.
     let had_db = {
         let guard = state.db.read().await.clone();
         if let Some(db) = guard {
@@ -228,21 +320,19 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         }
     };
 
-    // Determine the current user (may be None if already logged out).
     let me = state.me.read().await.clone();
+    let server_url = state.server_url.read().await.clone();
 
-    // On Windows we must release the DB file before unlinking it.
     if had_db {
         *state.db.write().await = None;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    if let Some(name) = me {
-        let path = user_db_path(&state.data_dir, &name);
+    if let (Some(name), Some(url)) = (me, server_url) {
+        let path = user_db_path(&state.data_dir, &name, &url);
         let _ = std::fs::remove_file(&path);
     }
 
-    // Reset encryption (in-memory + on-disk).
     let config = EncryptionConfig::default();
     {
         let mut enc = state.encryption.write().await;
@@ -255,12 +345,9 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
 
 // ---------- encryption ----------
 
-/// Snapshot of the current encryption configuration, safe to expose to the UI.
 #[derive(Serialize)]
 pub struct EncryptionInfo {
-    /// One of `"none"`, `"shared_password"`, `"pre_shared_key"`.
     pub method: String,
-    /// Whether a secret is currently stored for the active method.
     pub has_secret: bool,
 }
 
@@ -277,8 +364,6 @@ pub async fn get_encryption(state: State<'_, Arc<AppState>>) -> Result<Encryptio
     })
 }
 
-/// Sets the encryption method + optional secret. Pass `secret = None` with an
-/// unchanged method to keep the previously stored secret.
 #[tauri::command]
 pub async fn set_encryption(
     method: String,
@@ -290,8 +375,6 @@ pub async fn set_encryption(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // If the caller didn't supply a secret and the method is unchanged, keep
-    // the existing one (so "Apply" without retyping is a no-op).
     if secret.is_none() {
         let enc = state.encryption.read().await;
         if enc.config.method == m {
@@ -319,8 +402,6 @@ pub async fn set_encryption(
         secret: secret.clone(),
     };
 
-    // Persist before swapping runtime state so a disk failure doesn't
-    // silently change behavior for the running session.
     let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
     std::fs::write(encryption_path(&state.data_dir), json)
         .map_err(|e| format!("persist error: {e}"))?;
@@ -330,19 +411,22 @@ pub async fn set_encryption(
     Ok(())
 }
 
+/// Generates a random 64-hex-char pre-shared key.
+#[tauri::command]
+pub fn generate_psk() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 // ---------- theme ----------
 
-/// Reads the persisted theme preference. One of `"system"`, `"light"`,
-/// `"dark"`. Falls back to `"system"` if the file is missing, unreadable,
-/// or contains an invalid value.
 #[tauri::command]
 pub async fn get_theme(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     Ok(read_theme(&state.data_dir))
 }
 
-/// Persists the theme preference and immediately applies it to the
-/// native window (titlebar / decorations). Accepted values: `"system"`,
-/// `"light"`, `"dark"`.
 #[tauri::command]
 pub async fn set_theme(theme: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     if !matches!(theme.as_str(), "system" | "light" | "dark") {
@@ -353,19 +437,10 @@ pub async fn set_theme(theme: String, state: State<'_, Arc<AppState>>) -> Result
     std::fs::write(theme_path(&state.data_dir), json)
         .map_err(|e| format!("persist error: {e}"))?;
 
-    // Keep the native titlebar in sync with the HTML-side theme so the
-    // window decorations don't flash white/dark against the content.
     apply_window_theme(&state.app, &theme);
     Ok(())
 }
 
-/// Pushes the theme preference to the main window's native decorations.
-///
-/// `"light"` / `"dark"` force the OS titlebar; `"system"` (or anything
-/// unexpected) hands control back to the OS so it tracks the user's
-/// system-wide preference. Failures are ignored — the in-app theme is
-/// still applied by the frontend, so the worst case is a mismatched
-/// titlebar, not a broken UI.
 pub fn apply_window_theme(app: &tauri::AppHandle, theme: &str) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -380,9 +455,6 @@ pub fn apply_window_theme(app: &tauri::AppHandle, theme: &str) {
 
 // ---------- build info ----------
 
-/// True in release builds, false under `tauri dev`. Used by the frontend to
-/// enable/disable dev-only affordances (currently: block the right-click
-/// context menu).
 #[tauri::command]
 pub fn is_release() -> bool {
     cfg!(not(debug_assertions))
