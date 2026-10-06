@@ -59,7 +59,9 @@ async fn handle_socket(
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let was_empty = state.add_session(
+    // Register the session. The return value is kept for logging but is
+    // deliberately NOT used to gate presence announcements — see below.
+    let _was_empty = state.add_session(
         user_id,
         OnlineSession {
             tx: tx.clone(),
@@ -74,7 +76,6 @@ async fn handle_socket(
         last_seen,
     });
 
-    // Send own profile so the client can render its own avatar.
     if let Some((_id, dn, av)) = state.db.get_profile(&username).await {
         let _ = tx.send(ServerMsg::Profile {
             username: username.clone(),
@@ -95,8 +96,6 @@ async fn handle_socket(
     });
     let _ = tx.send(ServerMsg::Blocked { users: blocked });
 
-    // Send profiles for every peer and pending chat up-front so the UI
-    // can render display names and avatars immediately.
     for p in peers.iter().chain(pending.iter()) {
         if let Some((_id, dn, av)) = state.db.get_profile(p).await {
             let _ = tx.send(ServerMsg::Profile {
@@ -107,19 +106,26 @@ async fn handle_socket(
         }
     }
 
-    // Announce presence to peers on the first session.
-    if was_empty {
-        for p in &peers {
-            let Some(peer_id) = state.db.user_id(p).await else {
-                continue;
-            };
-            state.send_to_user(
-                peer_id,
-                ServerMsg::PeerOnline {
-                    username: username.clone(),
-                },
-            );
-        }
+    // Announce presence to peers on EVERY new session.
+    //
+    // Rationale: peers rely on PeerOnline as the trigger to pull history.
+    // If we only announce on "first session", a stale entry left behind
+    // by a silent disconnect (network drop, crash, kill -9) makes the
+    // reconnect look like a second session and peers never hear about
+    // it — so their offline-sent messages never sync.
+    //
+    // Duplicate PeerOnline events are harmless: the client reacts by
+    // firing a history pull, which is idempotent (keyed by message id).
+    for p in &peers {
+        let Some(peer_id) = state.db.user_id(p).await else {
+            continue;
+        };
+        state.send_to_user(
+            peer_id,
+            ServerMsg::PeerOnline {
+                username: username.clone(),
+            },
+        );
     }
 
     // Tell the newly-connected client which of its peers are online now.
@@ -326,14 +332,12 @@ async fn handle_client(
                 .set_profile(me_id, display_name.as_deref(), avatar.as_deref())
                 .await;
 
-            // Echo back to self so all our sessions stay consistent.
             let _ = tx.send(ServerMsg::Profile {
                 username: me.to_string(),
                 display_name: display_name.clone(),
                 avatar: avatar.clone(),
             });
 
-            // Broadcast to online peers.
             let peers = state.db.list_peers(me_id).await;
             for p in peers {
                 if let Some(pid) = state.db.user_id(&p).await {
@@ -367,9 +371,18 @@ async fn broadcast_status(state: &AppState, me_id: i64, me: &str, status: UserSt
     }
 }
 
-/// Broadcast a PeerOnline announcement to both sides of a peer pair.
+/// Broadcast PeerOnline to both sides of a peer pair.
+///
+/// IMPORTANT: the "are they online?" check is on the SUBJECT of each
+/// notification, not on the recipient. Otherwise, when Alice sends to
+/// offline Bob, Alice would get told "Bob is online" (because Alice is
+/// online), which is a lie that makes the client try to pull history and
+/// get a "peer offline" error.
 async fn notify_peer_pair(state: &AppState, me_id: i64, me: &str, to_id: i64, to: &str) {
-    if state.is_online(to_id) {
+    let me_online = state.is_online(me_id);
+    let to_online = state.is_online(to_id);
+
+    if me_online {
         state.send_to_user(
             to_id,
             ServerMsg::PeerOnline {
@@ -377,7 +390,7 @@ async fn notify_peer_pair(state: &AppState, me_id: i64, me: &str, to_id: i64, to
             },
         );
     }
-    if state.is_online(me_id) {
+    if to_online {
         state.send_to_user(
             me_id,
             ServerMsg::PeerOnline {

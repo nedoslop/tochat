@@ -1,5 +1,5 @@
 import { invoke, listen } from "./api.js";
-import { state, NOTES_PEER, totalUnread } from "./state.js";
+import { state, NOTES_PEER, INITIAL_LIMIT, totalUnread } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
@@ -28,13 +28,35 @@ function applyMyAvatar() {
     }
 }
 
+function mergeIntoCache(peer, incoming) {
+    const existing = state.msgCache[peer] || [];
+    const byId = new Map();
+    for (const m of existing) byId.set(m.id, m);
+    for (const m of incoming) byId.set(m.id, m);
+    const merged = [...byId.values()].sort(
+        (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts
+    );
+    state.msgCache[peer] = merged;
+}
+
+/**
+ * Trigger a peer sync. The peer may not be reachable yet (their session
+ * is registered on the server slightly after PeerOnline is emitted), so
+ * we schedule a couple of retries. Each call is a full "give me your
+ * newest page" pull; the DB upsert is id-keyed so overlaps are cheap.
+ */
+function syncWithPeer(peer, { delay = 0 } = {}) {
+    if (!peer || peer === state.me || peer === NOTES_PEER) return;
+    const run = () => { autoPull(peer); };
+    if (delay > 0) setTimeout(run, delay);
+    else run();
+}
+
 export async function setupEvents() {
     await listen("auth-ok", async (e) => {
         state.me = e.payload.username;
 
-        const nameEl = document.getElementById("me-name");
-        nameEl.textContent = state.me;
-
+        document.getElementById("me-name").textContent = state.me;
         const av = document.getElementById("me-avatar");
         av.textContent = initial(state.me);
         av.style.background = avatarColor(state.me);
@@ -42,17 +64,16 @@ export async function setupEvents() {
         document.getElementById("login-view").hidden = true;
         document.getElementById("app-view").hidden = false;
 
-        // Fetch persisted unread counts and apply badges.
         try {
             const counts = await invoke("get_unread_counts");
             for (const [peer, n] of counts) state.unread[peer] = n;
         } catch (_) {}
-        void updateBadge();
 
         renderMyStatus();
         showChatView();
         renderSidebar();
         renderMessages();
+        void updateBadge();
     });
 
     await listen("peers", (e) => {
@@ -61,18 +82,21 @@ export async function setupEvents() {
         (async () => {
             for (const p of e.payload) {
                 try {
-                    // Only grab the newest page for each peer.
-                    state.msgCache[p] = await invoke("get_messages", {
-                        peer: p, beforeTs: null, limit: 50,
+                    const msgs = await invoke("get_messages", {
+                        peer: p, beforeTs: null, limit: INITIAL_LIMIT,
                     });
+                    mergeIntoCache(p, msgs);
                 } catch (_) {}
                 if (!state.profiles[p]) {
-                    try { await invoke("get_profile", { username: p }); } catch (_) {}
+                    invoke("get_profile", { username: p }).catch(() => {});
                 }
-                if (state.msgCache[p] && state.msgCache[p].length > 0) {
-                    await sendReadReceipt(p);
-                }
+                // Fire a sync for every peer in the list. If the peer is
+                // currently offline, the server's "peer is offline" error
+                // is suppressed by the error handler below, and PeerOnline
+                // will trigger a retry when they come back.
+                syncWithPeer(p);
             }
+            renderSidebar();
         })();
     });
 
@@ -102,20 +126,33 @@ export async function setupEvents() {
         renderSidebar();
     });
 
+    // ---------------------------------------------------------------------
+    // peer-online: fires when a peer (re)connects. This is the ONLY
+    // reliable trigger for history sync in the offline→online case.
+    //
+    // The server now emits this on EVERY new session (not just the first
+    // one), so a stale session entry from a silent disconnect can no
+    // longer suppress the notification.
+    //
+    // We schedule three attempts (0 ms, 500 ms, 2500 ms) to cover the
+    // race window in which the server has registered the peer's session
+    // but the peer's own reader loop isn't draining yet.
+    // ---------------------------------------------------------------------
     await listen("peer-online", (e) => {
         const name = e.payload;
         state.online.add(name);
         state.peerStatus[name] = state.peerStatus[name] || "online";
-        state.pulling.delete(name);
-        if (!state.pending.has(name)) state.peers.add(name);
+        state.peers.add(name);
         renderSidebar();
 
-        // Retry history pull whenever a peer comes online — this fixes the
-        // case where our last pull failed because the peer was offline.
-        const engaged = state.peers.has(name) || (state.msgCache[name] && state.msgCache[name].length > 0);
-        if (!state.pending.has(name) && engaged) {
-            autoPull(name);
-            refreshReadState(name).then(() => { void sendReadReceipt(name); });
+        syncWithPeer(name);
+        syncWithPeer(name, { delay: 500 });
+        syncWithPeer(name, { delay: 2500 });
+
+        if (state.currentPeer === name) {
+            refreshReadState(name).then(() => {
+                if (state.currentPeer === name) void sendReadReceipt(name);
+            });
         }
         if (!state.profiles[name]) {
             invoke("get_profile", { username: name }).catch(() => {});
@@ -199,29 +236,29 @@ export async function setupEvents() {
         const msgs = state.msgCache[peer] || [];
         let changed = false;
         for (const m of msgs) {
-            if (m.direction === "out" && !m.read && m.ts <= up_to_ts) { m.read = true; changed = true; }
+            if (m.direction === "out" && !m.read && m.ts <= up_to_ts) {
+                m.read = true;
+                changed = true;
+            }
         }
         if (changed) updateReadIndicators(peer);
     });
 
     await listen("history-received", async (e) => {
         const peer = e.payload;
-        state.pulling.delete(peer);
 
         try {
-            state.msgCache[peer] = await invoke("get_messages", {
-                peer, beforeTs: null, limit: 50,
+            const latest = await invoke("get_messages", {
+                peer, beforeTs: null, limit: INITIAL_LIMIT,
             });
-        } catch (_) {
-            state.msgCache[peer] = state.msgCache[peer] || [];
-        }
+            mergeIntoCache(peer, latest);
+        } catch (_) {}
 
         const wasLoadingOlder = state.loadingOlder.has(peer);
         delete state.lastPullLimit[peer];
         state.loadingOlder.delete(peer);
 
-        // Figure out if the peer may have more older history.
-        if (wasLoadingOlder && state.msgCache[peer].length > 0) {
+        if (wasLoadingOlder && (state.msgCache[peer] || []).length > 0) {
             const oldest = state.msgCache[peer][0].ts;
             try {
                 const hasMore = await invoke("has_messages_before", { peer, beforeTs: oldest });
@@ -232,17 +269,17 @@ export async function setupEvents() {
         if (state.pending.has(peer)) {
             state.pending.delete(peer);
             state.peers.add(peer);
-            renderSidebar();
             renderPendingList();
         }
 
-        // Recompute unread from DB.
         try {
             const counts = await invoke("get_unread_counts");
             const map = Object.fromEntries(counts);
             state.unread[peer] = map[peer] || 0;
             void updateBadge();
         } catch (_) {}
+
+        renderSidebar();
 
         if (state.currentPeer === peer) {
             renderMessages(wasLoadingOlder);
@@ -260,6 +297,8 @@ export async function setupEvents() {
         const msg = String(e.payload);
         const m = msg.match(/^peer (.+?) is offline/);
         if (m) {
+            // Swallow. This is an expected condition during the
+            // offline→online handshake window; PeerOnline will retrigger.
             state.pulling.delete(m[1]);
             state.loadingOlder.delete(m[1]);
             state.suppressScrollLoad = false;

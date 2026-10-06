@@ -9,9 +9,9 @@ export const state = {
     blocked: new Set(),
     online: new Set(),
     peerStatus: {},
-    profiles: {},   // username -> { display_name, avatar }
+    profiles: {},
     msgCache: {},
-    pulling: new Set(),
+    pulling: new Set(),   // kept for compatibility; not used as a guard
     unread: {},
     myStatus: "online",
     mightHaveMore: {},
@@ -42,7 +42,6 @@ export function resetState() {
     for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
 }
 
-/** Returns the display name for a peer (falls back to username). */
 export function displayName(username) {
     if (!username) return "";
     if (username === NOTES_PEER) return "Notes";
