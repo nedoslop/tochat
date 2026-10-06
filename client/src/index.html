@@ -69,10 +69,9 @@
                 <div class="menu-wrap">
                     <button id="settings-btn" class="btn btn-ghost btn-icon" title="Settings">⋯</button>
                     <div id="settings-menu" class="menu" hidden>
-                        <button class="menu-item" id="edit-profile-btn">Edit profile…</button>
+                        <button class="menu-item" id="edit-profile-btn">Profile…</button>
                         <button class="menu-item" id="reload-btn">Reload UI</button>
                         <button class="menu-item" id="logout-btn">Log out</button>
-                        <button class="menu-item danger" id="delete-btn">Delete account…</button>
                     </div>
                 </div>
             </div>
@@ -228,9 +227,13 @@
     <img id="image-viewer-img" alt="" />
 </div>
 
+<!-- =========================================================
+     Profile modal — also hosts the "Delete account" action.
+     ========================================================= -->
 <div id="profile-modal" class="modal-overlay" hidden>
     <div class="modal">
-        <div class="modal-title">Edit profile</div>
+        <div class="modal-title">Profile</div>
+
         <div class="profile-preview">
             <div class="profile-avatar-wrap">
                 <img id="profile-avatar-img" alt="" hidden />
@@ -243,15 +246,26 @@
             </div>
             <div class="hint">Images are resized to 128×128 automatically.</div>
         </div>
+
         <div class="field">
             <label for="profile-name">Display name</label>
             <input id="profile-name" type="text" maxlength="40" placeholder="your display name" />
         </div>
+
+        <div class="hint error" id="profile-hint" hidden></div>
+
         <div class="modal-actions">
             <button id="profile-cancel" class="btn btn-ghost">Cancel</button>
             <button id="profile-save" class="btn btn-primary">Save</button>
         </div>
-        <div class="hint error" id="profile-hint" hidden></div>
+
+        <div class="profile-danger-zone">
+            <div class="hint">
+                Deleting your account removes it from the server, wipes local
+                history on this device, and closes every active session.
+            </div>
+            <button id="profile-delete" class="btn btn-danger-solid">Delete account…</button>
+        </div>
     </div>
 </div>
 

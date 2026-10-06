@@ -71,7 +71,6 @@ async function resizeAvatar(file) {
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
-    // Cover-fit
     const scale = Math.max(size / img.width, size / img.height);
     const dw = img.width * scale, dh = img.height * scale;
     const dx = (size - dw) / 2, dy = (size - dh) / 2;
@@ -90,11 +89,11 @@ async function saveProfile() {
 
     try {
         await invoke("set_profile", payload);
-        // Update local state optimistically; server will broadcast the
-        // authoritative version anyway.
         state.profiles[state.me] = {
             display_name: name || null,
-            avatar: pendingAvatar === undefined ? (state.profiles[state.me]?.avatar ?? null) : pendingAvatar,
+            avatar: pendingAvatar === undefined
+                ? (state.profiles[state.me]?.avatar ?? null)
+                : pendingAvatar,
         };
         closeProfileModal();
         toast("Profile updated.");
@@ -282,8 +281,18 @@ async function init() {
     document.getElementById("notes-btn").onclick = openNotes;
     document.getElementById("refresh-pending-btn").onclick = refreshPending;
 
-    wireFilePicker({ buttonId: "attach-image-btn", inputId: "image-input", kind: "image", onPayload: (d) => sendImage(d) });
-    wireFilePicker({ buttonId: "attach-audio-btn", inputId: "audio-input", kind: "audio", onPayload: (d) => sendAudio(d) });
+    wireFilePicker({
+        buttonId: "attach-image-btn",
+        inputId: "image-input",
+        kind: "image",
+        onPayload: (d) => sendImage(d),
+    });
+    wireFilePicker({
+        buttonId: "attach-audio-btn",
+        inputId: "audio-input",
+        kind: "audio",
+        onPayload: (d) => sendAudio(d),
+    });
 
     // Any-file picker.
     {
@@ -319,7 +328,6 @@ async function init() {
     document.getElementById("edit-profile-btn").onclick = () => { closeAllMenus(); openProfileModal(); };
     document.getElementById("reload-btn").onclick = () => { closeAllMenus(); reloadUI(); };
     document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
-    document.getElementById("delete-btn").onclick = () => { closeAllMenus(); deleteAccount(); };
 
     document.getElementById("chat-menu-btn").onclick = (ev) => {
         ev.stopPropagation();
@@ -345,6 +353,11 @@ async function init() {
         const ph = document.getElementById("profile-avatar-placeholder");
         ph.hidden = false;
         ph.textContent = (state.me || "?").charAt(0).toUpperCase();
+    };
+    // "Delete account" lives inside the profile modal now.
+    document.getElementById("profile-delete").onclick = () => {
+        closeProfileModal();
+        deleteAccount();
     };
     profileAvatarInput.addEventListener("change", async () => {
         const f = profileAvatarInput.files && profileAvatarInput.files[0];
@@ -384,8 +397,8 @@ async function init() {
         }
     });
     msgInput.addEventListener("input", () => {
-        // auto-resize; +2px buffer prevents a phantom scrollbar from
-        // appearing on the very first line of text.
+        // Auto-resize; +2 px buffer prevents a phantom scrollbar on the
+        // very first line of text.
         msgInput.style.height = "auto";
         msgInput.style.height = Math.min(msgInput.scrollHeight + 2, 180) + "px";
     });

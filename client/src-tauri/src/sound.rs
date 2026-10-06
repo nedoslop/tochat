@@ -1,65 +1,101 @@
-//! Notification sound — a soft three-tone ascending chime with an ADSR-ish
-//! envelope. Rendered as a single mono SamplesBuffer at 44.1 kHz and played
-//! through the default output device on a background thread.
+//! Notification sound.
+//!
+//! Synthesizes a two-note bell-like chime (C6 → E6) with four harmonic
+//! partials and an exponential decay envelope, then plays it through the
+//! default output device on a background thread.
+//!
+//! API target: rodio 0.22.x. Compared to 0.21, the crate was renamed:
+//!   * `OutputStream`         → `MixerDeviceSink`
+//!   * `OutputStreamBuilder`  → `DeviceSinkBuilder`
+//!   * `open_default_stream`  → `open_default_sink`
+//!   * `Sink`                 → `Player`
+//!   * `Sink::connect_new`    → `Player::connect_new`
+//!   * `SamplesBuffer::new` now takes `NonZero<u16>` / `NonZero<u32>`
+//!     (aliased as `ChannelCount` / `SampleRate`); the `nz!` macro builds
+//!     them from integer literals.
 
-use std::time::Duration;
+use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
-use rodio::source::Source;
-use rodio::{OutputStream, Sink};
+use rodio::{nz, ChannelCount, DeviceSinkBuilder, Player, SampleRate};
 
 const SR: u32 = 44_100;
+const PI: f32 = std::f32::consts::PI;
 
+/// Plays the notification chime. Fire-and-forget; silently no-ops if no
+/// audio device is available (e.g. headless CI).
 pub fn play_notification_chirp() {
     std::thread::spawn(|| {
-        let Ok((_stream, handle)) = OutputStream::try_default() else { return; };
-        let Ok(sink) = Sink::try_new(&handle) else { return; };
+        // OS-sink handle to the default physical audio device.
+        let Ok(handle) = DeviceSinkBuilder::open_default_sink() else {
+            return;
+        };
+
+        // A Player is the renamed Sink: it queues sources and plays them
+        // sequentially. It borrows the mixer, not the handle, so `handle`
+        // just has to stay alive until we're done.
+        let player = Player::connect_new(handle.mixer());
 
         let samples = render_chime();
-        let src = SamplesBuffer::new(1, SR, samples);
-        sink.append(src);
-        sink.sleep_until_end();
+        let channels: ChannelCount = nz!(1);
+        let rate: SampleRate = NonZero::new(SR).unwrap();
+        let src = SamplesBuffer::new(channels, rate, samples);
+
+        player.append(src);
+        player.sleep_until_end();
+
+        // Dropping the OS-sink stops all playback. By now the chime has
+        // finished, so this is safe.
+        drop(handle);
     });
 }
 
-/// Two pairs of notes: a soft two-note "ping" (E5 -> B5) followed by a
-/// quieter echo (E5 -> B5) with reduced amplitude. Total ≈ 420 ms.
+/// Total duration ≈ 580 ms.
 fn render_chime() -> Vec<f32> {
-    let mut out = Vec::with_capacity((SR as f32 * 0.5) as usize);
-    let groups: [(f32, f32, f32); 4] = [
-        (659.25, 0.09, 1.0),   // E5
-        (987.77, 0.14, 0.9),   // B5
-        (659.25, 0.06, 0.45),  // E5 echo
-        (987.77, 0.13, 0.4),   // B5 echo
-    ];
-    for (freq, dur, amp) in groups {
-        push_tone(&mut out, freq, dur, amp);
+    let n1 = (SR as f32 * 0.35) as usize;
+    let offset = (SR as f32 * 0.13) as usize;
+    let n2 = (SR as f32 * 0.45) as usize;
+    let mut out = vec![0.0f32; offset + n2];
+
+    // First note: C6 (1046.5 Hz).
+    add_bell(&mut out[..n1], 1046.5, 0.45);
+
+    // Second note: E6 (1318.5 Hz) — a major third up.
+    add_bell(&mut out[offset..offset + n2], 1318.5, 0.40);
+
+    // Soft clip so loud sections don't distort.
+    for s in &mut out {
+        *s = s.clamp(-1.0, 1.0);
     }
     out
 }
 
-fn push_tone(out: &mut Vec<f32>, freq: f32, dur_secs: f32, amp: f32) {
-    let n = (SR as f32 * dur_secs) as usize;
-    let attack = (n as f32 * 0.12).max(1.0) as usize;
-    let release = (n as f32 * 0.55).max(1.0) as usize;
+/// Adds a bell-like tone into `buf` (additively, so notes can overlap).
+fn add_bell(buf: &mut [f32], freq: f32, amp: f32) {
+    let n = buf.len();
+    let attack_n = ((SR as f32 * 0.004) as usize).max(1);
+
+    // (partial ratio, amplitude, decay speed)
+    let partials: [(f32, f32, f32); 4] = [
+        (1.00, 0.65, 6.0),
+        (2.00, 0.22, 8.0),
+        (2.76, 0.10, 15.0), // inharmonic bell partial
+        (3.00, 0.06, 12.0),
+    ];
+
     for i in 0..n {
         let t = i as f32 / SR as f32;
-        let s = (2.0 * std::f32::consts::PI * freq * t).sin();
-        let env = if i < attack {
-            i as f32 / attack as f32
-        } else if i > n.saturating_sub(release) {
-            (n - i) as f32 / release as f32
+        let attack = if i < attack_n {
+            i as f32 / attack_n as f32
         } else {
             1.0
         };
-        out.push(s * env * amp * 0.22);
+
+        let mut s = 0.0f32;
+        for (ratio, pamp, decay) in partials {
+            let env = attack * (-t * decay).exp();
+            s += (2.0 * PI * freq * ratio * t).sin() * env * pamp;
+        }
+        buf[i] += s * amp;
     }
 }
-
-/// Keeps rodio's Source trait in scope (SamplesBuffer implements it; the
-/// import silences an unused-import warning when the module is trimmed).
-#[allow(dead_code)]
-fn _assert_source<S: Source<Item = f32>>() {}
-
-#[allow(dead_code)]
-fn _duration_hint() -> Duration { Duration::from_millis(1) }
