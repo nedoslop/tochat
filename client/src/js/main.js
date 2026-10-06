@@ -21,6 +21,7 @@ import {
     blockUser,
     loadOlder,
     sendImage,
+    sendAudio,
 } from "./actions.js";
 import {
     renderMessages,
@@ -79,34 +80,44 @@ function closeAllMenus() {
     }
 }
 
-/** Reads a picked file as a data URL and sends it as an image message. */
-function pickAndSendImage() {
-    const input = document.getElementById("image-input");
-    if (!input) return;
-    input.value = "";
-    input.onchange = async () => {
+/**
+ * Wires a hidden <input type="file"> to a button. When the user picks a
+ * file, its contents are read as a data URL and handed to `onPayload`.
+ * Enforces a simple max size to avoid blowing up the socket.
+ */
+function wireFilePicker({ buttonId, inputId, acceptPrefix, maxBytes, onPayload }) {
+    const btn = document.getElementById(buttonId);
+    const input = document.getElementById(inputId);
+    if (!btn || !input) return;
+
+    btn.addEventListener("click", () => {
+        input.value = "";
+        input.click();
+    });
+
+    input.addEventListener("change", () => {
         const file = input.files && input.files[0];
         if (!file) return;
-        if (file.size > 8 * 1024 * 1024) {
-            return toast("Image too large (max 8 MiB).");
+        if (!file.type.startsWith(acceptPrefix)) {
+            toast("Unsupported file type.");
+            return;
+        }
+        if (file.size > maxBytes) {
+            const mb = Math.round(maxBytes / (1024 * 1024));
+            toast(`File too large (max ${mb} MiB).`);
+            return;
         }
         const reader = new FileReader();
-        reader.onload = async () => {
+        reader.onload = () => {
             const dataUrl = String(reader.result || "");
-            if (!dataUrl.startsWith("data:image/")) {
-                return toast("Unsupported file.");
-            }
-            await sendImage(dataUrl);
+            if (!dataUrl.startsWith("data:")) return;
+            onPayload(dataUrl);
         };
+        reader.onerror = () => toast("Failed to read file.");
         reader.readAsDataURL(file);
-    };
-    input.click();
+    });
 }
 
-/**
- * Scroll-based pagination: when the user scrolls near the top of the
- * message list, trigger loadOlder() for the current peer.
- */
 function installScrollPagination() {
     const el = document.getElementById("messages");
     if (!el) return;
@@ -115,7 +126,6 @@ function installScrollPagination() {
         if (!state.currentPeer || state.currentPeer === NOTES_PEER) return;
         if (state.loadingOlder.has(state.currentPeer)) return;
         if (state.mightHaveMore[state.currentPeer] === false) return;
-        // Trigger when the user is within 80px of the top.
         if (el.scrollTop < 80) {
             loadOlder();
         }
@@ -135,7 +145,21 @@ async function init() {
     document.getElementById("send-btn").onclick = send;
     document.getElementById("notes-btn").onclick = openNotes;
     document.getElementById("refresh-pending-btn").onclick = refreshPending;
-    document.getElementById("attach-btn").onclick = pickAndSendImage;
+
+    wireFilePicker({
+        buttonId: "attach-image-btn",
+        inputId: "image-input",
+        acceptPrefix: "image/",
+        maxBytes: 8 * 1024 * 1024,
+        onPayload: (dataUrl) => sendImage(dataUrl),
+    });
+    wireFilePicker({
+        buttonId: "attach-audio-btn",
+        inputId: "audio-input",
+        acceptPrefix: "audio/",
+        maxBytes: 16 * 1024 * 1024,
+        onPayload: (dataUrl) => sendAudio(dataUrl),
+    });
 
     document.getElementById("pending-btn").onclick = () => {
         showPendingView();
@@ -238,7 +262,6 @@ async function init() {
         else openPeer(peer);
     });
 
-    // ---- messages: edit/del ----
     document.getElementById("messages").addEventListener("click", (e) => {
         const btn = e.target.closest("[data-act]");
         if (!btn) return;

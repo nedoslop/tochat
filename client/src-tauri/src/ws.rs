@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, UserAttentionType};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::db::Database;
-use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
+use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
 use crate::state::{user_db_path, AppState, WsSession};
 
 pub const NOTES_PEER: &str = "__notes__";
@@ -50,6 +50,7 @@ pub async fn connect(
     *state.db.write().await = Some(Arc::new(db));
     *state.me.write().await = Some(username.clone());
     *state.server_url.write().await = Some(base_url.clone());
+    *state.my_status.write().await = UserStatus::Online;
 
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
@@ -232,6 +233,19 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     }
 }
 
+/// Should we alert the user (sound / OS notification / taskbar flash)?
+/// Only when we're not in `busy` status.
+async fn should_alert(state: &Arc<AppState>) -> bool {
+    !matches!(*state.my_status.read().await, UserStatus::Busy)
+}
+
+/// Flashes the taskbar / dock icon (like Discord). No-op if unsupported.
+fn request_attention(state: &Arc<AppState>) {
+    if let Some(window) = state.app.get_webview_window("main") {
+        let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     state: &Arc<AppState>,
@@ -264,7 +278,28 @@ async fn handle_incoming(
         .get_webview_window("main")
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
-    if !focused {
+
+    // Emit the raw event first so the frontend can always update its state
+    // (badges, unread counts, etc.) regardless of alert settings.
+    let _ = state.app.emit(
+        "message",
+        json!({
+            "id": id,
+            "peer": from,
+            "direction": "in",
+            "ts": ts,
+            "edit_ts": edit_ts,
+            "kind": kind,
+            "payload": stored,
+            "windowFocused": focused,
+        }),
+    );
+
+    // Only actually alert the user when appropriate:
+    //   * status is not "busy"
+    //   * window is not focused (otherwise they're already looking at it)
+    if !focused && should_alert(state).await {
+        // Native OS notification.
         let preview = if stored.is_empty() {
             "(empty)".to_string()
         } else if stored.chars().count() > 60 {
@@ -281,20 +316,10 @@ async fn handle_incoming(
             .title(format!("New message from {from}"))
             .body(preview)
             .show();
-    }
 
-    let _ = state.app.emit(
-        "message",
-        json!({
-            "id": id,
-            "peer": from,
-            "direction": "in",
-            "ts": ts,
-            "edit_ts": edit_ts,
-            "kind": kind,
-            "payload": stored,
-        }),
-    );
+        // Taskbar / dock attention (Discord-style flash).
+        request_attention(state);
+    }
 }
 
 async fn handle_note_incoming(

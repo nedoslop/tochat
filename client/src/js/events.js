@@ -16,9 +16,11 @@ import {
     resetToLogin,
     sendReadReceipt,
     refreshReadState,
+    openPeer,
 } from "./actions.js";
 import { refreshEncryptionStatus } from "./encryption.js";
 import { playNotificationSound } from "./sound.js";
+import { showMessageToast, clearAllToasts } from "./notifications.js";
 
 export async function setupEvents() {
     await listen("auth-ok", (e) => {
@@ -42,11 +44,7 @@ export async function setupEvents() {
 
     await listen("peers", (e) => {
         for (const p of e.payload) state.peers.add(p);
-        // Chats are fetched lazily; refresh the sidebar only.
         renderSidebar();
-        // On (re)connect, send read receipts for peers whose chats we
-        // already have open — this is what makes the ✓✓ indicator show
-        // again after a re-login when the peer is online too.
         (async () => {
             for (const p of e.payload) {
                 try {
@@ -87,7 +85,6 @@ export async function setupEvents() {
             (state.msgCache[name] && state.msgCache[name].length > 0);
         if (!state.pending.has(name) && engaged) {
             autoPull(name);
-            // Refresh outgoing read state — peer might have already read.
             refreshReadState(name).then(() => {
                 void sendReadReceipt(name);
             });
@@ -129,6 +126,7 @@ export async function setupEvents() {
 
     await listen("message", (e) => {
         const m = e.payload;
+        const windowFocused = !!m.windowFocused;
         state.pending.delete(m.peer);
         state.peers.add(m.peer);
 
@@ -148,21 +146,37 @@ export async function setupEvents() {
         if (idx >= 0) state.msgCache[m.peer][idx] = entry;
         else state.msgCache[m.peer].push(entry);
 
-        if (m.direction === "in" && state.currentPeer !== m.peer) {
+        const isInbound = m.direction === "in";
+        const isOpen = state.currentPeer === m.peer;
+        const busy = state.myStatus === "busy";
+
+        if (isInbound && !isOpen) {
             state.unread[m.peer] = (state.unread[m.peer] || 0) + 1;
+        }
+
+        // Alerting rules:
+        //   * never when busy
+        //   * suppress sound+toast only if the window is focused AND this
+        //     is the currently-open chat (the user is already looking at it)
+        const suppressVisual = isInbound && isOpen && windowFocused;
+        if (isInbound && !busy && !suppressVisual) {
             playNotificationSound();
+            showMessageToast({
+                peer: m.peer,
+                text: m.payload,
+                kind: m.kind,
+                onClick: () => openPeer(m.peer),
+            });
         }
 
         renderSidebar();
         renderPendingList();
-        if (state.currentPeer === m.peer) {
+        if (isOpen) {
             renderMessages();
-            // Auto-acknowledge read for the currently focused chat.
             void sendReadReceipt(m.peer);
         }
     });
 
-    // A notes-sync message arrived from one of our own other devices.
     await listen("note-message", async (e) => {
         const m = e.payload;
         state.peers.add(NOTES_PEER);
@@ -177,7 +191,6 @@ export async function setupEvents() {
 
     await listen("read-receipt", (e) => {
         const { peer } = e.payload;
-        // Refresh outgoing message "read" flags from local DB.
         (async () => {
             try {
                 state.msgCache[peer] = await invoke("get_messages", { peer });
@@ -216,12 +229,10 @@ export async function setupEvents() {
         if (state.currentPeer === peer) {
             renderMessages(wasLoadingOlder);
             if (wasLoadingOlder) {
-                // Release scroll suppression on next frame.
                 requestAnimationFrame(() => {
                     state.suppressScrollLoad = false;
                 });
             } else {
-                // New inbound messages arrived — mark them read.
                 void sendReadReceipt(peer);
             }
         } else {
@@ -244,6 +255,7 @@ export async function setupEvents() {
 
     await listen("session-closed", async (e) => {
         const reason = String(e.payload || "");
+        clearAllToasts();
 
         if (reason === "account_deleted") {
             await showAlert("Your account has been deleted.", {
@@ -267,6 +279,7 @@ export async function setupEvents() {
     });
 
     await listen("disconnected", () => {
+        clearAllToasts();
         if (state.me) resetToLogin();
     });
 }
