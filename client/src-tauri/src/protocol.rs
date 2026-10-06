@@ -5,12 +5,18 @@ use serde::{Deserialize, Serialize};
 pub enum MessageKind {
     #[default]
     Text,
+    Image,
+    Audio,
+    File,
 }
 
 impl MessageKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Text => "text",
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::File => "file",
         }
     }
 }
@@ -63,6 +69,13 @@ pub enum ClientMsg {
         kind: MessageKind,
         payload: String,
     },
+    SendToSelf {
+        id: String,
+        ts: i64,
+        edit_ts: i64,
+        kind: MessageKind,
+        payload: String,
+    },
     PullHistory {
         from: String,
         since: i64,
@@ -92,6 +105,10 @@ pub enum ClientMsg {
         username: String,
     },
     ListBlocked,
+    ReadReceipt {
+        to: String,
+        up_to_ts: i64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +154,13 @@ pub enum ServerMsg {
         kind: MessageKind,
         payload: String,
     },
+    NoteMessage {
+        id: String,
+        ts: i64,
+        edit_ts: i64,
+        kind: MessageKind,
+        payload: String,
+    },
     PullHistoryRequest {
         from: String,
         since: i64,
@@ -148,6 +172,10 @@ pub enum ServerMsg {
     HistoryResponse {
         from: String,
         messages: Vec<StoredMsg>,
+    },
+    ReadReceipt {
+        from: String,
+        up_to_ts: i64,
     },
     Error {
         msg: String,

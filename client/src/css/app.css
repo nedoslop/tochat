@@ -525,3 +525,43 @@ Load older / end-of-history
   color: var(--text-faint);
   font-size: 11px;
 }
+
+/* ============================================================
+Media messages
+============================================================ */
+.msg-image {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: var(--radius-sm);
+    cursor: zoom-in;
+    object-fit: contain;
+}
+
+.msg-audio {
+    display: block;
+    max-width: 280px;
+}
+
+.msg-file {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.06);
+    color: inherit;
+    text-decoration: underline;
+    word-break: break-all;
+}
+.msg.out .msg-file { background: rgba(255, 255, 255, 0.15); }
+
+.msg.kind-image .msg-body { padding: 0; }
+.msg.kind-image { padding: 4px; }
+
+/* Composer attach button */
+.composer #attach-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    padding: 0;
+    flex-shrink: 0;
+}

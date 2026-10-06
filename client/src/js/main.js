@@ -4,245 +4,309 @@ import { invoke } from "./api.js";
 import { state, NOTES_PEER } from "./state.js";
 import { toast } from "./utils.js";
 import {
-  register,
-  login,
-  send,
-  logout,
-  reloadUI,
-  deleteAccount,
-  openPeer,
-  openNotes,
-  editMessage,
-  deleteMessage,
-  acceptPending,
-  refreshPending,
-  clearChat,
-  leaveChat,
-  blockUser,
-  loadOlder,
+    register,
+    login,
+    send,
+    logout,
+    reloadUI,
+    deleteAccount,
+    openPeer,
+    openNotes,
+    editMessage,
+    deleteMessage,
+    acceptPending,
+    refreshPending,
+    clearChat,
+    leaveChat,
+    blockUser,
+    loadOlder,
+    sendImage,
 } from "./actions.js";
 import {
-  renderMessages,
-  renderMyStatus,
-  showChatView,
-  showPendingView,
+    renderMessages,
+    renderMyStatus,
+    showChatView,
+    showPendingView,
 } from "./ui.js";
 import {
-  refreshEncryptionStatus,
-  openEncPanel,
-  closeEncPanel,
-  applyEncryption,
-  generatePsk,
+    refreshEncryptionStatus,
+    openEncPanel,
+    closeEncPanel,
+    applyEncryption,
+    generatePsk,
 } from "./encryption.js";
 import { initTheme, cycleTheme } from "./theme.js";
 import { setupEvents } from "./events.js";
 
 async function installContextMenuGuard() {
-  try {
-    const isRelease = await invoke("is_release");
-    if (isRelease) {
-      document.addEventListener("contextmenu", (e) => e.preventDefault());
-    }
-  } catch (_) {}
+    try {
+        const isRelease = await invoke("is_release");
+        if (isRelease) {
+            document.addEventListener("contextmenu", (e) => e.preventDefault());
+        }
+    } catch (_) {}
 }
 
 function installShortcutGuard() {
-  const block = (e) => {
-    const k = e.key;
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (
-      k === "F5" ||
-      k === "F12" ||
-      (ctrl && !e.shiftKey && k.toLowerCase() === "r") ||
-      (ctrl && e.shiftKey && k.toLowerCase() === "r") ||
-      (ctrl && k.toLowerCase() === "u") ||
-      (ctrl && k.toLowerCase() === "p") ||
-      (ctrl && e.shiftKey && k.toLowerCase() === "p") ||
-      (ctrl && e.shiftKey && ["i", "c", "j"].includes(k.toLowerCase())) ||
-      (ctrl && k.toLowerCase() === "n") ||
-      (ctrl && k.toLowerCase() === "t") ||
-      (ctrl && k.toLowerCase() === "w") ||
-      (ctrl && e.shiftKey && k.toLowerCase() === "w")
-    ) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
-  document.addEventListener("keydown", block, true);
+    const block = (e) => {
+        const k = e.key;
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (
+            k === "F5" ||
+            k === "F12" ||
+            (ctrl && !e.shiftKey && k.toLowerCase() === "r") ||
+            (ctrl && e.shiftKey && k.toLowerCase() === "r") ||
+            (ctrl && k.toLowerCase() === "u") ||
+            (ctrl && k.toLowerCase() === "p") ||
+            (ctrl && e.shiftKey && k.toLowerCase() === "p") ||
+            (ctrl && e.shiftKey && ["i", "c", "j"].includes(k.toLowerCase())) ||
+            (ctrl && k.toLowerCase() === "n") ||
+            (ctrl && k.toLowerCase() === "t") ||
+            (ctrl && k.toLowerCase() === "w") ||
+            (ctrl && e.shiftKey && k.toLowerCase() === "w")
+        ) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    };
+    document.addEventListener("keydown", block, true);
 }
 
 function closeAllMenus() {
-  for (const id of ["settings-menu", "chat-menu"]) {
-    const el = document.getElementById(id);
-    if (el) el.hidden = true;
-  }
+    for (const id of ["settings-menu", "chat-menu"]) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = true;
+    }
+}
+
+/** Reads a picked file as a data URL and sends it as an image message. */
+function pickAndSendImage() {
+    const input = document.getElementById("image-input");
+    if (!input) return;
+    input.value = "";
+    input.onchange = async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        if (file.size > 8 * 1024 * 1024) {
+            return toast("Image too large (max 8 MiB).");
+        }
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const dataUrl = String(reader.result || "");
+            if (!dataUrl.startsWith("data:image/")) {
+                return toast("Unsupported file.");
+            }
+            await sendImage(dataUrl);
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
+}
+
+/**
+ * Scroll-based pagination: when the user scrolls near the top of the
+ * message list, trigger loadOlder() for the current peer.
+ */
+function installScrollPagination() {
+    const el = document.getElementById("messages");
+    if (!el) return;
+    el.addEventListener("scroll", () => {
+        if (state.suppressScrollLoad) return;
+        if (!state.currentPeer || state.currentPeer === NOTES_PEER) return;
+        if (state.loadingOlder.has(state.currentPeer)) return;
+        if (state.mightHaveMore[state.currentPeer] === false) return;
+        // Trigger when the user is within 80px of the top.
+        if (el.scrollTop < 80) {
+            loadOlder();
+        }
+    }, { passive: true });
 }
 
 async function init() {
-  await initTheme();
-  document.getElementById("theme-btn").onclick = cycleTheme;
-  document.getElementById("theme-btn-login").onclick = cycleTheme;
+    await initTheme();
+    document.getElementById("theme-btn").onclick = cycleTheme;
+    document.getElementById("theme-btn-login").onclick = cycleTheme;
 
-  await installContextMenuGuard();
-  installShortcutGuard();
+    await installContextMenuGuard();
+    installShortcutGuard();
 
-  document.getElementById("register-btn").onclick = register;
-  document.getElementById("login-btn").onclick = login;
-  document.getElementById("send-btn").onclick = send;
-  document.getElementById("notes-btn").onclick = openNotes;
-  document.getElementById("refresh-pending-btn").onclick = refreshPending;
+    document.getElementById("register-btn").onclick = register;
+    document.getElementById("login-btn").onclick = login;
+    document.getElementById("send-btn").onclick = send;
+    document.getElementById("notes-btn").onclick = openNotes;
+    document.getElementById("refresh-pending-btn").onclick = refreshPending;
+    document.getElementById("attach-btn").onclick = pickAndSendImage;
 
-  document.getElementById("pending-btn").onclick = () => {
-    showPendingView();
-    refreshPending();
-  };
-  document.getElementById("pending-back-btn").onclick = () => showChatView();
+    document.getElementById("pending-btn").onclick = () => {
+        showPendingView();
+        refreshPending();
+    };
+    document.getElementById("pending-back-btn").onclick = () => showChatView();
 
-  document.getElementById("settings-btn").onclick = (ev) => {
-    ev.stopPropagation();
-    const m = document.getElementById("settings-menu");
-    const wasHidden = m.hidden;
-    closeAllMenus();
-    m.hidden = !wasHidden;
-  };
-  document.getElementById("reload-btn").onclick = () => { closeAllMenus(); reloadUI(); };
-  document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
-  document.getElementById("delete-btn").onclick = () => { closeAllMenus(); deleteAccount(); };
+    document.getElementById("settings-btn").onclick = (ev) => {
+        ev.stopPropagation();
+        const m = document.getElementById("settings-menu");
+        const wasHidden = m.hidden;
+        closeAllMenus();
+        m.hidden = !wasHidden;
+    };
+    document.getElementById("reload-btn").onclick = () => { closeAllMenus(); reloadUI(); };
+    document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
+    document.getElementById("delete-btn").onclick = () => { closeAllMenus(); deleteAccount(); };
 
-  document.getElementById("chat-menu-btn").onclick = (ev) => {
-    ev.stopPropagation();
-    const m = document.getElementById("chat-menu");
-    const wasHidden = m.hidden;
-    closeAllMenus();
-    if (!state.currentPeer) return;
-    m.hidden = !wasHidden;
-  };
-  document.getElementById("clear-chat-btn").onclick = () => { closeAllMenus(); clearChat(); };
-  document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
-  document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
+    document.getElementById("chat-menu-btn").onclick = (ev) => {
+        ev.stopPropagation();
+        const m = document.getElementById("chat-menu");
+        const wasHidden = m.hidden;
+        closeAllMenus();
+        if (!state.currentPeer) return;
+        m.hidden = !wasHidden;
+    };
+    document.getElementById("clear-chat-btn").onclick = () => { closeAllMenus(); clearChat(); };
+    document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
+    document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
 
-  document.getElementById("me-status").onclick = (ev) => {
-    ev.stopPropagation();
-    cycleMyStatus();
-  };
+    document.getElementById("me-status").onclick = (ev) => {
+        ev.stopPropagation();
+        cycleMyStatus();
+    };
 
-  document.getElementById("new-peer-btn").onclick = () => {
-    const p = document.getElementById("new-peer").value.trim();
-    if (p) {
-      openPeer(p);
-      document.getElementById("new-peer").value = "";
-    }
-  };
+    document.getElementById("new-peer-btn").onclick = () => {
+        const p = document.getElementById("new-peer").value.trim();
+        if (p) {
+            openPeer(p);
+            document.getElementById("new-peer").value = "";
+        }
+    };
 
-  const msgInput = document.getElementById("msg");
-  msgInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      send();
-    }
-  });
-  msgInput.addEventListener("input", () => {
-    msgInput.style.height = "auto";
-    msgInput.style.height = Math.min(msgInput.scrollHeight, 180) + "px";
-  });
+    const msgInput = document.getElementById("msg");
+    msgInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+            e.preventDefault();
+            send();
+        }
+    });
+    msgInput.addEventListener("input", () => {
+        msgInput.style.height = "auto";
+        msgInput.style.height = Math.min(msgInput.scrollHeight, 180) + "px";
+    });
 
-  document.getElementById("new-peer").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const p = e.target.value.trim();
-      if (p) {
-        openPeer(p);
-        e.target.value = "";
-      }
-    }
-  });
+    // Paste an image directly into the composer.
+    msgInput.addEventListener("paste", (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (const it of items) {
+            if (it.kind === "file" && it.type.startsWith("image/")) {
+                e.preventDefault();
+                const file = it.getAsFile();
+                if (!file) return;
+                if (file.size > 8 * 1024 * 1024) {
+                    toast("Image too large (max 8 MiB).");
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => sendImage(String(reader.result || ""));
+                reader.readAsDataURL(file);
+                return;
+            }
+        }
+    });
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      closeEncPanel();
-      closeAllMenus();
-    }
-  });
+    document.getElementById("new-peer").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            const p = e.target.value.trim();
+            if (p) {
+                openPeer(p);
+                e.target.value = "";
+            }
+        }
+    });
 
-  document.getElementById("peers").addEventListener("click", (e) => {
-    const el = e.target.closest("[data-peer]");
-    if (!el) return;
-    const peer = el.dataset.peer;
-    if (peer === NOTES_PEER) openNotes();
-    else if (state.pending.has(peer)) acceptPending(peer);
-    else openPeer(peer);
-  });
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+            closeEncPanel();
+            closeAllMenus();
+        }
+    });
 
-  // ---- messages: edit/del + "Load older" ----
-  document.getElementById("messages").addEventListener("click", (e) => {
-    if (e.target.closest("#load-older-btn")) {
-      loadOlder();
-      return;
-    }
-    const btn = e.target.closest("[data-act]");
-    if (!btn) return;
-    const msgEl = btn.closest(".msg");
-    if (!msgEl) return;
-    const id = msgEl.dataset.id;
-    if (btn.dataset.act === "edit") editMessage(id);
-    else if (btn.dataset.act === "del") deleteMessage(id);
-  });
+    document.getElementById("peers").addEventListener("click", (e) => {
+        const el = e.target.closest("[data-peer]");
+        if (!el) return;
+        const peer = el.dataset.peer;
+        if (peer === NOTES_PEER) openNotes();
+        else if (state.pending.has(peer)) acceptPending(peer);
+        else openPeer(peer);
+    });
 
-  document.getElementById("pending-list").addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-accept]");
-    if (!btn) return;
-    acceptPending(btn.dataset.accept);
-  });
+    // ---- messages: edit/del ----
+    document.getElementById("messages").addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-act]");
+        if (!btn) return;
+        const msgEl = btn.closest(".msg");
+        if (!msgEl) return;
+        const id = msgEl.dataset.id;
+        if (btn.dataset.act === "edit") editMessage(id);
+        else if (btn.dataset.act === "del") deleteMessage(id);
+    });
 
-  document.getElementById("enc-btn").onclick = (ev) => {
-    ev.stopPropagation();
-    const panel = document.getElementById("enc-panel");
-    if (panel.hidden) openEncPanel();
-    else closeEncPanel();
-  };
-  document.getElementById("enc-method").onchange = (ev) => {
-    document.getElementById("enc-secret-row").hidden = ev.target.value === "none";
-    document.getElementById("enc-gen").hidden = ev.target.value !== "pre_shared_key";
-  };
-  document.getElementById("enc-cancel").onclick = closeEncPanel;
-  document.getElementById("enc-apply").onclick = applyEncryption;
-  document.getElementById("enc-gen").onclick = generatePsk;
+    document.getElementById("pending-list").addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-accept]");
+        if (!btn) return;
+        acceptPending(btn.dataset.accept);
+    });
 
-  document.addEventListener("click", (ev) => {
-    const widget = document.getElementById("enc-widget");
-    const panel = document.getElementById("enc-panel");
-    if (panel && !panel.hidden && widget && !widget.contains(ev.target)) {
-      closeEncPanel();
-    }
-    if (!ev.target.closest(".menu-wrap")) {
-      closeAllMenus();
-    }
-  });
+    document.getElementById("enc-btn").onclick = (ev) => {
+        ev.stopPropagation();
+        const panel = document.getElementById("enc-panel");
+        if (panel.hidden) openEncPanel();
+        else closeEncPanel();
+    };
+    document.getElementById("enc-method").onchange = (ev) => {
+        document.getElementById("enc-secret-row").hidden = ev.target.value === "none";
+        document.getElementById("enc-gen").hidden = ev.target.value !== "pre_shared_key";
+    };
+    document.getElementById("enc-cancel").onclick = closeEncPanel;
+    document.getElementById("enc-apply").onclick = applyEncryption;
+    document.getElementById("enc-gen").onclick = generatePsk;
 
-  window.addEventListener("beforeunload", () => {
-    try { invoke("disconnect"); } catch (_) {}
-  });
+    document.addEventListener("click", (ev) => {
+        const widget = document.getElementById("enc-widget");
+        const panel = document.getElementById("enc-panel");
+        if (panel && !panel.hidden && widget && !widget.contains(ev.target)) {
+            closeEncPanel();
+        }
+        if (!ev.target.closest(".menu-wrap")) {
+            closeAllMenus();
+        }
+    });
 
-  await setupEvents();
-  await refreshEncryptionStatus();
-  renderMyStatus();
-  renderMessages();
+    window.addEventListener("beforeunload", () => {
+        try { invoke("disconnect"); } catch (_) {}
+    });
+
+    installScrollPagination();
+
+    await setupEvents();
+    await refreshEncryptionStatus();
+    renderMyStatus();
+    renderMessages();
 }
 
 const STATUS_CYCLE = ["online", "away", "busy", "invisible"];
 
 async function cycleMyStatus() {
-  const idx = STATUS_CYCLE.indexOf(state.myStatus);
-  const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
-  state.myStatus = next;
-  renderMyStatus();
-  try {
-    await invoke("set_status", { status: next });
-  } catch (e) {
-    toast("Status error: " + e);
-  }
+    const idx = STATUS_CYCLE.indexOf(state.myStatus);
+    const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    state.myStatus = next;
+    renderMyStatus();
+    try {
+        await invoke("set_status", { status: next });
+    } catch (e) {
+        toast("Status error: " + e);
+    }
 }
 
 init().catch((e) => {
-  console.error("init failed:", e);
-  toast("Initialization failed: " + e);
+    console.error("init failed:", e);
+    toast("Initialization failed: " + e);
 });
