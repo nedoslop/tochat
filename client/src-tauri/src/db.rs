@@ -5,21 +5,18 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-/// One locally stored message.
-///
-/// `plaintext` is `true` when `payload` is known to be readable text. When
-/// `false`, the payload is opaque (either real ciphertext we couldn't
-/// decrypt, or something we simply didn't try to decrypt).
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalMsg {
     pub id: String,
-    /// "in" or "out".
     pub direction: String,
     pub ts: i64,
     pub edit_ts: i64,
     pub kind: String,
     pub payload: String,
     pub plaintext: bool,
+    /// For outgoing: has the peer acknowledged reading it?
+    /// For incoming: have we read it (used for unread badges)?
+    pub read: bool,
 }
 
 #[derive(Clone)]
@@ -43,8 +40,11 @@ impl Database {
                 kind      TEXT NOT NULL,
                 payload   TEXT NOT NULL,
                 plaintext INTEGER NOT NULL DEFAULT 0,
+                read      INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (peer, id)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_peer_ts ON messages(peer, ts);
 
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -52,12 +52,10 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN read INTEGER NOT NULL DEFAULT 0", []);
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    /// Inserts or updates a message. Keyed by `(peer, id)`.
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_message(
         &self,
@@ -69,41 +67,52 @@ impl Database {
         kind: &str,
         payload: &str,
         plaintext: bool,
+        read: bool,
     ) {
         let conn = self.conn.lock().await;
         let _ = conn.execute(
             "INSERT INTO messages
-                (peer, id, direction, ts, edit_ts, kind, payload, plaintext)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             (peer, id, direction, ts, edit_ts, kind, payload, plaintext, read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(peer, id) DO UPDATE SET
-                ts        = excluded.ts,
-                edit_ts   = excluded.edit_ts,
-                kind      = excluded.kind,
-                payload   = excluded.payload,
-                plaintext = excluded.plaintext",
-            params![
-                peer,
-                id,
-                direction,
-                ts,
-                edit_ts,
-                kind,
-                payload,
-                plaintext as i64
-            ],
+                 ts        = excluded.ts,
+                 edit_ts   = excluded.edit_ts,
+                 kind      = excluded.kind,
+                 payload   = excluded.payload,
+                 plaintext = excluded.plaintext,
+                 read      = MAX(messages.read, excluded.read)",
+            params![peer, id, direction, ts, edit_ts, kind, payload, plaintext as i64, read as i64],
         );
     }
 
-    pub async fn get_messages(&self, peer: &str) -> Vec<LocalMsg> {
+    /// Returns up to `limit` messages strictly older than `before_ts`
+    /// (or the newest `limit` if `before_ts` is None), oldest-first.
+    ///
+    /// IMPORTANT: `limit = None` is bound as `-1` (SQLite's "no limit"),
+    /// NOT NULL. `LIMIT NULL` is silently treated as `LIMIT 0` by SQLite,
+    /// which used to make every history-serve path return an empty set.
+    pub async fn get_messages(
+        &self,
+        peer: &str,
+        before_ts: Option<i64>,
+        limit: Option<u32>,
+    ) -> Vec<LocalMsg> {
         let conn = self.conn.lock().await;
+        let limit_i64: i64 = match limit {
+            Some(l) => l as i64,
+            None => -1,
+        };
         let mut stmt = match conn.prepare(
-            "SELECT id, direction, ts, edit_ts, kind, payload, plaintext
-             FROM messages WHERE peer = ?1 ORDER BY ts ASC, edit_ts ASC",
+            "SELECT id, direction, ts, edit_ts, kind, payload, plaintext, read
+             FROM messages
+             WHERE peer = ?1 AND (?2 IS NULL OR ts < ?2)
+             ORDER BY ts DESC, edit_ts DESC
+             LIMIT ?3",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map([peer], |r| {
+        let rows = stmt.query_map(params![peer, before_ts, limit_i64], |r| {
             Ok(LocalMsg {
                 id: r.get(0)?,
                 direction: r.get(1)?,
@@ -112,12 +121,68 @@ impl Database {
                 kind: r.get(4)?,
                 payload: r.get(5)?,
                 plaintext: r.get::<_, i64>(6)? != 0,
+                read: r.get::<_, i64>(7)? != 0,
             })
         });
+        let mut msgs: Vec<_> = match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        };
+        msgs.reverse();
+        msgs
+    }
+
+    /// True if there exist any messages with ts < `before_ts` for this peer.
+    pub async fn has_messages_before(&self, peer: &str, before_ts: i64) -> bool {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM messages WHERE peer = ?1 AND ts < ?2 LIMIT 1",
+            params![peer, before_ts],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Marks our outgoing messages to `peer` (up to `up_to_ts`) as read by peer.
+    pub async fn mark_read_up_to(&self, peer: &str, up_to_ts: i64) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "UPDATE messages SET read = 1
+             WHERE peer = ?1 AND direction = 'out' AND ts <= ?2 AND read = 0",
+            params![peer, up_to_ts],
+        );
+    }
+
+    /// Marks incoming messages from `peer` (up to `up_to_ts`) as read by us.
+    pub async fn mark_incoming_read(&self, peer: &str, up_to_ts: i64) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "UPDATE messages SET read = 1
+             WHERE peer = ?1 AND direction = 'in' AND ts <= ?2 AND read = 0",
+            params![peer, up_to_ts],
+        );
+    }
+
+    pub async fn unread_counts(&self) -> Vec<(String, i64)> {
+        let conn = self.conn.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT peer, COUNT(*) FROM messages
+             WHERE direction = 'in' AND read = 0
+             GROUP BY peer",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)));
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    pub async fn clear_peer(&self, peer: &str) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute("DELETE FROM messages WHERE peer = ?1", [peer]);
     }
 
     pub async fn wipe_all(&self) {

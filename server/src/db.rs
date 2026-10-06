@@ -3,58 +3,61 @@ use std::sync::Arc;
 use rusqlite::{params, Connection};
 use tokio::sync::Mutex;
 
-/// Thread-safe SQLite wrapper with a serialized connection.
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
-/// Returns (smaller, larger) of two ids for canonical pair ordering.
 fn order(a: i64, b: i64) -> (i64, i64) {
-    if a < b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a < b { (a, b) } else { (b, a) }
 }
 
 impl Database {
-    /// Opens (or creates) the database and initializes the schema.
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    last_seen     INTEGER NOT NULL DEFAULT 0
-);
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                last_seen     INTEGER NOT NULL DEFAULT 0,
+                display_name  TEXT,
+                avatar        TEXT
+            );
 
-CREATE TABLE IF NOT EXISTS relationships (
-    user_a      INTEGER NOT NULL,
-    user_b      INTEGER NOT NULL,
-    initiator   INTEGER NOT NULL,
-    established INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_a, user_b),
-    FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
-);
+            CREATE TABLE IF NOT EXISTS relationships (
+                user_a      INTEGER NOT NULL,
+                user_b      INTEGER NOT NULL,
+                initiator   INTEGER NOT NULL,
+                established INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_a, user_b),
+                FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
+            );
 
-CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
-"#,
+            CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
+
+            CREATE TABLE IF NOT EXISTS blocks (
+                blocker INTEGER NOT NULL,
+                blocked INTEGER NOT NULL,
+                PRIMARY KEY (blocker, blocked),
+                FOREIGN KEY (blocker) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (blocked) REFERENCES users(id) ON DELETE CASCADE
+            );
+            "#,
         )?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        // Best-effort migration for pre-existing DBs.
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT", []);
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    // ---- users -------------------------------------------------------
+    // ---- users ----
 
-    /// Returns (user_id, password_hash, last_seen) for a username.
     pub async fn get_user(&self, username: &str) -> Option<(i64, String, i64)> {
         let conn = self.conn.lock().await;
         conn.query_row(
@@ -65,21 +68,38 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
         .ok()
     }
 
-    /// Returns the user id for a username, if the user exists.
-    pub async fn user_id(&self, username: &str) -> Option<i64> {
+    pub async fn get_profile(
+        &self,
+        username: &str,
+    ) -> Option<(i64, Option<String>, Option<String>)> {
         let conn = self.conn.lock().await;
         conn.query_row(
-            "SELECT id FROM users WHERE username = ?1",
+            "SELECT id, display_name, avatar FROM users WHERE username = ?1",
             [username],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()
     }
 
-    /// Inserts a new user; returns the new id, or `None` if the username is taken.
-    ///
-    /// Uses `INSERT ... RETURNING id` so the whole operation is atomic and
-    /// needs only a single database round-trip.
+    pub async fn set_profile(
+        &self,
+        user_id: i64,
+        display_name: Option<&str>,
+        avatar: Option<&str>,
+    ) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "UPDATE users SET display_name = ?1, avatar = ?2 WHERE id = ?3",
+            params![display_name, avatar, user_id],
+        );
+    }
+
+    pub async fn user_id(&self, username: &str) -> Option<i64> {
+        let conn = self.conn.lock().await;
+        conn.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))
+            .ok()
+    }
+
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Option<i64> {
         let conn = self.conn.lock().await;
         let mut stmt = conn
@@ -88,32 +108,23 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
                  VALUES (?1, ?2, 0) RETURNING id",
             )
             .ok()?;
-        stmt.query_row(params![username, password_hash], |r| r.get(0))
-            .ok()
+        stmt.query_row(params![username, password_hash], |r| r.get(0)).ok()
     }
 
-    /// Updates the last_seen timestamp for a user id.
     pub async fn update_last_seen(&self, user_id: i64, ts: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "UPDATE users SET last_seen = ?1 WHERE id = ?2",
-            params![ts, user_id],
-        );
+        let _ = conn.execute("UPDATE users SET last_seen = ?1 WHERE id = ?2", params![ts, user_id]);
     }
 
-    /// Deletes a user and all their relationships.
     pub async fn delete_user(&self, user_id: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1",
-            [user_id],
-        );
+        let _ = conn.execute("DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1", [user_id]);
+        let _ = conn.execute("DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1", [user_id]);
         let _ = conn.execute("DELETE FROM users WHERE id = ?1", [user_id]);
     }
 
-    // ---- relationships -----------------------------------------------
+    // ---- relationships ----
 
-    /// Ensures a pending relationship exists with `initiator` as the initiator.
     pub async fn ensure_relationship_initiated(&self, initiator: i64, other: i64) {
         let (a, b) = order(initiator, other);
         let conn = self.conn.lock().await;
@@ -124,7 +135,6 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
         );
     }
 
-    /// Returns (initiator_id, established) for a relationship, if any.
     pub async fn get_relationship(&self, u1: i64, u2: i64) -> Option<(i64, bool)> {
         let (a, b) = order(u1, u2);
         let conn = self.conn.lock().await;
@@ -136,7 +146,6 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
         .ok()
     }
 
-    /// Marks a relationship as established (both sides accepted).
     pub async fn establish_relationship(&self, u1: i64, u2: i64) {
         let (a, b) = order(u1, u2);
         let conn = self.conn.lock().await;
@@ -146,7 +155,15 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
         );
     }
 
-    /// Returns usernames of all established peers of a user.
+    pub async fn delete_relationship(&self, u1: i64, u2: i64) {
+        let (a, b) = order(u1, u2);
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "DELETE FROM relationships WHERE user_a = ?1 AND user_b = ?2",
+            params![a, b],
+        );
+    }
+
     pub async fn list_peers(&self, user_id: i64) -> Vec<String> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
@@ -164,7 +181,6 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
         }
     }
 
-    /// Returns usernames of pending chats (users who messaged us first).
     pub async fn list_pending_chats(&self, user_id: i64) -> Vec<String> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
@@ -172,6 +188,54 @@ CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
              JOIN users u ON u.id = r.initiator \
              WHERE r.established = 0 AND r.initiator != ?1 \
              AND (r.user_a = ?1 OR r.user_b = ?1)",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0));
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    // ---- blocks ----
+
+    pub async fn add_block(&self, blocker: i64, blocked: i64) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO blocks (blocker, blocked) VALUES (?1, ?2)",
+            params![blocker, blocked],
+        );
+        let (a, b) = order(blocker, blocked);
+        let _ = conn.execute(
+            "DELETE FROM relationships WHERE user_a = ?1 AND user_b = ?2",
+            params![a, b],
+        );
+    }
+
+    pub async fn remove_block(&self, blocker: i64, blocked: i64) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "DELETE FROM blocks WHERE blocker = ?1 AND blocked = ?2",
+            params![blocker, blocked],
+        );
+    }
+
+    pub async fn is_blocked(&self, blocker: i64, blocked: i64) -> bool {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM blocks WHERE blocker = ?1 AND blocked = ?2",
+            params![blocker, blocked],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    pub async fn list_blocks(&self, user_id: i64) -> Vec<String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT u.username FROM blocks b JOIN users u ON u.id = b.blocked WHERE b.blocker = ?1",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),

@@ -25,6 +25,7 @@ if '--client' in sys.argv:
     files.append('client/src-tauri/src/db.rs')
     files.append('client/src-tauri/src/main.rs')
     files.append('client/src-tauri/src/protocol.rs')
+    files.append('client/src-tauri/src/sound.rs')
     files.append('client/src-tauri/src/state.rs')
     files.append('client/src-tauri/src/util.rs')
     files.append('client/src-tauri/src/ws.rs')

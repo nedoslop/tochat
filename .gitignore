@@ -99,6 +99,7 @@ __pycache__
 *.bak
 *.tmp
 *.temp
+*.patch
 joined.txt
 .crash
 tmp/
