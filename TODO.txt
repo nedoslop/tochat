@@ -1,6 +1,6 @@
 Probably good:
  - FIXME: different servers = different chat histories
- - Fix right-click context menu syncing with system theme, not chosen one
+ - Fix right-click context menu on window title (Windows) syncing with system theme, not chosen one
  - Disable built-in browser shortcuts like Ctrl+Shift+P
  - Do not preload all the chat (like in Discord/Telegram?)
  - Add ability to add notes (just keep local chat in db?)
@@ -10,7 +10,7 @@ Probably good:
  - Reposition logout/reload/delete account button to not uselessly eat free space
  - Some other DIFFERENT encryption methods (wtf is that hex?)
 Possible others:
- - Add special commands like /clear to clear chat (one locally, other for everyone?)
+ - Add ability to clear chat (locally/globally), leave chat, block user etc
  - Android/IOS support
  - Allow to login into the same account from multiple devices at the same time
  - Support different media types
