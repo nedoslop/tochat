@@ -1,6 +1,6 @@
 (Some of them may be already implemented, but untested)
  - Do not preload all the chat (like in Discord/Telegram?)
- - Android/IOS support
+ - Android/IOS support (before that, make adaptive UI)
  - Allow to login into the same account from multiple devices at the same time
  - Custom media files: show filename; allow do download files (ensure custom files also supported)
  - Fix notifications (message count) after logging back not showing, taskbar not blinking (even with normal notifications) (there may be other issues probably with that)
