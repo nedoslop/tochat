@@ -1,4 +1,4 @@
-// Encryption widget logic — pure UI + one Tauri call.
+// Encryption widget logic.
 
 import { invoke } from "./api.js";
 
@@ -32,17 +32,21 @@ export async function openEncPanel() {
   const secretInput = document.getElementById("enc-secret");
   secretInput.value = "";
   const secretHint = document.getElementById("enc-secret-hint");
+  const genBtn = document.getElementById("enc-gen");
 
   if (info.method === "pre_shared_key") {
     secretInput.placeholder = info.has_secret ? "(unchanged)" : "64 hex characters";
     secretHint.textContent = "Both sides must use the same 64-character hex key.";
+    genBtn.hidden = false;
   } else if (info.method === "shared_password") {
     secretInput.placeholder = info.has_secret ? "(unchanged)" : "shared password";
     secretHint.textContent =
       "Both sides must use the same password. Only affects new messages.";
+    genBtn.hidden = true;
   } else {
     secretInput.placeholder = "secret";
     secretHint.textContent = "Both sides must use the same secret.";
+    genBtn.hidden = true;
   }
 
   const hint = document.getElementById("enc-hint");
@@ -72,4 +76,11 @@ export async function applyEncryption() {
     hint.className = "hint error";
     hint.textContent = String(e);
   }
+}
+
+export async function generatePsk() {
+  try {
+    const key = await invoke("generate_psk");
+    document.getElementById("enc-secret").value = key;
+  } catch (_) { /* ignore */ }
 }

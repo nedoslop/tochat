@@ -3,36 +3,30 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tauri::Emitter;
+use tauri::{Emitter, Manager, UserAttentionType};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::db::Database;
-use crate::protocol::{ClientMsg, ServerMsg, StoredMsg};
+use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
+use crate::sound::play_notification_chirp;
 use crate::state::{user_db_path, AppState, WsSession};
 
-/// Opens a new WebSocket session, replacing any previous one.
-///
-/// Steps:
-///   1. Fully tear down any existing session (abort + await tasks).
-///   2. Open the per-user local database.
-///   3. Establish the WebSocket connection.
-///   4. Publish state (db, me, ws) and spawn the reader/writer tasks.
+pub const NOTES_PEER: &str = "__notes__";
+
 pub async fn connect(
     state: Arc<AppState>,
     base_url: String,
     username: String,
     password: String,
 ) -> Result<(), String> {
-    // 1. Shut down any previous session *before* we touch anything else.
     shutdown_current_session(&state).await;
 
-    // 2. Open the per-user DB.
-    let db_path = user_db_path(&state.data_dir, &username);
+    let db_path = user_db_path(&state.data_dir, &username, &base_url);
     let db = Database::open(&db_path).map_err(|e| format!("open db: {e}"))?;
 
-    // 3. Establish the WebSocket connection.
     let ws_url = to_ws_url(&base_url)?;
     let mut req = ws_url
         .into_client_request()
@@ -48,7 +42,6 @@ pub async fn connect(
         .await
         .map_err(|e| format!("ws connect failed: {e}"))?;
 
-    // 4. Publish state and spawn tasks.
     let (mut sink, mut source) = stream.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let session_id = state
@@ -57,8 +50,9 @@ pub async fn connect(
 
     *state.db.write().await = Some(Arc::new(db));
     *state.me.write().await = Some(username.clone());
+    *state.server_url.write().await = Some(base_url.clone());
+    *state.my_status.write().await = UserStatus::Online;
 
-    // Writer: drain outbound messages to the socket.
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let s = match serde_json::to_string(&m) {
@@ -69,11 +63,9 @@ pub async fn connect(
                 break;
             }
         }
-        // Graceful close on the way out.
         let _ = sink.close().await;
     });
 
-    // Reader: parse and dispatch inbound messages.
     let reader_state = state.clone();
     let reader_username = username.clone();
     let reader = tokio::spawn(async move {
@@ -96,9 +88,6 @@ pub async fn connect(
                 _ => {}
             }
         }
-
-        // If this session is still the active one, clear it so no commands
-        // can try to use the dead sender.
         {
             let mut ws = reader_state.ws.lock().await;
             if ws.as_ref().map(|s| s.id == session_id).unwrap_or(false) {
@@ -116,37 +105,26 @@ pub async fn connect(
         reader,
         writer,
     });
-
     Ok(())
 }
 
-/// Explicitly tears the current session down. Used by the logout button.
 pub async fn disconnect(state: &Arc<AppState>) -> Result<(), String> {
     shutdown_current_session(state).await;
     *state.db.write().await = None;
     *state.me.write().await = None;
+    *state.server_url.write().await = None;
     Ok(())
 }
 
-/// Takes the active session (if any) and guarantees its tasks are stopped.
 async fn shutdown_current_session(state: &Arc<AppState>) {
     let old = state.ws.lock().await.take();
     let Some(s) = old else { return };
-
-    // Drop the sender so the writer's recv loop finishes on its own and can
-    // send a proper WebSocket close frame.
     drop(s.tx);
-
-    // Give the writer a brief window to close gracefully, then move on.
     let _ = tokio::time::timeout(Duration::from_millis(500), s.writer).await;
-
-    // Abort the reader, then wait for it to actually stop. After this returns,
-    // no old task can touch state.
     s.reader.abort();
     let _ = s.reader.await;
 }
 
-/// Converts "http(s)://host:port" to a ws(s) URL for `/login`.
 fn to_ws_url(base: &str) -> Result<String, String> {
     let trimmed = base.trim().trim_end_matches('/');
     if let Some(rest) = trimmed.strip_prefix("https://") {
@@ -183,6 +161,12 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         ServerMsg::PeerOffline { username } => {
             let _ = state.app.emit("peer-offline", json!(username));
         }
+        ServerMsg::StatusUpdate { username, status } => {
+            let _ = state.app.emit(
+                "status-update",
+                json!({ "username": username, "status": status.as_str() }),
+            );
+        }
         ServerMsg::Message {
             id,
             from,
@@ -202,24 +186,87 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             )
             .await;
         }
-        ServerMsg::PullHistoryRequest { from, since } => {
-            handle_pull_request(state, from, since).await;
+        ServerMsg::NoteMessage {
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
+            handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
+        }
+        ServerMsg::PullHistoryRequest {
+            from,
+            since,
+            limit,
+            before,
+        } => {
+            handle_pull_request(state, from, since, limit, before).await;
         }
         ServerMsg::HistoryResponse { from, messages } => {
             handle_history_response(state, from, messages).await;
+        }
+        ServerMsg::ReadReceipt { from, up_to_ts } => {
+            if let Ok(db) = state.active_db().await {
+                db.mark_read_up_to(&from, up_to_ts).await;
+            }
+            let _ = state.app.emit(
+                "read-receipt",
+                json!({ "peer": from, "up_to_ts": up_to_ts }),
+            );
         }
         ServerMsg::Error { msg } => {
             let _ = state.app.emit("error", json!(msg));
         }
         ServerMsg::Close { reason } => {
             let _ = state.app.emit("session-closed", json!(reason));
-            // The reader loop will notice `is_close` and break; its cleanup
-            // path handles the rest.
+        }
+        ServerMsg::ChatLeft { peer } => {
+            let _ = state.app.emit("chat-left", json!(peer));
+        }
+        ServerMsg::Blocked { users } => {
+            let _ = state.app.emit("blocked", json!(users));
+        }
+        ServerMsg::Profile {
+            username,
+            display_name,
+            avatar,
+        } => {
+            let _ = state.app.emit(
+                "profile",
+                json!({
+                    "username": username,
+                    "display_name": display_name,
+                    "avatar": avatar,
+                }),
+            );
         }
     }
 }
 
-/// Decrypts (if possible) and stores an incoming message/edit, then emits it.
+async fn should_alert(state: &Arc<AppState>) -> bool {
+    !matches!(*state.my_status.read().await, UserStatus::Busy)
+}
+
+fn request_attention(state: &Arc<AppState>) {
+    let app = state.app.clone();
+    tokio::spawn(async move {
+        // A single Critical request on Windows keeps flashing until focus.
+        // On macOS it bounces the dock; on Linux it sets urgency.
+        for _ in 0..3 {
+            let Some(window) = app.get_webview_window("main") else {
+                return;
+            };
+            if window.is_focused().unwrap_or(false) {
+                let _ = window.request_user_attention(None);
+                return;
+            }
+            let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+            tokio::time::sleep(Duration::from_millis(3000)).await;
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     state: &Arc<AppState>,
@@ -232,11 +279,27 @@ async fn handle_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
 
-    // If we no longer have a local DB (logout race), just drop silently.
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(&from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext)
-            .await;
+        // Incoming = not yet read by us.
+        db.upsert_message(
+            &from,
+            &id,
+            "in",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            false,
+        )
+        .await;
     }
+
+    let focused = state
+        .app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
 
     let _ = state.app.emit(
         "message",
@@ -248,28 +311,137 @@ async fn handle_incoming(
             "edit_ts": edit_ts,
             "kind": kind,
             "payload": stored,
+            "windowFocused": focused,
+        }),
+    );
+
+    if focused {
+        return;
+    }
+    if !should_alert(state).await {
+        return;
+    }
+
+    play_notification_chirp();
+
+    let preview = preview_for(&kind, &stored);
+    let title = format!("New message from {from}");
+    let result = state
+        .app
+        .notification()
+        .builder()
+        .title(title.clone())
+        .body(preview.clone())
+        .show();
+
+    // If native notifications fail (permission denied, unsupported),
+    // fall back to an in-app banner.
+    if result.is_err() {
+        let _ = state.app.emit(
+            "in-app-notification",
+            json!({
+                "title": title,
+                "body": preview,
+                "peer": from,
+            }),
+        );
+    }
+
+    request_attention(state);
+}
+
+fn preview_for(kind: &str, text: &str) -> String {
+    match kind {
+        "image" => "📷 Photo".to_string(),
+        "audio" => "🎤 Audio".to_string(),
+        "file" => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+                if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
+                    return format!("📎 {n}");
+                }
+            }
+            "📎 File".to_string()
+        }
+        _ => {
+            if text.is_empty() {
+                "(empty)".to_string()
+            } else if text.chars().count() > 80 {
+                let mut s: String = text.chars().take(77).collect();
+                s.push_str("...");
+                s
+            } else {
+                text.to_string()
+            }
+        }
+    }
+}
+
+async fn handle_note_incoming(
+    state: &Arc<AppState>,
+    id: String,
+    ts: i64,
+    edit_ts: i64,
+    kind: String,
+    payload: String,
+) {
+    let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
+    if let Ok(db) = state.active_db().await {
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            true,
+        )
+        .await;
+    }
+    let _ = state.app.emit(
+        "note-message",
+        json!({
+            "id": id, "peer": NOTES_PEER, "direction": "out",
+            "ts": ts, "edit_ts": edit_ts, "kind": kind, "payload": stored,
         }),
     );
 }
 
-/// Serves a peer's pull request from our local store.
-async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
+async fn handle_pull_request(
+    state: &Arc<AppState>,
+    from: String,
+    since: i64,
+    limit: Option<u32>,
+    before: Option<i64>,
+) {
     let Ok(db) = state.active_db().await else {
         return;
     };
-    let msgs = db.get_messages(&from).await;
+    // Serve the ENTIRE local history (limit=None → LIMIT -1 in SQL, i.e.
+    // truly unbounded). The requester applies its own paging.
+    let msgs = db.get_messages(&from, None, None).await;
     let me = state.me.read().await.clone().unwrap_or_default();
 
-    let mut wire: Vec<StoredMsg> = Vec::with_capacity(msgs.len());
+    let mut filtered: Vec<_> = msgs
+        .into_iter()
+        .filter(|m| m.edit_ts > since)
+        .filter(|m| before.map_or(true, |b| m.ts < b))
+        .collect();
+
+    if let Some(lim) = limit {
+        let lim = lim as usize;
+        if filtered.len() > lim {
+            // Keep the NEWEST `lim` messages.
+            let drop_count = filtered.len() - lim;
+            filtered.drain(0..drop_count);
+        }
+    }
+
+    let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
     {
         let enc = state.encryption.read().await;
-        for m in msgs {
-            if m.edit_ts <= since {
-                continue;
-            }
-
-            // Opaque rows are forwarded as-is; plaintext rows are re-encrypted
-            // for the wire if a cipher is active.
+        for m in filtered {
             let payload = if !m.plaintext {
                 m.payload.clone()
             } else if let Some(c) = enc.cipher.as_ref() {
@@ -284,13 +456,20 @@ async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
                 (from.clone(), me.clone())
             };
 
+            let kind = match m.kind.as_str() {
+                "image" => crate::protocol::MessageKind::Image,
+                "audio" => crate::protocol::MessageKind::Audio,
+                "file" => crate::protocol::MessageKind::File,
+                _ => crate::protocol::MessageKind::Text,
+            };
+
             wire.push(StoredMsg {
                 id: m.id,
                 from: from_user,
                 to: to_user,
                 ts: m.ts,
                 edit_ts: m.edit_ts,
-                kind: crate::protocol::MessageKind::Text,
+                kind,
                 payload,
             });
         }
@@ -305,8 +484,6 @@ async fn handle_pull_request(state: &Arc<AppState>, from: String, since: i64) {
     }
 }
 
-/// Handles an incoming history response, storing the messages and notifying
-/// the UI.
 async fn handle_history_response(state: &Arc<AppState>, from: String, messages: Vec<StoredMsg>) {
     let me = state.me.read().await.clone().unwrap_or_default();
 
@@ -314,7 +491,9 @@ async fn handle_history_response(state: &Arc<AppState>, from: String, messages: 
         for m in messages {
             let direction = if m.from == me { "out" } else { "in" };
             let (stored, is_plaintext) = state.decode_from_wire(&m.payload).await;
-
+            // History messages from peer are treated as unread so they
+            // contribute to unread badges after a fresh login.
+            let read = direction == "out";
             db.upsert_message(
                 &from,
                 &m.id,
@@ -324,6 +503,7 @@ async fn handle_history_response(state: &Arc<AppState>, from: String, messages: 
                 m.kind.as_str(),
                 &stored,
                 is_plaintext,
+                read,
             )
             .await;
         }

@@ -8,9 +8,8 @@ use tokio::task::JoinHandle;
 
 use crate::crypto::{build_cipher, Cipher, EncryptionConfig};
 use crate::db::Database;
-use crate::protocol::ClientMsg;
+use crate::protocol::{ClientMsg, UserStatus};
 
-/// Active encryption configuration + cipher instance.
 pub struct EncryptionState {
     pub config: EncryptionConfig,
     pub cipher: Option<Box<dyn Cipher>>,
@@ -32,7 +31,6 @@ impl EncryptionState {
     }
 }
 
-/// A live WebSocket session: outbound channel plus the two task handles.
 pub struct WsSession {
     pub id: u64,
     pub tx: mpsc::UnboundedSender<ClientMsg>,
@@ -43,14 +41,14 @@ pub struct WsSession {
 pub struct AppState {
     pub app: AppHandle,
     pub data_dir: PathBuf,
-    /// Per-user local database. `None` while logged out.
+    /// Base URL of the currently-connected server (used to pick DB file).
+    pub server_url: RwLock<Option<String>>,
     pub db: RwLock<Option<Arc<Database>>>,
-    /// Currently logged-in username, if any.
     pub me: RwLock<Option<String>>,
-    /// Active WebSocket session, if any.
     pub ws: Mutex<Option<WsSession>>,
     pub encryption: RwLock<EncryptionState>,
-    /// Monotonic id source for sessions.
+    /// My current status.
+    pub my_status: RwLock<UserStatus>,
     pub ws_counter: AtomicU64,
 }
 
@@ -67,16 +65,16 @@ impl AppState {
         Self {
             app,
             data_dir,
+            server_url: RwLock::new(None),
             db: RwLock::new(None),
             me: RwLock::new(None),
             ws: Mutex::new(None),
             encryption: RwLock::new(encryption),
+            my_status: RwLock::new(UserStatus::Online),
             ws_counter: AtomicU64::new(1),
         }
     }
 
-    /// Returns the active per-user database, or an error if the user is not
-    /// logged in.
     pub async fn active_db(&self) -> Result<Arc<Database>, String> {
         self.db
             .read()
@@ -115,12 +113,6 @@ pub fn theme_path(dir: &Path) -> PathBuf {
     dir.join("theme.json")
 }
 
-/// Reads the persisted theme preference. One of `"system"`, `"light"`,
-/// `"dark"`. Falls back to `"system"` on any error or invalid value.
-///
-/// This is the single source of truth for the theme on disk — both the
-/// startup path (which applies it to the native window) and the runtime
-/// Tauri command go through here.
 pub fn read_theme(dir: &Path) -> String {
     let raw = std::fs::read_to_string(theme_path(dir)).unwrap_or_default();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
@@ -135,11 +127,9 @@ pub fn read_theme(dir: &Path) -> String {
     }
 }
 
-/// Path of the per-user local message database.
-pub fn user_db_path(dir: &Path, username: &str) -> PathBuf {
-    // Sanitize the username so it can be used safely as a file name.
-    let safe: String = username
-        .chars()
+/// Sanitizes a string so it can be used as a file-name component.
+fn sanitize(s: &str) -> String {
+    s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
                 c
@@ -147,6 +137,22 @@ pub fn user_db_path(dir: &Path, username: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    dir.join(format!("{safe}.db"))
+        .collect()
+}
+
+/// FNV-1a hash of the server URL; used to namespace per-server DB files.
+fn server_key(url: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in url.trim().trim_end_matches('/').bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
+/// Path of the per-user, per-server local message database.
+pub fn user_db_path(dir: &Path, username: &str, server_url: &str) -> PathBuf {
+    let u = sanitize(username);
+    let s = server_key(server_url);
+    dir.join(format!("{u}_{s}.db"))
 }
