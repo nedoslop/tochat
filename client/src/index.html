@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Chat</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,19 +15,16 @@
 <div id="login-view" class="view login-view">
     <div class="login-card">
         <button id="theme-btn-login" class="btn btn-ghost btn-icon theme-btn-float" title="Theme">🌓</button>
-
         <div class="brand">
             <div class="brand-icon">
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2"
-                     stroke-linecap="round" stroke-linejoin="round">
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 </svg>
             </div>
             <h1>Chat</h1>
             <p class="brand-sub">Private peer-to-peer messaging</p>
         </div>
-
         <div class="field">
             <label for="base-url">Server URL</label>
             <input id="base-url" type="text" value="http://localhost:8080"
@@ -36,8 +33,7 @@
         </div>
         <div class="field">
             <label for="user">Username</label>
-            <input id="user" type="text" placeholder="your username"
-                   spellcheck="false"
+            <input id="user" type="text" placeholder="your username" spellcheck="false"
                    autocomplete="off" autocapitalize="off" autocorrect="off" />
         </div>
         <div class="field">
@@ -45,7 +41,6 @@
             <input id="pass" type="password" placeholder="••••••••"
                    autocomplete="new-password" spellcheck="false" />
         </div>
-
         <div class="login-actions">
             <button id="login-btn" class="btn btn-primary btn-lg">Sign in</button>
             <button id="register-btn" class="btn btn-ghost btn-lg">Register</button>
@@ -55,7 +50,8 @@
 </div>
 
 <div id="app-view" class="view app-view" hidden>
-    <aside class="sidebar">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+    <aside id="sidebar" class="sidebar">
         <div class="sidebar-head">
             <div class="me-badge">
                 <div class="avatar" id="me-avatar">?</div>
@@ -73,6 +69,7 @@
                 <div class="menu-wrap">
                     <button id="settings-btn" class="btn btn-ghost btn-icon" title="Settings">⋯</button>
                     <div id="settings-menu" class="menu" hidden>
+                        <button class="menu-item" id="edit-profile-btn">Edit profile…</button>
                         <button class="menu-item" id="reload-btn">Reload UI</button>
                         <button class="menu-item" id="logout-btn">Log out</button>
                         <button class="menu-item danger" id="delete-btn">Delete account…</button>
@@ -101,6 +98,7 @@
     <main class="main">
         <section id="chat-view" class="chat-view">
             <header class="chat-header">
+                <button id="hamburger-btn" class="btn btn-ghost btn-icon hamburger" title="Menu">☰</button>
                 <div class="chat-peer">
                     <div class="avatar" id="peer-avatar">?</div>
                     <div class="chat-peer-meta">
@@ -124,8 +122,7 @@
                             <div class="field" id="enc-secret-row" hidden>
                                 <label for="enc-secret">Secret</label>
                                 <div class="secret-row">
-                                    <input id="enc-secret" type="password" placeholder="secret"
-                                           autocomplete="new-password" />
+                                    <input id="enc-secret" type="password" placeholder="secret" autocomplete="new-password" />
                                     <button type="button" id="enc-gen" class="btn btn-ghost btn-sm" hidden>Generate</button>
                                 </div>
                                 <div class="hint" id="enc-secret-hint">Both sides must use the same secret.</div>
@@ -153,10 +150,10 @@
             <div id="composer" class="composer">
                 <input id="image-input" type="file" accept="image/*" hidden />
                 <input id="audio-input" type="file" accept="audio/*" hidden />
+                <input id="any-file-input" type="file" hidden />
                 <button id="attach-image-btn" class="btn btn-ghost btn-icon" title="Send image">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round">
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                         <circle cx="8.5" cy="8.5" r="1.5"></circle>
                         <polyline points="21 15 16 10 5 21"></polyline>
@@ -164,19 +161,23 @@
                 </button>
                 <button id="attach-audio-btn" class="btn btn-ghost btn-icon" title="Send audio">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round">
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M9 18V5l12-2v13"></path>
                         <circle cx="6" cy="18" r="3"></circle>
                         <circle cx="18" cy="16" r="3"></circle>
+                    </svg>
+                </button>
+                <button id="attach-file-btn" class="btn btn-ghost btn-icon" title="Send file">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.64 16.2a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                     </svg>
                 </button>
                 <textarea id="msg" placeholder="Type a message… (Shift+Enter for newline)"
                           rows="1" autocomplete="off"></textarea>
                 <button id="send-btn" class="btn btn-primary btn-icon" title="Send">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round">
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="22" y1="2" x2="11" y2="13"></line>
                         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                     </svg>
@@ -209,9 +210,51 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
+
+<div id="in-app-banner" class="in-app-banner" hidden>
+    <div class="in-app-banner-body">
+        <div class="in-app-banner-title" id="in-app-banner-title"></div>
+        <div class="in-app-banner-text" id="in-app-banner-text"></div>
+    </div>
+    <button id="in-app-banner-close" class="btn btn-ghost btn-sm">Dismiss</button>
+</div>
+
 <div id="drop-overlay" class="drop-overlay" hidden>
     <div class="drop-overlay-inner">Drop files to send</div>
 </div>
+
+<div id="image-viewer" class="image-viewer" hidden>
+    <button id="image-viewer-close" class="image-viewer-close" title="Close">✕</button>
+    <img id="image-viewer-img" alt="" />
+</div>
+
+<div id="profile-modal" class="modal-overlay" hidden>
+    <div class="modal">
+        <div class="modal-title">Edit profile</div>
+        <div class="profile-preview">
+            <div class="profile-avatar-wrap">
+                <img id="profile-avatar-img" alt="" hidden />
+                <div id="profile-avatar-placeholder" class="avatar profile-avatar-fallback"></div>
+            </div>
+            <input type="file" id="profile-avatar-input" accept="image/*" hidden />
+            <div class="profile-avatar-actions">
+                <button id="profile-avatar-choose" class="btn btn-ghost btn-sm">Choose image…</button>
+                <button id="profile-avatar-remove" class="btn btn-ghost btn-sm">Remove</button>
+            </div>
+            <div class="hint">Images are resized to 128×128 automatically.</div>
+        </div>
+        <div class="field">
+            <label for="profile-name">Display name</label>
+            <input id="profile-name" type="text" maxlength="40" placeholder="your display name" />
+        </div>
+        <div class="modal-actions">
+            <button id="profile-cancel" class="btn btn-ghost">Cancel</button>
+            <button id="profile-save" class="btn btn-primary">Save</button>
+        </div>
+        <div class="hint error" id="profile-hint" hidden></div>
+    </div>
+</div>
+
 <div id="modal-root"></div>
 
 <script type="module" src="js/main.js"></script>

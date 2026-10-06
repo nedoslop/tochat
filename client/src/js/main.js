@@ -1,51 +1,115 @@
-// Entry point.
-
 import { invoke } from "./api.js";
 import { state, NOTES_PEER } from "./state.js";
 import { toast } from "./utils.js";
 import {
-    register,
-    login,
-    send,
-    logout,
-    reloadUI,
-    deleteAccount,
-    openPeer,
-    openNotes,
-    editMessage,
-    deleteMessage,
-    acceptPending,
-    refreshPending,
-    clearChat,
-    leaveChat,
-    blockUser,
-    loadOlder,
-    sendImage,
-    sendAudio,
-    sendMedia,
+    register, login, send, logout, reloadUI, deleteAccount,
+    openPeer, openNotes, editMessage, deleteMessage,
+    acceptPending, refreshPending, clearChat, leaveChat, blockUser,
+    loadOlder, sendImage, sendAudio, sendFile, updateBadge,
+    openSidebar, closeSidebar,
 } from "./actions.js";
 import {
-    renderMessages,
-    renderMyStatus,
-    showChatView,
-    showPendingView,
+    renderMessages, renderMyStatus, showChatView, showPendingView,
+    closeImageViewer,
 } from "./ui.js";
 import {
-    refreshEncryptionStatus,
-    openEncPanel,
-    closeEncPanel,
-    applyEncryption,
-    generatePsk,
+    refreshEncryptionStatus, openEncPanel, closeEncPanel,
+    applyEncryption, generatePsk,
 } from "./encryption.js";
 import { initTheme, cycleTheme } from "./theme.js";
 import { setupEvents } from "./events.js";
 
+// ---------- profile modal ----------
+
+let pendingAvatar = null; // data URL or null; undefined = unchanged
+
+function openProfileModal() {
+    const modal = document.getElementById("profile-modal");
+    const nameInput = document.getElementById("profile-name");
+    const imgEl = document.getElementById("profile-avatar-img");
+    const phEl = document.getElementById("profile-avatar-placeholder");
+    const hint = document.getElementById("profile-hint");
+
+    const mine = state.profiles[state.me] || {};
+    nameInput.value = mine.display_name || "";
+    pendingAvatar = undefined; // unchanged
+    hint.hidden = true;
+
+    if (mine.avatar) {
+        imgEl.src = mine.avatar;
+        imgEl.hidden = false;
+        phEl.hidden = true;
+    } else {
+        imgEl.hidden = true;
+        phEl.hidden = false;
+        phEl.textContent = (state.me || "?").charAt(0).toUpperCase();
+    }
+    modal.hidden = false;
+    requestAnimationFrame(() => nameInput.focus());
+}
+
+function closeProfileModal() {
+    document.getElementById("profile-modal").hidden = true;
+}
+
+/** Resize image to 128x128 max, return data URL (JPEG). */
+async function resizeAvatar(file) {
+    const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ""));
+        r.onerror = () => reject(r.error || new Error("read error"));
+        r.readAsDataURL(file);
+    });
+    const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("invalid image"));
+        i.src = dataUrl;
+    });
+    const size = 128;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    // Cover-fit
+    const scale = Math.max(size / img.width, size / img.height);
+    const dw = img.width * scale, dh = img.height * scale;
+    const dx = (size - dw) / 2, dy = (size - dh) / 2;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(img, dx, dy, dw, dh);
+    return canvas.toDataURL("image/jpeg", 0.82);
+}
+
+async function saveProfile() {
+    const hint = document.getElementById("profile-hint");
+    const name = document.getElementById("profile-name").value.trim();
+
+    const payload = { display_name: name || null };
+    if (pendingAvatar !== undefined) payload.avatar = pendingAvatar;
+
+    try {
+        await invoke("set_profile", payload);
+        // Update local state optimistically; server will broadcast the
+        // authoritative version anyway.
+        state.profiles[state.me] = {
+            display_name: name || null,
+            avatar: pendingAvatar === undefined ? (state.profiles[state.me]?.avatar ?? null) : pendingAvatar,
+        };
+        closeProfileModal();
+        toast("Profile updated.");
+    } catch (e) {
+        hint.textContent = String(e);
+        hint.hidden = false;
+    }
+}
+
+// ---------- boot ----------
+
 async function installContextMenuGuard() {
     try {
         const isRelease = await invoke("is_release");
-        if (isRelease) {
-            document.addEventListener("contextmenu", (e) => e.preventDefault());
-        }
+        if (isRelease) document.addEventListener("contextmenu", (e) => e.preventDefault());
     } catch (_) {}
 }
 
@@ -54,8 +118,7 @@ function installShortcutGuard() {
         const k = e.key;
         const ctrl = e.ctrlKey || e.metaKey;
         if (
-            k === "F5" ||
-            k === "F12" ||
+            k === "F5" || k === "F12" ||
             (ctrl && !e.shiftKey && k.toLowerCase() === "r") ||
             (ctrl && e.shiftKey && k.toLowerCase() === "r") ||
             (ctrl && k.toLowerCase() === "u") ||
@@ -66,10 +129,7 @@ function installShortcutGuard() {
             (ctrl && k.toLowerCase() === "t") ||
             (ctrl && k.toLowerCase() === "w") ||
             (ctrl && e.shiftKey && k.toLowerCase() === "w")
-        ) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
+        ) { e.preventDefault(); e.stopPropagation(); }
     };
     document.addEventListener("keydown", block, true);
 }
@@ -115,10 +175,15 @@ async function dispatchFiles(files) {
             continue;
         }
         try {
-            const dataUrl = await readAsDataUrl(file);
-            if (kind === "image") await sendImage(dataUrl);
-            else if (kind === "audio") await sendAudio(dataUrl);
-            else await sendMedia("file", dataUrl);
+            if (kind === "image") {
+                const dataUrl = await readAsDataUrl(file);
+                await sendImage(dataUrl);
+            } else if (kind === "audio") {
+                const dataUrl = await readAsDataUrl(file);
+                await sendAudio(dataUrl);
+            } else {
+                await sendFile(file);
+            }
         } catch (e) {
             toast("Send file error: " + e);
         }
@@ -130,10 +195,7 @@ function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
     const input = document.getElementById(inputId);
     if (!btn || !input) return;
 
-    btn.addEventListener("click", () => {
-        input.value = "";
-        input.click();
-    });
+    btn.addEventListener("click", () => { input.value = ""; input.click(); });
 
     input.addEventListener("change", async () => {
         const files = input.files;
@@ -148,26 +210,16 @@ function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
             const dataUrl = await readAsDataUrl(file);
             if (!dataUrl.startsWith("data:")) return;
             onPayload(dataUrl);
-        } catch (e) {
-            toast("Failed to read file: " + e);
-        }
+        } catch (e) { toast("Failed to read file: " + e); }
     });
 }
 
-/**
- * Installs drag-and-drop file handling. Requires `dragDropEnabled: false`
- * in tauri.conf.json so the webview receives native DnD events.
- */
 function installDragDrop() {
     const overlay = document.getElementById("drop-overlay");
     let dragDepth = 0;
 
-    const showOverlay = () => {
-        if (overlay) overlay.hidden = false;
-    };
-    const hideOverlay = () => {
-        if (overlay) overlay.hidden = true;
-    };
+    const showOverlay = () => { if (overlay) overlay.hidden = false; };
+    const hideOverlay = () => { if (overlay) overlay.hidden = true; };
 
     const hasFiles = (e) => {
         const dt = e.dataTransfer;
@@ -180,29 +232,24 @@ function installDragDrop() {
         if (!state.currentPeer) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
-        dragDepth++;
-        showOverlay();
+        dragDepth++; showOverlay();
     });
-
     window.addEventListener("dragover", (e) => {
         if (!state.currentPeer) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     });
-
     window.addEventListener("dragleave", (e) => {
         e.preventDefault();
         dragDepth = Math.max(0, dragDepth - 1);
         if (dragDepth === 0) hideOverlay();
     });
-
     window.addEventListener("drop", (e) => {
         if (!state.currentPeer) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
-        dragDepth = 0;
-        hideOverlay();
+        dragDepth = 0; hideOverlay();
         const files = e.dataTransfer && e.dataTransfer.files;
         if (!files || files.length === 0) return;
         void dispatchFiles(files);
@@ -217,9 +264,7 @@ function installScrollPagination() {
         if (!state.currentPeer || state.currentPeer === NOTES_PEER) return;
         if (state.loadingOlder.has(state.currentPeer)) return;
         if (state.mightHaveMore[state.currentPeer] === false) return;
-        if (el.scrollTop < 80) {
-            loadOlder();
-        }
+        if (el.scrollTop < 80) loadOlder();
     }, { passive: true });
 }
 
@@ -237,24 +282,32 @@ async function init() {
     document.getElementById("notes-btn").onclick = openNotes;
     document.getElementById("refresh-pending-btn").onclick = refreshPending;
 
-    wireFilePicker({
-        buttonId: "attach-image-btn",
-        inputId: "image-input",
-        kind: "image",
-        onPayload: (dataUrl) => sendImage(dataUrl),
-    });
-    wireFilePicker({
-        buttonId: "attach-audio-btn",
-        inputId: "audio-input",
-        kind: "audio",
-        onPayload: (dataUrl) => sendAudio(dataUrl),
-    });
+    wireFilePicker({ buttonId: "attach-image-btn", inputId: "image-input", kind: "image", onPayload: (d) => sendImage(d) });
+    wireFilePicker({ buttonId: "attach-audio-btn", inputId: "audio-input", kind: "audio", onPayload: (d) => sendAudio(d) });
 
-    document.getElementById("pending-btn").onclick = () => {
-        showPendingView();
-        refreshPending();
-    };
+    // Any-file picker.
+    {
+        const btn = document.getElementById("attach-file-btn");
+        const input = document.getElementById("any-file-input");
+        btn.addEventListener("click", () => { input.value = ""; input.click(); });
+        input.addEventListener("change", async () => {
+            const files = input.files;
+            if (!files || files.length === 0) return;
+            const file = files[0];
+            if (file.size > MAX_FILE_BYTES) {
+                toast(`File too large (max ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MiB).`);
+                return;
+            }
+            try { await sendFile(file); } catch (e) { toast("Send file error: " + e); }
+        });
+    }
+
+    document.getElementById("pending-btn").onclick = () => { showPendingView(); refreshPending(); };
     document.getElementById("pending-back-btn").onclick = () => showChatView();
+
+    // Hamburger / sidebar drawer (mobile).
+    document.getElementById("hamburger-btn").onclick = openSidebar;
+    document.getElementById("sidebar-backdrop").onclick = closeSidebar;
 
     document.getElementById("settings-btn").onclick = (ev) => {
         ev.stopPropagation();
@@ -263,6 +316,7 @@ async function init() {
         closeAllMenus();
         m.hidden = !wasHidden;
     };
+    document.getElementById("edit-profile-btn").onclick = () => { closeAllMenus(); openProfileModal(); };
     document.getElementById("reload-btn").onclick = () => { closeAllMenus(); reloadUI(); };
     document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
     document.getElementById("delete-btn").onclick = () => { closeAllMenus(); deleteAccount(); };
@@ -279,17 +333,47 @@ async function init() {
     document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
     document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
 
-    document.getElementById("me-status").onclick = (ev) => {
-        ev.stopPropagation();
-        cycleMyStatus();
+    // Profile modal wiring.
+    const profileModal = document.getElementById("profile-modal");
+    const profileAvatarInput = document.getElementById("profile-avatar-input");
+    document.getElementById("profile-cancel").onclick = closeProfileModal;
+    document.getElementById("profile-save").onclick = saveProfile;
+    document.getElementById("profile-avatar-choose").onclick = () => profileAvatarInput.click();
+    document.getElementById("profile-avatar-remove").onclick = () => {
+        pendingAvatar = null;
+        document.getElementById("profile-avatar-img").hidden = true;
+        const ph = document.getElementById("profile-avatar-placeholder");
+        ph.hidden = false;
+        ph.textContent = (state.me || "?").charAt(0).toUpperCase();
     };
+    profileAvatarInput.addEventListener("change", async () => {
+        const f = profileAvatarInput.files && profileAvatarInput.files[0];
+        if (!f) return;
+        try {
+            const url = await resizeAvatar(f);
+            pendingAvatar = url;
+            const imgEl = document.getElementById("profile-avatar-img");
+            imgEl.src = url;
+            imgEl.hidden = false;
+            document.getElementById("profile-avatar-placeholder").hidden = true;
+        } catch (e) { toast("Image error: " + e); }
+    });
+    profileModal.addEventListener("click", (ev) => {
+        if (ev.target === profileModal) closeProfileModal();
+    });
+
+    // Image viewer.
+    document.getElementById("image-viewer").addEventListener("click", (ev) => {
+        if (ev.target.id === "image-viewer" || ev.target.id === "image-viewer-close") {
+            closeImageViewer();
+        }
+    });
+
+    document.getElementById("me-status").onclick = (ev) => { ev.stopPropagation(); cycleMyStatus(); };
 
     document.getElementById("new-peer-btn").onclick = () => {
         const p = document.getElementById("new-peer").value.trim();
-        if (p) {
-            openPeer(p);
-            document.getElementById("new-peer").value = "";
-        }
+        if (p) { openPeer(p); document.getElementById("new-peer").value = ""; }
     };
 
     const msgInput = document.getElementById("msg");
@@ -300,11 +384,12 @@ async function init() {
         }
     });
     msgInput.addEventListener("input", () => {
+        // auto-resize; +2px buffer prevents a phantom scrollbar from
+        // appearing on the very first line of text.
         msgInput.style.height = "auto";
-        msgInput.style.height = Math.min(msgInput.scrollHeight, 180) + "px";
+        msgInput.style.height = Math.min(msgInput.scrollHeight + 2, 180) + "px";
     });
 
-    // Paste an image directly into the composer.
     msgInput.addEventListener("paste", (e) => {
         const items = e.clipboardData && e.clipboardData.items;
         if (!items) return;
@@ -322,10 +407,7 @@ async function init() {
     document.getElementById("new-peer").addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             const p = e.target.value.trim();
-            if (p) {
-                openPeer(p);
-                e.target.value = "";
-            }
+            if (p) { openPeer(p); e.target.value = ""; }
         }
     });
 
@@ -333,6 +415,9 @@ async function init() {
         if (e.key === "Escape") {
             closeEncPanel();
             closeAllMenus();
+            closeProfileModal();
+            closeImageViewer();
+            closeSidebar();
         }
     });
 
@@ -364,8 +449,7 @@ async function init() {
     document.getElementById("enc-btn").onclick = (ev) => {
         ev.stopPropagation();
         const panel = document.getElementById("enc-panel");
-        if (panel.hidden) openEncPanel();
-        else closeEncPanel();
+        if (panel.hidden) openEncPanel(); else closeEncPanel();
     };
     document.getElementById("enc-method").onchange = (ev) => {
         document.getElementById("enc-secret-row").hidden = ev.target.value === "none";
@@ -378,17 +462,11 @@ async function init() {
     document.addEventListener("click", (ev) => {
         const widget = document.getElementById("enc-widget");
         const panel = document.getElementById("enc-panel");
-        if (panel && !panel.hidden && widget && !widget.contains(ev.target)) {
-            closeEncPanel();
-        }
-        if (!ev.target.closest(".menu-wrap")) {
-            closeAllMenus();
-        }
+        if (panel && !panel.hidden && widget && !widget.contains(ev.target)) closeEncPanel();
+        if (!ev.target.closest(".menu-wrap")) closeAllMenus();
     });
 
-    window.addEventListener("beforeunload", () => {
-        try { invoke("disconnect"); } catch (_) {}
-    });
+    window.addEventListener("beforeunload", () => { try { invoke("disconnect"); } catch (_) {} });
 
     installScrollPagination();
     installDragDrop();
@@ -406,11 +484,8 @@ async function cycleMyStatus() {
     const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
     state.myStatus = next;
     renderMyStatus();
-    try {
-        await invoke("set_status", { status: next });
-    } catch (e) {
-        toast("Status error: " + e);
-    }
+    try { await invoke("set_status", { status: next }); }
+    catch (e) { toast("Status error: " + e); }
 }
 
 init().catch((e) => {
