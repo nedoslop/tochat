@@ -280,9 +280,7 @@ async fn handle_client(
 
         ClientMsg::LeaveChat { peer } => handle_leave_chat(me_id, me, &peer, state, tx).await,
 
-        ClientMsg::BlockUser { username } => {
-            handle_block(me_id, me, &username, state, tx).await
-        }
+        ClientMsg::BlockUser { username } => handle_block(me_id, me, &username, state, tx).await,
 
         ClientMsg::UnblockUser { username } => {
             handle_unblock(me_id, me, &username, state, tx).await
@@ -538,8 +536,7 @@ async fn handle_pull_history(
         });
         return;
     }
-    let Some((initiator_id, established)) = state.db.get_relationship(me_id, from_id).await
-    else {
+    let Some((initiator_id, established)) = state.db.get_relationship(me_id, from_id).await else {
         let _ = tx.send(ServerMsg::Error {
             msg: format!("no chat with {}", from),
         });

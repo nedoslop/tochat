@@ -73,7 +73,9 @@ fn add_note(out: &mut [f32], start: usize, freq: f32, dur_secs: f32, scale: f32)
     }
 
     let attack_n = ((SR as f32 * 0.025) as usize).max(1).min(n);
-    let release_n = ((SR as f32 * 0.050) as usize).max(1).min(n.saturating_sub(attack_n));
+    let release_n = ((SR as f32 * 0.050) as usize)
+        .max(1)
+        .min(n.saturating_sub(attack_n));
 
     // Two-stage decay: an initial "ping" that tapers into a lingering ring.
     let fast_decay = 8.0f32;
@@ -100,8 +102,7 @@ fn add_note(out: &mut [f32], start: usize, freq: f32, dur_secs: f32, scale: f32)
 
         let env = attack
             * release
-            * ((1.0 - tail_mix) * (-t * fast_decay).exp()
-                + tail_mix * (-t * slow_decay).exp());
+            * ((1.0 - tail_mix) * (-t * fast_decay).exp() + tail_mix * (-t * slow_decay).exp());
 
         // Warm timbre: fundamental plus gentle 2nd/3rd harmonics.
         let s = (2.0 * PI * freq * t).sin()
