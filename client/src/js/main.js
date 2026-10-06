@@ -21,7 +21,11 @@ import { setupEvents } from "./events.js";
 
 // ---------- profile modal ----------
 
-let pendingAvatar = null; // data URL or null; undefined = unchanged
+// pendingAvatar semantics:
+//   undefined → user didn't touch the avatar; keep whatever we have.
+//   null      → user removed the avatar; send null.
+//   string    → new avatar data URL to send.
+let pendingAvatar = undefined;
 
 function openProfileModal() {
     const modal = document.getElementById("profile-modal");
@@ -32,7 +36,7 @@ function openProfileModal() {
 
     const mine = state.profiles[state.me] || {};
     nameInput.value = mine.display_name || "";
-    pendingAvatar = undefined; // unchanged
+    pendingAvatar = undefined;
     hint.hidden = true;
 
     if (mine.avatar) {
@@ -52,7 +56,7 @@ function closeProfileModal() {
     document.getElementById("profile-modal").hidden = true;
 }
 
-/** Resize image to 128x128 max, return data URL (JPEG). */
+/** Resize image to 128×128 max, return data URL (JPEG). */
 async function resizeAvatar(file) {
     const dataUrl = await new Promise((resolve, reject) => {
         const r = new FileReader();
@@ -84,16 +88,26 @@ async function saveProfile() {
     const hint = document.getElementById("profile-hint");
     const name = document.getElementById("profile-name").value.trim();
 
-    const payload = { display_name: name || null };
-    if (pendingAvatar !== undefined) payload.avatar = pendingAvatar;
+    // Always send BOTH fields with their current value. The server does a
+    // full replace, so a missing field would wipe the column.
+    const currentAvatar = state.profiles[state.me]?.avatar ?? null;
+    const avatarToSend = pendingAvatar === undefined ? currentAvatar : pendingAvatar;
+
+    // NOTE: Tauri 2 converts Rust snake_case param names to camelCase for
+    // JS. `display_name` in Rust → `displayName` in JS. Sending
+    // `display_name` would be silently ignored (or default to None).
+    const payload = {
+        displayName: name || null,
+        avatar: avatarToSend,
+    };
 
     try {
         await invoke("set_profile", payload);
+        // Optimistic local update; the server also echoes the authoritative
+        // value back through the "profile" event.
         state.profiles[state.me] = {
             display_name: name || null,
-            avatar: pendingAvatar === undefined
-                ? (state.profiles[state.me]?.avatar ?? null)
-                : pendingAvatar,
+            avatar: avatarToSend,
         };
         closeProfileModal();
         toast("Profile updated.");
@@ -354,7 +368,6 @@ async function init() {
         ph.hidden = false;
         ph.textContent = (state.me || "?").charAt(0).toUpperCase();
     };
-    // "Delete account" lives inside the profile modal now.
     document.getElementById("profile-delete").onclick = () => {
         closeProfileModal();
         deleteAccount();
@@ -397,8 +410,6 @@ async function init() {
         }
     });
     msgInput.addEventListener("input", () => {
-        // Auto-resize; +2 px buffer prevents a phantom scrollbar on the
-        // very first line of text.
         msgInput.style.height = "auto";
         msgInput.style.height = Math.min(msgInput.scrollHeight + 2, 180) + "px";
     });

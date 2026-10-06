@@ -21,6 +21,14 @@ export function renderMyStatus() {
     document.getElementById("me-status-label").textContent = state.myStatus;
 }
 
+/**
+ * Renders either a profile-picture <img> or an initial-letter text node
+ * into `el`, based on `state.profiles[username].avatar`.
+ *
+ * NOTE: do NOT touch `el.textContent` in the image branch — assigning to
+ * textContent replaces every child node (including the freshly appended
+ * <img>), which was silently wiping all avatars.
+ */
 function renderAvatar(el, username, fallbackText) {
     const img = avatarFor(username);
     el.innerHTML = "";
@@ -31,7 +39,6 @@ function renderAvatar(el, username, fallbackText) {
         i.className = "avatar-img";
         el.appendChild(i);
         el.style.background = "var(--surface-3)";
-        el.textContent = "";
     } else {
         el.textContent = fallbackText;
     }
@@ -79,7 +86,6 @@ export function renderSidebar() {
                 av.textContent = "📝";
                 av.style.background = "#8b5cf6";
             } else if (avatarFor(p)) {
-                av.style.background = "var(--surface-3)";
                 renderAvatar(av, p, initial(p));
             } else {
                 av.style.background = avatarColor(p);
@@ -128,7 +134,6 @@ export function renderSidebar() {
             peerAvatar.innerHTML = "📝";
             peerAvatar.style.background = "#8b5cf6";
         } else if (avatarFor(state.currentPeer)) {
-            peerAvatar.style.background = "var(--surface-3)";
             renderAvatar(peerAvatar, state.currentPeer, initial(state.currentPeer));
         } else {
             peerAvatar.style.background = avatarColor(state.currentPeer);
@@ -281,8 +286,6 @@ function messageEl(m, isNotes, isFresh = false) {
     if (deleted) {
         body.textContent = "(deleted)";
     } else if (m.kind === "image") {
-        // Encryption mismatch produces a payload that isn't a data URL;
-        // show a clear placeholder instead of a broken image icon.
         if (!/^data:image\//i.test(m.payload)) {
             const err = document.createElement("div");
             err.className = "msg-image-error";
@@ -401,7 +404,6 @@ export function renderPendingList() {
         av.className = "peer-avatar";
         av.style.position = "relative";
         if (avatarFor(p)) {
-            av.style.background = "var(--surface-3)";
             renderAvatar(av, p, initial(p));
         } else {
             av.style.background = avatarColor(p);
