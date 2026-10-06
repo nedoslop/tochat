@@ -1,18 +1,14 @@
-//! Notification sound.
+//! Notification sound: a soft two-note chime (F5 → A5, a warm major third).
 //!
-//! Synthesizes a two-note bell-like chime (C6 → E6) with four harmonic
-//! partials and an exponential decay envelope, then plays it through the
-//! default output device on a background thread.
+//! Design goals:
+//!   * Warm, not shrill — only fundamental + gentle 2nd/3rd harmonics.
+//!   * Smoothstep attack (~25 ms) so there is no click.
+//!   * Two-stage exponential decay (fast "ping" + slower "ring" tail).
+//!   * Short linear release at the very end so the buffer never cuts off.
+//!   * Peak ~0.42 so it sits comfortably under OS alert volume.
 //!
-//! API target: rodio 0.22.x. Compared to 0.21, the crate was renamed:
-//!   * `OutputStream`         → `MixerDeviceSink`
-//!   * `OutputStreamBuilder`  → `DeviceSinkBuilder`
-//!   * `open_default_stream`  → `open_default_sink`
-//!   * `Sink`                 → `Player`
-//!   * `Sink::connect_new`    → `Player::connect_new`
-//!   * `SamplesBuffer::new` now takes `NonZero<u16>` / `NonZero<u32>`
-//!     (aliased as `ChannelCount` / `SampleRate`); the `nz!` macro builds
-//!     them from integer literals.
+//! API target: rodio 0.22.x (crate root: `Player`, `DeviceSinkBuilder`,
+//! `ChannelCount`, `SampleRate`, `nz!`).
 
 use std::num::NonZero;
 
@@ -26,14 +22,12 @@ const PI: f32 = std::f32::consts::PI;
 /// audio device is available (e.g. headless CI).
 pub fn play_notification_chirp() {
     std::thread::spawn(|| {
-        // OS-sink handle to the default physical audio device.
-        let Ok(handle) = DeviceSinkBuilder::open_default_sink() else {
+        let Ok(mut handle) = DeviceSinkBuilder::open_default_sink() else {
             return;
         };
+        // Suppress rodio's "Dropping DeviceSink…" warning at shutdown.
+        handle.log_on_drop(false);
 
-        // A Player is the renamed Sink: it queues sources and plays them
-        // sequentially. It borrows the mixer, not the handle, so `handle`
-        // just has to stay alive until we're done.
         let player = Player::connect_new(handle.mixer());
 
         let samples = render_chime();
@@ -44,58 +38,76 @@ pub fn play_notification_chirp() {
         player.append(src);
         player.sleep_until_end();
 
-        // Dropping the OS-sink stops all playback. By now the chime has
-        // finished, so this is safe.
         drop(handle);
     });
 }
 
-/// Total duration ≈ 580 ms.
+/// Total duration ≈ 600 ms.
 fn render_chime() -> Vec<f32> {
-    let n1 = (SR as f32 * 0.35) as usize;
-    let offset = (SR as f32 * 0.13) as usize;
-    let n2 = (SR as f32 * 0.45) as usize;
-    let mut out = vec![0.0f32; offset + n2];
+    let total_n = (SR as f32 * 0.60) as usize;
+    let mut buf = vec![0.0f32; total_n];
 
-    // First note: C6 (1046.5 Hz).
-    add_bell(&mut out[..n1], 1046.5, 0.45);
+    // F5 (698.46 Hz) then A5 (880.00 Hz) — a warm major third.
+    add_note(&mut buf, 0, 698.46, 0.40, 1.0);
+    add_note(&mut buf, (SR as f32 * 0.10) as usize, 880.00, 0.50, 0.9);
 
-    // Second note: E6 (1318.5 Hz) — a major third up.
-    add_bell(&mut out[offset..offset + n2], 1318.5, 0.40);
-
-    // Soft clip so loud sections don't distort.
-    for s in &mut out {
-        *s = s.clamp(-1.0, 1.0);
+    // Normalize to a comfortable peak.
+    let peak = buf.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+    if peak > 0.0 {
+        let g = 0.42 / peak;
+        for s in &mut buf {
+            *s *= g;
+        }
     }
-    out
+    buf
 }
 
-/// Adds a bell-like tone into `buf` (additively, so notes can overlap).
-fn add_bell(buf: &mut [f32], freq: f32, amp: f32) {
-    let n = buf.len();
-    let attack_n = ((SR as f32 * 0.004) as usize).max(1);
+/// Adds a warm bell tone into `out` at sample offset `start`.
+fn add_note(out: &mut [f32], start: usize, freq: f32, dur_secs: f32, scale: f32) {
+    if start >= out.len() {
+        return;
+    }
+    let n = ((SR as f32 * dur_secs) as usize).min(out.len() - start);
+    if n == 0 {
+        return;
+    }
 
-    // (partial ratio, amplitude, decay speed)
-    let partials: [(f32, f32, f32); 4] = [
-        (1.00, 0.65, 6.0),
-        (2.00, 0.22, 8.0),
-        (2.76, 0.10, 15.0), // inharmonic bell partial
-        (3.00, 0.06, 12.0),
-    ];
+    let attack_n = ((SR as f32 * 0.025) as usize).max(1).min(n);
+    let release_n = ((SR as f32 * 0.050) as usize).max(1).min(n.saturating_sub(attack_n));
+
+    // Two-stage decay: an initial "ping" that tapers into a lingering ring.
+    let fast_decay = 8.0f32;
+    let slow_decay = 1.6f32;
+    let tail_mix = 0.22f32;
 
     for i in 0..n {
         let t = i as f32 / SR as f32;
+
+        // Smoothstep attack.
         let attack = if i < attack_n {
-            i as f32 / attack_n as f32
+            let x = i as f32 / attack_n as f32;
+            x * x * (3.0 - 2.0 * x)
         } else {
             1.0
         };
 
-        let mut s = 0.0f32;
-        for (ratio, pamp, decay) in partials {
-            let env = attack * (-t * decay).exp();
-            s += (2.0 * PI * freq * ratio * t).sin() * env * pamp;
-        }
-        buf[i] += s * amp;
+        // Short linear fade at the very end so we don't clip mid-ring.
+        let release = if i > n - release_n {
+            (n - i) as f32 / release_n as f32
+        } else {
+            1.0
+        };
+
+        let env = attack
+            * release
+            * ((1.0 - tail_mix) * (-t * fast_decay).exp()
+                + tail_mix * (-t * slow_decay).exp());
+
+        // Warm timbre: fundamental plus gentle 2nd/3rd harmonics.
+        let s = (2.0 * PI * freq * t).sin()
+            + (2.0 * PI * freq * 2.0 * t).sin() * 0.14
+            + (2.0 * PI * freq * 3.0 * t).sin() * 0.04;
+
+        out[start + i] += s * env * scale;
     }
 }
