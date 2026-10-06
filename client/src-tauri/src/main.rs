@@ -20,10 +20,8 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-
             let theme = read_theme(&dir);
             commands::apply_window_theme(app.handle(), &theme);
-
             let state = AppState::new(app.handle().clone(), dir);
             app.manage(Arc::new(state));
             Ok(())
@@ -38,9 +36,12 @@ fn main() {
             commands::delete_message,
             commands::pull_history,
             commands::mark_read,
+            commands::get_unread_counts,
             commands::list_pending,
             commands::delete_account,
             commands::get_messages,
+            commands::has_messages_before,
+            commands::update_badge,
             commands::wipe_local_data,
             commands::set_encryption,
             commands::get_encryption,
@@ -54,6 +55,8 @@ fn main() {
             commands::unblock_user,
             commands::list_blocked,
             commands::generate_psk,
+            commands::get_profile,
+            commands::set_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

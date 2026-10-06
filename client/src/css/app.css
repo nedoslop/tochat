@@ -2,7 +2,7 @@
 App shell
 ============================================================ */
 .view { height: 100vh; }
-.app-view { display: flex; height: 100vh; }
+.app-view { display: flex; height: 100vh; position: relative; }
 
 /* ============================================================
 Sidebar
@@ -61,12 +61,18 @@ Sidebar
     background: currentColor;
     display: inline-block;
 }
-.me-status[data-status="away"]    { color: var(--warning); }
-.me-status[data-status="busy"]    { color: var(--danger); }
+.me-status[data-status="away"]      { color: var(--warning); }
+.me-status[data-status="busy"]      { color: var(--danger); }
 .me-status[data-status="invisible"] { color: var(--text-faint); }
 
 .head-actions { display: flex; align-items: center; gap: 2px; }
-.head-actions .btn-icon { width: 32px; height: 32px; font-size: 16px; padding: 0; opacity: 0.75; }
+.head-actions .btn-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+    padding: 0;
+    opacity: 0.75;
+}
 .head-actions .btn-icon:hover { opacity: 1; }
 
 .sidebar-search {
@@ -147,6 +153,7 @@ Sidebar
     color: #fff;
     flex-shrink: 0;
     position: relative;
+    overflow: hidden;
 }
 .peer-avatar::after {
     content: "";
@@ -221,6 +228,7 @@ Main
     align-items: center;
     gap: 12px;
     min-width: 0;
+    flex: 1;
 }
 .chat-peer-meta { min-width: 0; }
 .chat-peer-name {
@@ -237,6 +245,18 @@ Main
 .chat-peer-status.busy { color: var(--danger); }
 
 .header-actions { display: flex; align-items: center; gap: 4px; }
+
+/* Hamburger — hidden on desktop, shown on mobile */
+.hamburger { display: none; }
+
+/* Sidebar backdrop — hidden on desktop, used as overlay on mobile */
+.sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 90;
+    animation: modal-fade-in 0.15s ease;
+}
 
 /* ============================================================
 Menu (dropdown)
@@ -390,21 +410,52 @@ Media messages
     object-fit: contain;
 }
 
+.msg-audio-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.05);
+}
+.msg.out .msg-audio-wrap { background: rgba(255, 255, 255, 0.15); }
 .msg-audio {
     display: block;
     max-width: 280px;
 }
 
 .msg-file {
-    display: inline-block;
-    padding: 4px 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
     border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, 0.06);
     color: inherit;
-    text-decoration: underline;
+    text-decoration: none;
     word-break: break-all;
+    max-width: 100%;
+    cursor: pointer;
 }
-.msg.out .msg-file { background: rgba(255, 255, 255, 0.15); }
+.msg-file:hover { background: rgba(0, 0, 0, 0.1); }
+.msg-file .file-icon { flex-shrink: 0; font-size: 16px; }
+.msg-file .file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.msg-file .file-size {
+    color: var(--text-faint);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.msg.out .msg-file {
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+.msg.out .msg-file .file-size { color: rgba(255, 255, 255, 0.7); }
 
 .msg.kind-image .msg-body { padding: 0; }
 .msg.kind-image { padding: 4px; }
@@ -454,7 +505,11 @@ Composer
     transition: border-color 0.15s, box-shadow 0.15s;
     overflow-x: hidden;
     overflow-y: auto;
-    scrollbar-gutter: stable;
+    /* NOTE: no `scrollbar-gutter: stable` here — reserving space
+       caused a phantom scrollbar on the very first line of text.
+       We also set a min-height so the pill is never smaller than
+       the padding + one line. */
+    min-height: 40px;
 }
 .composer textarea:focus {
     border-color: var(--accent);
@@ -467,7 +522,8 @@ Composer
     padding: 0;
 }
 .composer #attach-image-btn,
-.composer #attach-audio-btn {
+.composer #attach-audio-btn,
+.composer #attach-file-btn {
     flex-shrink: 0;
 }
 
@@ -594,4 +650,42 @@ Drag-and-drop overlay
     font-weight: 600;
     font-size: 16px;
     box-shadow: var(--shadow-lg);
+}
+
+/* ============================================================
+Adaptive / mobile layout
+============================================================ */
+@media (max-width: 760px) {
+    .sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 100;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        box-shadow: var(--shadow-lg);
+        width: 82%;
+        max-width: 320px;
+    }
+    .app-view.sidebar-open .sidebar { transform: translateX(0); }
+    .hamburger { display: inline-flex; }
+
+    .sidebar-search { padding: 12px 12px 8px; }
+    .pending-btn { margin: 0 12px; }
+    .chat-header {
+        padding: 10px 12px;
+        min-height: 56px;
+        gap: 8px;
+    }
+    .messages { padding: 14px 12px; }
+    .composer { padding: 10px 12px 12px; }
+    .composer .btn-icon { width: 36px; height: 36px; }
+    .chat-peer .avatar { width: 32px; height: 32px; font-size: 13px; }
+    .msg { max-width: 82%; }
+}
+
+@media (max-width: 420px) {
+    .composer textarea { padding: 9px 12px; font-size: 15px; }
+    .enc-panel { width: calc(100vw - 24px); right: -8px; }
 }

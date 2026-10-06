@@ -3,23 +3,16 @@ use std::sync::Arc;
 use rusqlite::{params, Connection};
 use tokio::sync::Mutex;
 
-/// Thread-safe SQLite wrapper with a serialized connection.
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
-/// Returns (smaller, larger) of two ids for canonical pair ordering.
 fn order(a: i64, b: i64) -> (i64, i64) {
-    if a < b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a < b { (a, b) } else { (b, a) }
 }
 
 impl Database {
-    /// Opens (or creates) the database and initializes the schema.
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
@@ -31,7 +24,9 @@ impl Database {
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                last_seen     INTEGER NOT NULL DEFAULT 0
+                last_seen     INTEGER NOT NULL DEFAULT 0,
+                display_name  TEXT,
+                avatar        TEXT
             );
 
             CREATE TABLE IF NOT EXISTS relationships (
@@ -55,12 +50,13 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        // Best-effort migration for pre-existing DBs.
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT", []);
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    // ---- users -------------------------------------------------------
+    // ---- users ----
 
     pub async fn get_user(&self, username: &str) -> Option<(i64, String, i64)> {
         let conn = self.conn.lock().await;
@@ -72,14 +68,36 @@ impl Database {
         .ok()
     }
 
-    pub async fn user_id(&self, username: &str) -> Option<i64> {
+    pub async fn get_profile(
+        &self,
+        username: &str,
+    ) -> Option<(i64, Option<String>, Option<String>)> {
         let conn = self.conn.lock().await;
         conn.query_row(
-            "SELECT id FROM users WHERE username = ?1",
+            "SELECT id, display_name, avatar FROM users WHERE username = ?1",
             [username],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()
+    }
+
+    pub async fn set_profile(
+        &self,
+        user_id: i64,
+        display_name: Option<&str>,
+        avatar: Option<&str>,
+    ) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute(
+            "UPDATE users SET display_name = ?1, avatar = ?2 WHERE id = ?3",
+            params![display_name, avatar, user_id],
+        );
+    }
+
+    pub async fn user_id(&self, username: &str) -> Option<i64> {
+        let conn = self.conn.lock().await;
+        conn.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))
+            .ok()
     }
 
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Option<i64> {
@@ -90,32 +108,22 @@ impl Database {
                  VALUES (?1, ?2, 0) RETURNING id",
             )
             .ok()?;
-        stmt.query_row(params![username, password_hash], |r| r.get(0))
-            .ok()
+        stmt.query_row(params![username, password_hash], |r| r.get(0)).ok()
     }
 
     pub async fn update_last_seen(&self, user_id: i64, ts: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "UPDATE users SET last_seen = ?1 WHERE id = ?2",
-            params![ts, user_id],
-        );
+        let _ = conn.execute("UPDATE users SET last_seen = ?1 WHERE id = ?2", params![ts, user_id]);
     }
 
     pub async fn delete_user(&self, user_id: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute(
-            "DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1",
-            [user_id],
-        );
-        let _ = conn.execute(
-            "DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1",
-            [user_id],
-        );
+        let _ = conn.execute("DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1", [user_id]);
+        let _ = conn.execute("DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1", [user_id]);
         let _ = conn.execute("DELETE FROM users WHERE id = ?1", [user_id]);
     }
 
-    // ---- relationships -----------------------------------------------
+    // ---- relationships ----
 
     pub async fn ensure_relationship_initiated(&self, initiator: i64, other: i64) {
         let (a, b) = order(initiator, other);
@@ -147,7 +155,6 @@ impl Database {
         );
     }
 
-    /// Removes the relationship row entirely (used by "leave chat").
     pub async fn delete_relationship(&self, u1: i64, u2: i64) {
         let (a, b) = order(u1, u2);
         let conn = self.conn.lock().await;
@@ -192,7 +199,7 @@ impl Database {
         }
     }
 
-    // ---- blocks -------------------------------------------------------
+    // ---- blocks ----
 
     pub async fn add_block(&self, blocker: i64, blocked: i64) {
         let conn = self.conn.lock().await;
@@ -200,7 +207,6 @@ impl Database {
             "INSERT OR IGNORE INTO blocks (blocker, blocked) VALUES (?1, ?2)",
             params![blocker, blocked],
         );
-        // Blocking also drops any existing relationship.
         let (a, b) = order(blocker, blocked);
         let _ = conn.execute(
             "DELETE FROM relationships WHERE user_a = ?1 AND user_b = ?2",
@@ -216,7 +222,6 @@ impl Database {
         );
     }
 
-    /// True iff `blocker` has blocked `blocked`.
     pub async fn is_blocked(&self, blocker: i64, blocked: i64) -> bool {
         let conn = self.conn.lock().await;
         conn.query_row(
@@ -230,8 +235,7 @@ impl Database {
     pub async fn list_blocks(&self, user_id: i64) -> Vec<String> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT u.username FROM blocks b \
-             JOIN users u ON u.id = b.blocked WHERE b.blocker = ?1",
+            "SELECT u.username FROM blocks b JOIN users u ON u.id = b.blocked WHERE b.blocker = ?1",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),

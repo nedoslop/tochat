@@ -1,11 +1,6 @@
-// Pure rendering helpers.
-
-import { state, NOTES_PEER } from "./state.js";
+import { state, NOTES_PEER, displayName, avatarFor } from "./state.js";
 import {
-    avatarColor,
-    initial,
-    formatTime,
-    formatDate,
+    avatarColor, initial, formatTime, formatDate, formatBytes, parseFilePayload,
 } from "./utils.js";
 
 export function showChatView() {
@@ -24,6 +19,22 @@ export function renderMyStatus() {
     if (!el) return;
     el.dataset.status = state.myStatus;
     document.getElementById("me-status-label").textContent = state.myStatus;
+}
+
+function renderAvatar(el, username, fallbackText) {
+    const img = avatarFor(username);
+    el.innerHTML = "";
+    if (img) {
+        const i = document.createElement("img");
+        i.src = img;
+        i.alt = "";
+        i.className = "avatar-img";
+        el.appendChild(i);
+        el.style.background = "var(--surface-3)";
+        el.textContent = "";
+    } else {
+        el.textContent = fallbackText;
+    }
 }
 
 export function renderSidebar() {
@@ -64,14 +75,19 @@ export function renderSidebar() {
 
             const av = document.createElement("div");
             av.className = "peer-avatar";
-            av.style.background = isNotes ? "#8b5cf6" : avatarColor(p);
-            av.textContent = isNotes ? "📝" : initial(p);
+            if (isNotes) {
+                av.textContent = "📝";
+                av.style.background = "#8b5cf6";
+            } else {
+                av.style.background = avatarFor(p) ? "var(--surface-3)" : avatarColor(p);
+                renderAvatar(av, p, initial(p));
+            }
 
             const body = document.createElement("div");
             body.className = "peer-body";
             const name = document.createElement("div");
             name.className = "peer-name";
-            name.textContent = isNotes ? "Notes" : p;
+            name.textContent = isNotes ? "Notes" : displayName(p);
             body.appendChild(name);
 
             d.appendChild(av);
@@ -104,11 +120,16 @@ export function renderSidebar() {
 
     if (state.currentPeer) {
         const isNotes = state.currentPeer === NOTES_PEER;
-        titleEl.textContent = isNotes ? "Notes" : state.currentPeer;
-        peerAvatar.textContent = isNotes ? "📝" : initial(state.currentPeer);
-        peerAvatar.style.background = isNotes
-            ? "#8b5cf6"
-            : avatarColor(state.currentPeer);
+        titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
+        if (isNotes) {
+            peerAvatar.textContent = "📝";
+            peerAvatar.style.background = "#8b5cf6";
+            peerAvatar.innerHTML = "📝";
+        } else {
+            peerAvatar.style.background = avatarFor(state.currentPeer)
+                ? "var(--surface-3)" : avatarColor(state.currentPeer);
+            renderAvatar(peerAvatar, state.currentPeer, initial(state.currentPeer));
+        }
         if (isNotes) {
             statusEl.textContent = "synced across your devices";
             statusEl.classList.remove("online", "away", "busy");
@@ -133,16 +154,6 @@ export function renderSidebar() {
     }
 }
 
-/**
- * Renders the messages list.
- *
- * `preserveScroll=true` keeps the scroll position at the same offset from
- * the bottom (used after prepending older messages). Otherwise we only
- * stick to the bottom if the user was already there.
- *
- * Animation is applied only to messages that are new since the last
- * render — this is what prevents the "blink" when the list is re-rendered.
- */
 export function renderMessages(preserveScroll = false) {
     const el = document.getElementById("messages");
     const prevHeight = el.scrollHeight;
@@ -153,35 +164,26 @@ export function renderMessages(preserveScroll = false) {
     el.innerHTML = "";
 
     if (!state.currentPeer) {
-        el.appendChild(
-            emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one.")
-        );
+        el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
         return;
     }
 
     const peer = state.currentPeer;
-    const msgs = (state.msgCache[peer] || [])
-        .slice()
-        .sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
+    const msgs = (state.msgCache[peer] || []).slice().sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
 
     if (msgs.length === 0) {
-        el.appendChild(
-            emptyState(
-                peer === NOTES_PEER ? "📝" : "📭",
-                peer === NOTES_PEER ? "No notes yet" : "No messages yet",
-                peer === NOTES_PEER
-                    ? "Anything you type here stays on this device — and syncs across your sessions."
-                    : `Say hi to ${peer}.`,
-            )
-        );
+        el.appendChild(emptyState(
+            peer === NOTES_PEER ? "📝" : "📭",
+            peer === NOTES_PEER ? "No notes yet" : "No messages yet",
+            peer === NOTES_PEER
+                ? "Anything you type here stays on this device — and syncs across your sessions."
+                : `Say hi to ${displayName(peer)}.`,
+        ));
         return;
     }
 
-    // Track which message ids we've already drawn so we don't re-animate
-    // them. The set persists per-peer in state.
     const seen = state.seenIds[peer] || (state.seenIds[peer] = new Set());
 
-    // Top-of-list controls.
     if (peer !== NOTES_PEER) {
         const loading = state.loadingOlder.has(peer);
         const reachedStart = state.mightHaveMore[peer] === false;
@@ -225,14 +227,12 @@ export function renderMessages(preserveScroll = false) {
         el.scrollTop = el.scrollHeight;
     }
 
-    // Keep the seen set from growing without bound (drop entries no longer present).
     if (seen.size > msgs.length * 2 + 200) {
         const live = new Set(msgs.map((m) => m.id));
         state.seenIds[peer] = live;
     }
 }
 
-/** Updates only the read-indicator label of outgoing message bubbles. */
 export function updateReadIndicators(peer) {
     if (state.currentPeer !== peer) return;
     const el = document.getElementById("messages");
@@ -247,31 +247,17 @@ export function updateReadIndicators(peer) {
 }
 
 function cssEscape(s) {
-    if (window.CSS && typeof window.CSS.escape === "function") {
-        return window.CSS.escape(s);
-    }
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(s);
     return String(s).replace(/["\\]/g, "\\$&");
 }
 
 function emptyState(icon, title, sub) {
     const d = document.createElement("div");
     d.className = "empty-state";
-
-    const i = document.createElement("div");
-    i.className = "empty-icon";
-    i.textContent = icon;
-
-    const t = document.createElement("div");
-    t.className = "empty-title";
-    t.textContent = title;
-
-    const s = document.createElement("div");
-    s.className = "empty-sub";
-    s.textContent = sub;
-
-    d.appendChild(i);
-    d.appendChild(t);
-    d.appendChild(s);
+    const i = document.createElement("div"); i.className = "empty-icon"; i.textContent = icon;
+    const t = document.createElement("div"); t.className = "empty-title"; t.textContent = title;
+    const s = document.createElement("div"); s.className = "empty-sub"; s.textContent = sub;
+    d.appendChild(i); d.appendChild(t); d.appendChild(s);
     return d;
 }
 
@@ -279,8 +265,7 @@ function messageEl(m, isNotes, isFresh = false) {
     const div = document.createElement("div");
     const deleted = m.payload === "";
     div.className =
-        "msg " +
-        (m.direction === "out" ? "out" : "in") +
+        "msg " + (m.direction === "out" ? "out" : "in") +
         (deleted ? " deleted" : "") +
         (m.kind && m.kind !== "text" ? " kind-" + m.kind : "") +
         (isFresh ? " fresh" : "");
@@ -297,24 +282,43 @@ function messageEl(m, isNotes, isFresh = false) {
         img.src = m.payload;
         img.alt = "image";
         img.loading = "lazy";
-        img.addEventListener("click", () => {
-            window.open(m.payload, "_blank");
-        });
+        img.addEventListener("click", () => openImageViewer(m.payload));
         body.appendChild(img);
     } else if (m.kind === "audio") {
+        const wrap = document.createElement("div");
+        wrap.className = "msg-audio-wrap";
         const audio = document.createElement("audio");
         audio.className = "msg-audio";
         audio.controls = true;
+        audio.preload = "metadata";
         audio.src = m.payload;
-        body.appendChild(audio);
+        wrap.appendChild(audio);
+        body.appendChild(wrap);
     } else if (m.kind === "file") {
+        const info = parseFilePayload(m.payload);
         const a = document.createElement("a");
         a.className = "msg-file";
-        a.href = m.payload;
-        a.target = "_blank";
+        a.href = info.data;
+        a.download = info.name || "file";
         a.rel = "noopener";
-        a.download = "file";
-        a.textContent = "Download file";
+        a.title = "Download " + (info.name || "file");
+
+        const icon = document.createElement("span");
+        icon.className = "file-icon";
+        icon.textContent = "📎";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "file-name";
+        nameEl.textContent = info.name || "file";
+
+        a.appendChild(icon);
+        a.appendChild(nameEl);
+        if (info.size) {
+            const sizeEl = document.createElement("span");
+            sizeEl.className = "file-size";
+            sizeEl.textContent = formatBytes(info.size);
+            a.appendChild(sizeEl);
+        }
         body.appendChild(a);
     } else {
         body.textContent = m.payload;
@@ -323,9 +327,7 @@ function messageEl(m, isNotes, isFresh = false) {
     const time = document.createElement("div");
     time.className = "msg-time";
     let label = formatTime(m.ts);
-    if (m.direction === "out" && !deleted) {
-        label += m.read ? "  ✓✓" : "  ✓";
-    }
+    if (m.direction === "out" && !deleted) label += m.read ? "  ✓✓" : "  ✓";
     time.textContent = label;
 
     div.appendChild(body);
@@ -377,13 +379,18 @@ export function renderPendingList() {
 
         const av = document.createElement("div");
         av.className = "peer-avatar";
-        av.style.background = avatarColor(p);
-        av.textContent = initial(p);
         av.style.position = "relative";
+        if (avatarFor(p)) {
+            av.style.background = "var(--surface-3)";
+            renderAvatar(av, p, initial(p));
+        } else {
+            av.style.background = avatarColor(p);
+            av.textContent = initial(p);
+        }
 
         const name = document.createElement("span");
         name.className = "name";
-        name.textContent = p;
+        name.textContent = displayName(p);
 
         left.appendChild(av);
         left.appendChild(name);
@@ -402,8 +409,22 @@ export function renderPendingList() {
 export function latestInboundTs(peer) {
     const msgs = state.msgCache[peer] || [];
     let max = 0;
-    for (const m of msgs) {
-        if (m.direction === "in" && m.ts > max) max = m.ts;
-    }
+    for (const m of msgs) if (m.direction === "in" && m.ts > max) max = m.ts;
     return max;
+}
+
+// ---------- Image viewer ----------
+
+export function openImageViewer(src) {
+    const v = document.getElementById("image-viewer");
+    const img = document.getElementById("image-viewer-img");
+    img.src = src;
+    v.hidden = false;
+}
+
+export function closeImageViewer() {
+    const v = document.getElementById("image-viewer");
+    const img = document.getElementById("image-viewer-img");
+    img.src = "";
+    v.hidden = true;
 }

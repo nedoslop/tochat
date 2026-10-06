@@ -1,8 +1,4 @@
-// Single shared mutable state object.
-
 export const NOTES_PEER = "__notes__";
-
-/** How many messages to fetch per page for scroll-back pagination. */
 export const INITIAL_LIMIT = 50;
 
 export const state = {
@@ -13,6 +9,7 @@ export const state = {
     blocked: new Set(),
     online: new Set(),
     peerStatus: {},
+    profiles: {},   // username -> { display_name, avatar }
     msgCache: {},
     pulling: new Set(),
     unread: {},
@@ -21,12 +18,8 @@ export const state = {
     loadingOlder: new Set(),
     lastPullLimit: {},
     suppressScrollLoad: false,
-    /**
-     * peer -> Set of message ids already rendered at least once. Used to
-     * skip the entry animation for messages that were already on screen —
-     * this is what prevents the visual "blink" during re-renders.
-     */
     seenIds: {},
+    pendingOutgoingProfile: null,
 };
 
 export function resetState() {
@@ -37,12 +30,36 @@ export function resetState() {
     state.blocked.clear();
     state.online.clear();
     state.peerStatus = {};
+    state.profiles = {};
     state.pulling.clear();
     state.unread = {};
     state.mightHaveMore = {};
     state.loadingOlder.clear();
     state.lastPullLimit = {};
     state.suppressScrollLoad = false;
+    state.pendingOutgoingProfile = null;
     for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
     for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
+}
+
+/** Returns the display name for a peer (falls back to username). */
+export function displayName(username) {
+    if (!username) return "";
+    if (username === NOTES_PEER) return "Notes";
+    const p = state.profiles[username];
+    if (p && p.display_name && p.display_name.trim()) return p.display_name;
+    return username;
+}
+
+export function avatarFor(username) {
+    if (!username) return null;
+    if (username === NOTES_PEER) return null;
+    const p = state.profiles[username];
+    return p && p.avatar ? p.avatar : null;
+}
+
+export function totalUnread() {
+    let n = 0;
+    for (const k of Object.keys(state.unread)) n += state.unread[k] || 0;
+    return n;
 }
