@@ -1,5 +1,4 @@
 (Some of them may be already implemented, but untested)
- - Fix chat client release not statically linking with MSVC runtime
  - Do not preload all the chat (like in Discord/Telegram?)
  - Profile config (image (defaults to letter like now) which syncs for others when changed, delete account button here, some personal info etc)
  - Android/IOS support (before that, make adaptive UI!!!!!)
