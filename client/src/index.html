@@ -28,18 +28,24 @@
         <div class="field">
             <label for="base-url">Server URL</label>
             <input id="base-url" type="text" value="http://localhost:8080"
-                   placeholder="http://host:port" spellcheck="false"
-                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+                   placeholder="http://host:port"
+                   name="chat-server-url"
+                   spellcheck="false"
+                   autocomplete="off" autocorrect="off" autocapitalize="off" />
         </div>
         <div class="field">
             <label for="user">Username</label>
-            <input id="user" type="text" placeholder="your username" spellcheck="false"
-                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+            <input id="user" type="text" placeholder="your username"
+                   name="chat-username-nofill"
+                   spellcheck="false"
+                   autocomplete="off" autocorrect="off" autocapitalize="off" />
         </div>
         <div class="field">
             <label for="pass">Password</label>
             <input id="pass" type="password" placeholder="••••••••"
-                   autocomplete="new-password" spellcheck="false" />
+                   name="chat-password-nofill"
+                   spellcheck="false"
+                   autocomplete="new-password" autocorrect="off" autocapitalize="off" />
         </div>
         <div class="login-actions">
             <button id="login-btn" class="btn btn-primary btn-lg">Sign in</button>
@@ -78,8 +84,10 @@
         </div>
 
         <div class="sidebar-search">
-            <input id="new-peer" placeholder="Start chat with…" spellcheck="false"
-                   autocomplete="off" autocapitalize="off" autocorrect="off" />
+            <input id="new-peer" placeholder="Start chat with…"
+                   name="chat-newpeer-nofill"
+                   spellcheck="false"
+                   autocomplete="off" autocorrect="off" autocapitalize="off" />
             <button id="new-peer-btn" class="btn btn-primary btn-icon" title="Open chat">+</button>
         </div>
 
@@ -121,7 +129,10 @@
                             <div class="field" id="enc-secret-row" hidden>
                                 <label for="enc-secret">Secret</label>
                                 <div class="secret-row">
-                                    <input id="enc-secret" type="password" placeholder="secret" autocomplete="new-password" />
+                                    <input id="enc-secret" type="password" placeholder="secret"
+                                           name="chat-encsecret-nofill"
+                                           spellcheck="false"
+                                           autocomplete="new-password" autocorrect="off" autocapitalize="off" />
                                     <button type="button" id="enc-gen" class="btn btn-ghost btn-sm" hidden>Generate</button>
                                 </div>
                                 <div class="hint" id="enc-secret-hint">Both sides must use the same secret.</div>
@@ -173,7 +184,10 @@
                     </svg>
                 </button>
                 <textarea id="msg" placeholder="Type a message… (Shift+Enter for newline)"
-                          rows="1" autocomplete="off"></textarea>
+                          name="chat-composer-nofill"
+                          rows="1"
+                          spellcheck="false"
+                          autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
                 <button id="send-btn" class="btn btn-primary btn-icon" title="Send">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -249,7 +263,11 @@
 
         <div class="field">
             <label for="profile-name">Display name</label>
-            <input id="profile-name" type="text" maxlength="40" placeholder="your display name" />
+            <input id="profile-name" type="text" maxlength="40"
+                   placeholder="your display name"
+                   name="profile-display-name-nofill"
+                   spellcheck="false"
+                   autocomplete="off" autocorrect="off" autocapitalize="off" />
         </div>
 
         <div class="hint error" id="profile-hint" hidden></div>
