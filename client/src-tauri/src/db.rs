@@ -35,30 +35,37 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // Multiple instances of the client can share the same on-disk DB
+        // (same user, same server). SQLite serializes writers, so without
+        // a busy timeout a concurrent write returns SQLITE_BUSY immediately
+        // instead of waiting its turn. 5 s is far more than enough in
+        // practice and keeps the UI responsive if a peer instance is stuck.
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         conn.execute_batch(
             r#"
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS messages (
-    peer_id   INTEGER NOT NULL,
-    id        TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    ts        INTEGER NOT NULL,
-    edit_ts   INTEGER NOT NULL,
-    kind      TEXT NOT NULL,
-    payload   TEXT NOT NULL,
-    plaintext INTEGER NOT NULL DEFAULT 0,
-    read      INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (peer_id, id)
+  peer_id   INTEGER NOT NULL,
+  id        TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  ts        INTEGER NOT NULL,
+  edit_ts   INTEGER NOT NULL,
+  kind      TEXT NOT NULL,
+  payload   TEXT NOT NULL,
+  plaintext INTEGER NOT NULL DEFAULT 0,
+  read      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (peer_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_peer_ts ON messages(peer_id, ts);
 
 CREATE TABLE IF NOT EXISTS peers (
-    id           INTEGER PRIMARY KEY,
-    username     TEXT NOT NULL,
-    display_name TEXT,
-    avatar       TEXT
+  id           INTEGER PRIMARY KEY,
+  username     TEXT NOT NULL,
+  display_name TEXT,
+  avatar       TEXT
 );
 
 -- Per-chat encryption. Peer 0 is the Notes chat.
@@ -66,14 +73,14 @@ CREATE TABLE IF NOT EXISTS peers (
 -- `secret` is the password / raw hex key. Nothing here ever touches the
 -- server — it's a local-only table, one row per chat.
 CREATE TABLE IF NOT EXISTS peer_encryption (
-    peer_id INTEGER PRIMARY KEY,
-    method  TEXT NOT NULL,
-    secret  TEXT
+  peer_id INTEGER PRIMARY KEY,
+  method  TEXT NOT NULL,
+  secret  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 "#,
         )?;
@@ -96,9 +103,9 @@ CREATE TABLE IF NOT EXISTS settings (
             "INSERT INTO peers (id, username, display_name, avatar) \
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
-                 username     = excluded.username,
-                 display_name = excluded.display_name,
-                 avatar       = excluded.avatar",
+               username     = excluded.username,
+               display_name = excluded.display_name,
+               avatar       = excluded.avatar",
             params![id, username, display_name, avatar],
         );
     }
@@ -168,15 +175,15 @@ CREATE TABLE IF NOT EXISTS settings (
         let conn = self.conn.lock().await;
         let _ = conn.execute(
             "INSERT INTO messages
-             (peer_id, id, direction, ts, edit_ts, kind, payload, plaintext, read)
+               (peer_id, id, direction, ts, edit_ts, kind, payload, plaintext, read)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(peer_id, id) DO UPDATE SET
-                 ts        = excluded.ts,
-                 edit_ts   = excluded.edit_ts,
-                 kind      = excluded.kind,
-                 payload   = excluded.payload,
-                 plaintext = excluded.plaintext,
-                 read      = MAX(messages.read, excluded.read)",
+               ts        = excluded.ts,
+               edit_ts   = excluded.edit_ts,
+               kind      = excluded.kind,
+               payload   = excluded.payload,
+               plaintext = excluded.plaintext,
+               read      = MAX(messages.read, excluded.read)",
             params![
                 peer_id,
                 id,
@@ -302,8 +309,8 @@ CREATE TABLE IF NOT EXISTS settings (
                 "INSERT INTO peer_encryption (peer_id, method, secret) \
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(peer_id) DO UPDATE SET
-                     method = excluded.method,
-                     secret = excluded.secret",
+                   method = excluded.method,
+                   secret = excluded.secret",
                 params![peer_id, method, secret],
             );
         }

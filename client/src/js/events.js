@@ -19,6 +19,7 @@ function applyMyAvatar() {
     const img = document.createElement("img");
     img.src = mine.avatar;
     img.alt = "";
+    img.draggable = false;
     img.className = "avatar-img";
     av.appendChild(img);
     av.style.background = "var(--surface-3)";
@@ -347,8 +348,15 @@ export async function setupEvents() {
     resetToLogin();
   });
 
-  await listen("disconnected", () => {
-    if (state.meId) resetToLogin();
+  // -----------------------------------------------------------------
+  // `disconnected` fires from Rust only when the *currently active*
+  // session's reader exits. Stale readers from prior sessions are
+  // silent, which is why we can safely treat this as a real drop.
+  // -----------------------------------------------------------------
+  await listen("disconnected", async () => {
+    if (!state.meId) return;
+    try { await invoke("disconnect"); } catch (_) {}
+    resetToLogin();
   });
 }
 

@@ -355,12 +355,18 @@ pub async fn pull_history(
     }
     let tx = {
         let ws = state.ws.lock().await;
-        ws.as_ref()
-            .map(|s| s.tx.clone())
-            .ok_or_else(|| "not connected".to_string())?
+        // A history pull is background work scheduled by the sync loop.
+        // If the socket isn't installed yet (transient during connect /
+        // reconnect), just quietly skip — the caller will retry.
+        match ws.as_ref() {
+            Some(s) => s.tx.clone(),
+            None => return Ok(()),
+        }
     };
-    tx.send(ClientMsg::PullHistory { from, since, limit, before })
-        .map_err(|_| "connection closed".to_string())?;
+    // A closed channel is also a soft failure: the reader task will emit
+    // `disconnected` on its own, and the sync loop will retry after the
+    // next reconnect. Don't spam the JS console with it.
+    let _ = tx.send(ClientMsg::PullHistory { from, since, limit, before });
     Ok(())
 }
 
@@ -395,12 +401,12 @@ pub async fn get_unread_counts(
 pub async fn list_pending(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let tx = {
         let ws = state.ws.lock().await;
-        ws.as_ref()
-            .map(|s| s.tx.clone())
-            .ok_or_else(|| "not connected".to_string())?
+        match ws.as_ref() {
+            Some(s) => s.tx.clone(),
+            None => return Ok(()),
+        }
     };
-    tx.send(ClientMsg::ListPending)
-        .map_err(|_| "connection closed".to_string())?;
+    let _ = tx.send(ClientMsg::ListPending);
     Ok(())
 }
 
