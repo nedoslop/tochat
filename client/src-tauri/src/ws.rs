@@ -21,6 +21,7 @@ pub async fn connect(
     base_url: String,
     username: String,
     password: String,
+    initial_status: UserStatus,
 ) -> Result<(), String> {
     shutdown_current_session(&state).await;
 
@@ -54,10 +55,9 @@ pub async fn connect(
         username: username.clone(),
     });
     *state.server_url.write().await = Some(base_url.clone());
-    *state.my_status.write().await = UserStatus::Online;
+    *state.my_status.write().await = initial_status;
 
     // Load per-chat encryption configs from this user's local DB.
-    // Each chat has its own key; there is no global key file.
     state.load_encryption_from_db().await.ok();
 
     let writer = tokio::spawn(async move {
@@ -167,8 +167,11 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             let _ = state.app.emit("pending-chats", json!(users));
         }
 
-        ServerMsg::PeerOnline { user_id } => {
-            let _ = state.app.emit("peer-online", json!({ "user_id": user_id }));
+        ServerMsg::PeerOnline { user_id, status } => {
+            let _ = state.app.emit(
+                "peer-online",
+                json!({ "user_id": user_id, "status": status.as_str() }),
+            );
         }
 
         ServerMsg::PeerOffline { user_id } => {
@@ -176,6 +179,15 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
 
         ServerMsg::StatusUpdate { user_id, status } => {
+            // If the server is telling us about our own status (e.g. it was
+            // changed on another device, or restored after reconnect), keep
+            // our local Rust state in sync so `should_alert` behaves.
+            let me = state.me.read().await.clone();
+            if let Some(me) = me {
+                if me.id == user_id {
+                    *state.my_status.write().await = status;
+                }
+            }
             let _ = state.app.emit(
                 "status-update",
                 json!({ "user_id": user_id, "status": status.as_str() }),
@@ -261,19 +273,44 @@ async fn should_alert(state: &Arc<AppState>) -> bool {
     !matches!(*state.my_status.read().await, UserStatus::Busy)
 }
 
+/// Returns true if the main window is the user's actual focus target.
+/// A minimized window is *not* considered focused even if the OS reports it
+/// as the foreground window (Windows does this for minimized top-levels).
+pub fn is_window_focused(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        return false;
+    }
+    window.is_focused().unwrap_or(false)
+}
+
+/// Continuously ask the OS to flash the taskbar until the window regains
+/// focus (or ~60 s pass). One-shot flashes on Windows are unreliable: the
+/// OS may ignore a single `FlashWindowEx` if the window is already behind
+/// another always-on-top window or if the request races with the
+/// notification toast. Re-issuing it every two seconds keeps it alive.
 fn request_attention(state: &Arc<AppState>) {
     let app = state.app.clone();
     tokio::spawn(async move {
-        for _ in 0..3 {
-            let Some(window) = app.get_webview_window("main") else {
-                return;
-            };
-            if window.is_focused().unwrap_or(false) {
-                let _ = window.request_user_attention(None);
+        for _ in 0..30 {
+            if app.get_webview_window("main").is_none() {
                 return;
             }
-            let _ = window.request_user_attention(Some(UserAttentionType::Critical));
-            tokio::time::sleep(Duration::from_millis(3000)).await;
+            if is_window_focused(&app) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.request_user_attention(None);
+                }
+                return;
+            }
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.request_user_attention(Some(UserAttentionType::Critical));
+            }
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.request_user_attention(None);
         }
     });
 }
@@ -311,11 +348,10 @@ async fn handle_incoming(
             .await;
     }
 
-    let focused = state
-        .app
-        .get_webview_window("main")
-        .and_then(|w| w.is_focused().ok())
-        .unwrap_or(false);
+    // A minimized window is NEVER "in front of the user", regardless of what
+    // `is_focused()` reports. This is the flag JS uses to decide whether to
+    // auto-mark the message as read.
+    let window_focused = is_window_focused(&state.app);
 
     let _ = state.app.emit(
         "message",
@@ -326,11 +362,11 @@ async fn handle_incoming(
             "edit_ts": edit_ts,
             "kind": kind,
             "payload": stored,
-            "windowFocused": focused,
+            "windowFocused": window_focused,
         }),
     );
 
-    if focused {
+    if window_focused {
         return;
     }
     if !should_alert(state).await {
@@ -442,7 +478,6 @@ async fn handle_pull_request(
 
     let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
     {
-        // Encrypt outgoing history with the key for THIS chat.
         let enc = state.encryption.read().await;
         for m in filtered {
             let payload = if !m.plaintext {
@@ -490,7 +525,6 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
     if let Ok(db) = state.active_db().await {
         for m in messages {
             let direction = if m.from == me.id { "out" } else { "in" };
-            // Decrypt with the key for THIS chat.
             let (stored, is_plaintext) = state.decode_from_wire(from, &m.payload).await;
             let read = direction == "out";
             db.upsert_message(

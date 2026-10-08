@@ -26,7 +26,14 @@ export async function login() {
     const password = document.getElementById("pass").value;
     if (!baseUrl || !username || !password) return toast("Please fill in all fields.");
     try {
-        await invoke("connect", { baseUrl, username, password });
+        // Pass the persisted status so the server restores it immediately,
+        // before any message can arrive.
+        await invoke("connect", {
+            baseUrl,
+            username,
+            password,
+            status: state.myStatus,
+        });
     } catch (e) { toast("Login error: " + e); }
 }
 
@@ -59,7 +66,6 @@ export async function openNotes() {
     state.peers.add(NOTES_PEER);
     state.unread[NOTES_PEER] = 0;
     showChatView();
-    // Close the enc panel; it targets the previous chat.
     closeEncPanel();
     void refreshEncryptionStatus(NOTES_PEER);
     try {
@@ -93,7 +99,6 @@ export async function openPeer(peerId) {
     state.peers.add(peerId);
     state.unread[peerId] = 0;
     showChatView();
-    // Close the enc panel; it targets the previous chat.
     closeEncPanel();
     void refreshEncryptionStatus(peerId);
 
@@ -108,6 +113,7 @@ export async function openPeer(peerId) {
     renderSidebar();
     renderMessages();
     autoPull(peerId);
+    // User explicitly clicked this chat — safe to mark as read.
     void sendReadReceipt(peerId);
     void updateBadge();
     closeSidebar();

@@ -151,6 +151,7 @@ pub enum ServerMsg {
     },
     PeerOnline {
         user_id: i64,
+        status: UserStatus,
     },
     PeerOffline {
         user_id: i64,
