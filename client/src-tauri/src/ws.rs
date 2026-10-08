@@ -12,9 +12,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::db::Database;
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
 use crate::sound::play_notification_chirp;
-use crate::state::{user_db_path, AppState, WsSession};
+use crate::state::{user_db_path, AppState, Me, WsSession};
 
-pub const NOTES_PEER: &str = "__notes__";
+pub const NOTES_PEER: i64 = 0;
 
 pub async fn connect(
     state: Arc<AppState>,
@@ -49,7 +49,10 @@ pub async fn connect(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     *state.db.write().await = Some(Arc::new(db));
-    *state.me.write().await = Some(username.clone());
+    *state.me.write().await = Some(Me {
+        id: 0, // placeholder, replaced on AuthOk
+        username: username.clone(),
+    });
     *state.server_url.write().await = Some(base_url.clone());
     *state.my_status.write().await = UserStatus::Online;
 
@@ -94,17 +97,10 @@ pub async fn connect(
                 *ws = None;
             }
         }
-        let _ = reader_state
-            .app
-            .emit("disconnected", json!(reader_username));
+        let _ = reader_state.app.emit("disconnected", json!(reader_username));
     });
 
-    *state.ws.lock().await = Some(WsSession {
-        id: session_id,
-        tx,
-        reader,
-        writer,
-    });
+    *state.ws.lock().await = Some(WsSession { id: session_id, tx, reader, writer });
     Ok(())
 }
 
@@ -140,101 +136,112 @@ fn to_ws_url(base: &str) -> Result<String, String> {
 
 async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     match sm {
-        ServerMsg::AuthOk {
-            username,
-            last_seen,
-        } => {
+        ServerMsg::AuthOk { user_id, username, last_seen } => {
+            *state.me.write().await = Some(Me {
+                id: user_id,
+                username: username.clone(),
+            });
             let _ = state.app.emit(
                 "auth-ok",
-                json!({ "username": username, "last_seen": last_seen }),
+                json!({
+                    "user_id": user_id,
+                    "username": username,
+                    "last_seen": last_seen,
+                }),
             );
         }
+
         ServerMsg::Peers { peers } => {
             let _ = state.app.emit("peers", json!(peers));
         }
+
         ServerMsg::PendingChats { users } => {
             let _ = state.app.emit("pending-chats", json!(users));
         }
-        ServerMsg::PeerOnline { username } => {
-            let _ = state.app.emit("peer-online", json!(username));
+
+        ServerMsg::PeerOnline { user_id } => {
+            let _ = state.app.emit("peer-online", json!({ "user_id": user_id }));
         }
-        ServerMsg::PeerOffline { username } => {
-            let _ = state.app.emit("peer-offline", json!(username));
+
+        ServerMsg::PeerOffline { user_id } => {
+            let _ = state.app.emit("peer-offline", json!({ "user_id": user_id }));
         }
-        ServerMsg::StatusUpdate { username, status } => {
+
+        ServerMsg::StatusUpdate { user_id, status } => {
             let _ = state.app.emit(
                 "status-update",
-                json!({ "username": username, "status": status.as_str() }),
+                json!({ "user_id": user_id, "status": status.as_str() }),
             );
         }
-        ServerMsg::Message {
-            id,
-            from,
-            ts,
-            edit_ts,
-            kind,
-            payload,
-        } => {
-            handle_incoming(
-                state,
-                id,
-                from,
-                ts,
-                edit_ts,
-                kind.as_str().to_string(),
-                payload,
-            )
-            .await;
+
+        ServerMsg::Message { id, from, ts, edit_ts, kind, payload } => {
+            handle_incoming(state, id, from, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-        ServerMsg::NoteMessage {
-            id,
-            ts,
-            edit_ts,
-            kind,
-            payload,
-        } => {
+
+        ServerMsg::NoteMessage { id, ts, edit_ts, kind, payload } => {
             handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-        ServerMsg::PullHistoryRequest {
-            from,
-            since,
-            limit,
-            before,
-        } => {
+
+        ServerMsg::PullHistoryRequest { from, since, limit, before } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
+
         ServerMsg::HistoryResponse { from, messages } => {
             handle_history_response(state, from, messages).await;
         }
+
         ServerMsg::ReadReceipt { from, up_to_ts } => {
             if let Ok(db) = state.active_db().await {
-                db.mark_read_up_to(&from, up_to_ts).await;
+                db.mark_read_up_to(from, up_to_ts).await;
             }
             let _ = state.app.emit(
                 "read-receipt",
                 json!({ "peer": from, "up_to_ts": up_to_ts }),
             );
         }
+
         ServerMsg::Error { msg } => {
+            // Attempt to resolve a pending username lookup from the
+            // canonical "user 'X' does not exist" error.
+            if let Some(name) = msg
+                .strip_prefix("user '")
+                .and_then(|s| s.strip_suffix("' does not exist"))
+            {
+                let mut lookups = state.pending_lookups.lock().await;
+                if let Some(tx) = lookups.remove(name) {
+                    let _ = tx.send(None);
+                }
+            }
             let _ = state.app.emit("error", json!(msg));
         }
+
         ServerMsg::Close { reason } => {
             let _ = state.app.emit("session-closed", json!(reason));
         }
+
         ServerMsg::ChatLeft { peer } => {
-            let _ = state.app.emit("chat-left", json!(peer));
+            let _ = state.app.emit("chat-left", json!({ "peer": peer }));
         }
+
         ServerMsg::Blocked { users } => {
             let _ = state.app.emit("blocked", json!(users));
         }
-        ServerMsg::Profile {
-            username,
-            display_name,
-            avatar,
-        } => {
+
+        ServerMsg::Profile { user_id, username, display_name, avatar } => {
+            if let Ok(db) = state.active_db().await {
+                db.upsert_peer(user_id, &username, display_name.as_deref(), avatar.as_deref())
+                    .await;
+            }
+            {
+                let mut lookups = state.pending_lookups.lock().await;
+                if let Some(tx) = lookups.remove(&username) {
+                    let _ = tx.send(Some(user_id));
+                }
+            }
             let _ = state.app.emit(
                 "profile",
                 json!({
+                    "user_id": user_id,
                     "username": username,
                     "display_name": display_name,
                     "avatar": avatar,
@@ -267,11 +274,27 @@ fn request_attention(state: &Arc<AppState>) {
     });
 }
 
+/// Best-effort lookup of the peer's display label for a notification.
+/// Prefers `display_name`, falls back to `username`, and finally to the raw ID.
+async fn peer_display_label(state: &Arc<AppState>, peer_id: i64) -> String {
+    if let Ok(db) = state.active_db().await {
+        if let Some(p) = db.get_peer(peer_id).await {
+            if let Some(name) = p.display_name.filter(|s| !s.trim().is_empty()) {
+                return name;
+            }
+            if !p.username.is_empty() {
+                return p.username;
+            }
+        }
+    }
+    format!("user #{peer_id}")
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     state: &Arc<AppState>,
     id: String,
-    from: String,
+    from: i64,
     ts: i64,
     edit_ts: i64,
     kind: String,
@@ -281,18 +304,8 @@ async fn handle_incoming(
 
     if let Ok(db) = state.active_db().await {
         // Incoming = not yet read by us.
-        db.upsert_message(
-            &from,
-            &id,
-            "in",
-            ts,
-            edit_ts,
-            &kind,
-            &stored,
-            is_plaintext,
-            false,
-        )
-        .await;
+        db.upsert_message(from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext, false)
+            .await;
     }
 
     let focused = state
@@ -305,8 +318,7 @@ async fn handle_incoming(
         "message",
         json!({
             "id": id,
-            "peer": from,
-            "direction": "in",
+            "from": from,
             "ts": ts,
             "edit_ts": edit_ts,
             "kind": kind,
@@ -324,8 +336,10 @@ async fn handle_incoming(
 
     play_notification_chirp();
 
+    let display = peer_display_label(state, from).await;
+
     let preview = preview_for(&kind, &stored);
-    let title = format!("New message from {from}");
+    let title = format!("New message from {display}");
     let result = state
         .app
         .notification()
@@ -334,16 +348,10 @@ async fn handle_incoming(
         .body(preview.clone())
         .show();
 
-    // If native notifications fail (permission denied, unsupported),
-    // fall back to an in-app banner.
     if result.is_err() {
         let _ = state.app.emit(
             "in-app-notification",
-            json!({
-                "title": title,
-                "body": preview,
-                "peer": from,
-            }),
+            json!({ "title": title, "body": preview, "peer": from }),
         );
     }
 
@@ -386,31 +394,24 @@ async fn handle_note_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(
-            NOTES_PEER,
-            &id,
-            "out",
-            ts,
-            edit_ts,
-            &kind,
-            &stored,
-            is_plaintext,
-            true,
-        )
-        .await;
+        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, &kind, &stored, is_plaintext, true)
+            .await;
     }
     let _ = state.app.emit(
         "note-message",
         json!({
-            "id": id, "peer": NOTES_PEER, "direction": "out",
-            "ts": ts, "edit_ts": edit_ts, "kind": kind, "payload": stored,
+            "id": id,
+            "ts": ts,
+            "edit_ts": edit_ts,
+            "kind": kind,
+            "payload": stored,
         }),
     );
 }
 
 async fn handle_pull_request(
     state: &Arc<AppState>,
-    from: String,
+    from: i64,
     since: i64,
     limit: Option<u32>,
     before: Option<i64>,
@@ -420,8 +421,8 @@ async fn handle_pull_request(
     };
     // Serve the ENTIRE local history (limit=None → LIMIT -1 in SQL, i.e.
     // truly unbounded). The requester applies its own paging.
-    let msgs = db.get_messages(&from, None, None).await;
-    let me = state.me.read().await.clone().unwrap_or_default();
+    let msgs = db.get_messages(from, None, None).await;
+    let Some(me) = state.me.read().await.clone() else { return };
 
     let mut filtered: Vec<_> = msgs
         .into_iter()
@@ -451,9 +452,9 @@ async fn handle_pull_request(
             };
 
             let (from_user, to_user) = if m.direction == "out" {
-                (me.clone(), from.clone())
+                (me.id, from)
             } else {
-                (from.clone(), me.clone())
+                (from, me.id)
             };
 
             let kind = match m.kind.as_str() {
@@ -477,25 +478,22 @@ async fn handle_pull_request(
 
     let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
     if let Some(tx) = tx {
-        let _ = tx.send(ClientMsg::HistoryResponse {
-            to: from,
-            messages: wire,
-        });
+        let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: wire });
     }
 }
 
-async fn handle_history_response(state: &Arc<AppState>, from: String, messages: Vec<StoredMsg>) {
-    let me = state.me.read().await.clone().unwrap_or_default();
+async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec<StoredMsg>) {
+    let Some(me) = state.me.read().await.clone() else { return };
 
     if let Ok(db) = state.active_db().await {
         for m in messages {
-            let direction = if m.from == me { "out" } else { "in" };
+            let direction = if m.from == me.id { "out" } else { "in" };
             let (stored, is_plaintext) = state.decode_from_wire(&m.payload).await;
             // History messages from peer are treated as unread so they
             // contribute to unread badges after a fresh login.
             let read = direction == "out";
             db.upsert_message(
-                &from,
+                from,
                 &m.id,
                 direction,
                 m.ts,
@@ -509,5 +507,5 @@ async fn handle_history_response(state: &Arc<AppState>, from: String, messages: 
         }
     }
 
-    let _ = state.app.emit("history-received", json!(from));
+    let _ = state.app.emit("history-received", json!({ "from": from }));
 }

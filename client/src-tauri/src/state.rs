@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tauri::AppHandle;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::crypto::{build_cipher, Cipher, EncryptionConfig};
@@ -38,18 +39,29 @@ pub struct WsSession {
     pub writer: JoinHandle<()>,
 }
 
+/// The currently logged-in user (id + username).
+#[derive(Clone)]
+pub struct Me {
+    pub id: i64,
+    pub username: String,
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub data_dir: PathBuf,
     /// Base URL of the currently-connected server (used to pick DB file).
     pub server_url: RwLock<Option<String>>,
     pub db: RwLock<Option<Arc<Database>>>,
-    pub me: RwLock<Option<String>>,
+    pub me: RwLock<Option<Me>>,
     pub ws: Mutex<Option<WsSession>>,
     pub encryption: RwLock<EncryptionState>,
     /// My current status.
     pub my_status: RwLock<UserStatus>,
     pub ws_counter: AtomicU64,
+    /// In-flight `resolve_user` lookups keyed by username. When a
+    /// `ServerMsg::Profile` (or matching error) arrives, the sender is
+    /// consumed with the resolved ID (or `None`).
+    pub pending_lookups: Mutex<HashMap<String, oneshot::Sender<Option<i64>>>>,
 }
 
 impl AppState {
@@ -72,6 +84,7 @@ impl AppState {
             encryption: RwLock::new(encryption),
             my_status: RwLock::new(UserStatus::Online),
             ws_counter: AtomicU64::new(1),
+            pending_lookups: Mutex::new(HashMap::new()),
         }
     }
 

@@ -17,42 +17,39 @@ impl Database {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
 
-            CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                last_seen     INTEGER NOT NULL DEFAULT 0,
-                display_name  TEXT,
-                avatar        TEXT
-            );
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    last_seen     INTEGER NOT NULL DEFAULT 0,
+    display_name  TEXT,
+    avatar        TEXT
+);
 
-            CREATE TABLE IF NOT EXISTS relationships (
-                user_a      INTEGER NOT NULL,
-                user_b      INTEGER NOT NULL,
-                initiator   INTEGER NOT NULL,
-                established INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_a, user_b),
-                FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
-            );
+CREATE TABLE IF NOT EXISTS relationships (
+    user_a      INTEGER NOT NULL,
+    user_b      INTEGER NOT NULL,
+    initiator   INTEGER NOT NULL,
+    established INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_a, user_b),
+    FOREIGN KEY (user_a) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_b) REFERENCES users(id) ON DELETE CASCADE
+);
 
-            CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
+CREATE INDEX IF NOT EXISTS idx_rel_user_b ON relationships(user_b);
 
-            CREATE TABLE IF NOT EXISTS blocks (
-                blocker INTEGER NOT NULL,
-                blocked INTEGER NOT NULL,
-                PRIMARY KEY (blocker, blocked),
-                FOREIGN KEY (blocker) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (blocked) REFERENCES users(id) ON DELETE CASCADE
-            );
-            "#,
+CREATE TABLE IF NOT EXISTS blocks (
+    blocker INTEGER NOT NULL,
+    blocked INTEGER NOT NULL,
+    PRIMARY KEY (blocker, blocked),
+    FOREIGN KEY (blocker) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (blocked) REFERENCES users(id) ON DELETE CASCADE
+);
+"#,
         )?;
-        // Best-effort migration for pre-existing DBs.
-        let _ = conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT", []);
-        let _ = conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT", []);
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -68,15 +65,28 @@ impl Database {
         .ok()
     }
 
-    pub async fn get_profile(
-        &self,
-        username: &str,
-    ) -> Option<(i64, Option<String>, Option<String>)> {
+    pub async fn get_user_by_id(&self, user_id: i64) -> Option<(String, String, i64)> {
         let conn = self.conn.lock().await;
         conn.query_row(
-            "SELECT id, display_name, avatar FROM users WHERE username = ?1",
-            [username],
+            "SELECT username, password_hash, last_seen FROM users WHERE id = ?1",
+            [user_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok()
+    }
+
+    pub async fn username(&self, user_id: i64) -> Option<String> {
+        let conn = self.conn.lock().await;
+        conn.query_row("SELECT username FROM users WHERE id = ?1", [user_id], |r| r.get(0))
+            .ok()
+    }
+
+    pub async fn get_profile(&self, user_id: i64) -> Option<(Option<String>, Option<String>)> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT display_name, avatar FROM users WHERE id = ?1",
+            [user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok()
     }
@@ -113,7 +123,10 @@ impl Database {
 
     pub async fn update_last_seen(&self, user_id: i64, ts: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute("UPDATE users SET last_seen = ?1 WHERE id = ?2", params![ts, user_id]);
+        let _ = conn.execute(
+            "UPDATE users SET last_seen = ?1 WHERE id = ?2",
+            params![ts, user_id],
+        );
     }
 
     pub async fn delete_user(&self, user_id: i64) {
@@ -164,35 +177,34 @@ impl Database {
         );
     }
 
-    pub async fn list_peers(&self, user_id: i64) -> Vec<String> {
+    pub async fn list_peers(&self, user_id: i64) -> Vec<i64> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT u.username FROM relationships r \
-             JOIN users u ON u.id = CASE WHEN r.user_a = ?1 THEN r.user_b ELSE r.user_a END \
-             WHERE (r.user_a = ?1 OR r.user_b = ?1) AND r.established = 1",
+            "SELECT CASE WHEN user_a = ?1 THEN user_b ELSE user_a END \
+             FROM relationships \
+             WHERE (user_a = ?1 OR user_b = ?1) AND established = 1",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0));
+        let rows = stmt.query_map([user_id], |r| r.get::<_, i64>(0));
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
     }
 
-    pub async fn list_pending_chats(&self, user_id: i64) -> Vec<String> {
+    pub async fn list_pending_chats(&self, user_id: i64) -> Vec<i64> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT u.username FROM relationships r \
-             JOIN users u ON u.id = r.initiator \
-             WHERE r.established = 0 AND r.initiator != ?1 \
-             AND (r.user_a = ?1 OR r.user_b = ?1)",
+            "SELECT initiator FROM relationships \
+             WHERE established = 0 AND initiator != ?1 \
+             AND (user_a = ?1 OR user_b = ?1)",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0));
+        let rows = stmt.query_map([user_id], |r| r.get::<_, i64>(0));
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
@@ -232,15 +244,13 @@ impl Database {
         .is_ok()
     }
 
-    pub async fn list_blocks(&self, user_id: i64) -> Vec<String> {
+    pub async fn list_blocks(&self, user_id: i64) -> Vec<i64> {
         let conn = self.conn.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT u.username FROM blocks b JOIN users u ON u.id = b.blocked WHERE b.blocker = ?1",
-        ) {
+        let mut stmt = match conn.prepare("SELECT blocked FROM blocks WHERE blocker = ?1") {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0));
+        let rows = stmt.query_map([user_id], |r| r.get::<_, i64>(0));
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),

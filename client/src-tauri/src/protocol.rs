@@ -50,18 +50,24 @@ impl UserStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub id: i64,
+    pub username: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Send {
-        to: String,
+        to: i64,
         id: String,
         ts: i64,
         kind: MessageKind,
         payload: String,
     },
     Edit {
-        to: String,
+        to: i64,
         id: String,
         ts: i64,
         edit_ts: i64,
@@ -76,7 +82,7 @@ pub enum ClientMsg {
         payload: String,
     },
     PullHistory {
-        from: String,
+        from: i64,
         since: i64,
         #[serde(skip_serializing_if = "Option::is_none")]
         limit: Option<u32>,
@@ -84,7 +90,7 @@ pub enum ClientMsg {
         before: Option<i64>,
     },
     HistoryResponse {
-        to: String,
+        to: i64,
         messages: Vec<StoredMsg>,
     },
     ListPending,
@@ -95,17 +101,17 @@ pub enum ClientMsg {
         status: UserStatus,
     },
     LeaveChat {
-        peer: String,
+        peer: i64,
     },
     BlockUser {
-        username: String,
+        user_id: i64,
     },
     UnblockUser {
-        username: String,
+        user_id: i64,
     },
     ListBlocked,
     ReadReceipt {
-        to: String,
+        to: i64,
         up_to_ts: i64,
     },
     GetProfile {
@@ -120,8 +126,8 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMsg {
     pub id: String,
-    pub from: String,
-    pub to: String,
+    pub from: i64,
+    pub to: i64,
     pub ts: i64,
     pub edit_ts: i64,
     #[serde(default)]
@@ -133,28 +139,29 @@ pub struct StoredMsg {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     AuthOk {
+        user_id: i64,
         username: String,
         last_seen: i64,
     },
     Peers {
-        peers: Vec<String>,
+        peers: Vec<PeerInfo>,
     },
     PendingChats {
-        users: Vec<String>,
+        users: Vec<PeerInfo>,
     },
     PeerOnline {
-        username: String,
+        user_id: i64,
     },
     PeerOffline {
-        username: String,
+        user_id: i64,
     },
     StatusUpdate {
-        username: String,
+        user_id: i64,
         status: UserStatus,
     },
     Message {
         id: String,
-        from: String,
+        from: i64,
         ts: i64,
         edit_ts: i64,
         kind: MessageKind,
@@ -168,7 +175,7 @@ pub enum ServerMsg {
         payload: String,
     },
     PullHistoryRequest {
-        from: String,
+        from: i64,
         since: i64,
         #[serde(default)]
         limit: Option<u32>,
@@ -176,11 +183,11 @@ pub enum ServerMsg {
         before: Option<i64>,
     },
     HistoryResponse {
-        from: String,
+        from: i64,
         messages: Vec<StoredMsg>,
     },
     ReadReceipt {
-        from: String,
+        from: i64,
         up_to_ts: i64,
     },
     Error {
@@ -190,12 +197,13 @@ pub enum ServerMsg {
         reason: String,
     },
     ChatLeft {
-        peer: String,
+        peer: i64,
     },
     Blocked {
-        users: Vec<String>,
+        users: Vec<PeerInfo>,
     },
     Profile {
+        user_id: i64,
         username: String,
         #[serde(default)]
         display_name: Option<String>,

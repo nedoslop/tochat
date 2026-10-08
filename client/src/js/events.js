@@ -1,5 +1,5 @@
 import { invoke, listen } from "./api.js";
-import { state, NOTES_PEER, INITIAL_LIMIT, totalUnread } from "./state.js";
+import { state, NOTES_PEER, INITIAL_LIMIT } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
@@ -13,7 +13,7 @@ import { refreshEncryptionStatus } from "./encryption.js";
 
 function applyMyAvatar() {
     const av = document.getElementById("me-avatar");
-    const mine = state.profiles[state.me];
+    const mine = state.profiles[state.meId];
     if (mine && mine.avatar) {
         av.innerHTML = "";
         const img = document.createElement("img");
@@ -23,20 +23,20 @@ function applyMyAvatar() {
         av.appendChild(img);
         av.style.background = "var(--surface-3)";
     } else {
-        av.textContent = initial(state.me);
-        av.style.background = avatarColor(state.me);
+        av.textContent = initial(state.meName);
+        av.style.background = avatarColor(state.meName);
     }
 }
 
-function mergeIntoCache(peer, incoming) {
-    const existing = state.msgCache[peer] || [];
+function mergeIntoCache(peerId, incoming) {
+    const existing = state.msgCache[peerId] || [];
     const byId = new Map();
     for (const m of existing) byId.set(m.id, m);
     for (const m of incoming) byId.set(m.id, m);
     const merged = [...byId.values()].sort(
-        (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts
+        (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts,
     );
-    state.msgCache[peer] = merged;
+    state.msgCache[peerId] = merged;
 }
 
 /**
@@ -45,28 +45,29 @@ function mergeIntoCache(peer, incoming) {
  * we schedule a couple of retries. Each call is a full "give me your
  * newest page" pull; the DB upsert is id-keyed so overlaps are cheap.
  */
-function syncWithPeer(peer, { delay = 0 } = {}) {
-    if (!peer || peer === state.me || peer === NOTES_PEER) return;
-    const run = () => { autoPull(peer); };
+function syncWithPeer(peerId, { delay = 0 } = {}) {
+    if (!peerId || peerId === state.meId || peerId === NOTES_PEER) return;
+    const run = () => { autoPull(peerId); };
     if (delay > 0) setTimeout(run, delay);
     else run();
 }
 
 export async function setupEvents() {
     await listen("auth-ok", async (e) => {
-        state.me = e.payload.username;
+        state.meId = e.payload.user_id;
+        state.meName = e.payload.username;
 
-        document.getElementById("me-name").textContent = state.me;
+        document.getElementById("me-name").textContent = state.meName;
         const av = document.getElementById("me-avatar");
-        av.textContent = initial(state.me);
-        av.style.background = avatarColor(state.me);
+        av.textContent = initial(state.meName);
+        av.style.background = avatarColor(state.meName);
 
         document.getElementById("login-view").hidden = true;
         document.getElementById("app-view").hidden = false;
 
         try {
             const counts = await invoke("get_unread_counts");
-            for (const [peer, n] of counts) state.unread[peer] = n;
+            for (const [peerId, n] of counts) state.unread[peerId] = n;
         } catch (_) {}
 
         renderMyStatus();
@@ -76,36 +77,43 @@ export async function setupEvents() {
         void updateBadge();
     });
 
-    await listen("peers", (e) => {
-        for (const p of e.payload) state.peers.add(p);
-        renderSidebar();
-        (async () => {
-            for (const p of e.payload) {
-                try {
-                    const msgs = await invoke("get_messages", {
-                        peer: p, beforeTs: null, limit: INITIAL_LIMIT,
-                    });
-                    mergeIntoCache(p, msgs);
-                } catch (_) {}
-                if (!state.profiles[p]) {
-                    invoke("get_profile", { username: p }).catch(() => {});
-                }
-                // Fire a sync for every peer in the list. If the peer is
-                // currently offline, the server's "peer is offline" error
-                // is suppressed by the error handler below, and PeerOnline
-                // will trigger a retry when they come back.
-                syncWithPeer(p);
+    await listen("peers", async (e) => {
+        for (const info of e.payload) {
+            state.peers.add(info.id);
+            state.nameToId.set(info.username, info.id);
+            if (!state.profiles[info.id]) {
+                state.profiles[info.id] = {
+                    username: info.username,
+                    display_name: null,
+                    avatar: null,
+                };
             }
-            renderSidebar();
-        })();
+        }
+        renderSidebar();
+
+        for (const info of e.payload) {
+            try {
+                const msgs = await invoke("get_messages", {
+                    peer: info.id, beforeTs: null, limit: INITIAL_LIMIT,
+                });
+                mergeIntoCache(info.id, msgs);
+            } catch (_) {}
+            syncWithPeer(info.id);
+        }
+        renderSidebar();
     });
 
     await listen("pending-chats", (e) => {
         state.pending.clear();
-        for (const p of e.payload) {
-            if (!state.peers.has(p)) state.pending.add(p);
-            if (!state.profiles[p]) {
-                invoke("get_profile", { username: p }).catch(() => {});
+        for (const info of e.payload) {
+            if (!state.peers.has(info.id)) state.pending.add(info.id);
+            state.nameToId.set(info.username, info.id);
+            if (!state.profiles[info.id]) {
+                state.profiles[info.id] = {
+                    username: info.username,
+                    display_name: null,
+                    avatar: null,
+                };
             }
         }
         renderSidebar();
@@ -114,15 +122,16 @@ export async function setupEvents() {
 
     await listen("blocked", (e) => {
         state.blocked.clear();
-        for (const p of e.payload) state.blocked.add(p);
+        for (const info of e.payload) state.blocked.add(info.id);
         renderSidebar();
     });
 
     await listen("profile", (e) => {
-        const { username, display_name, avatar } = e.payload;
-        if (!username) return;
-        state.profiles[username] = { display_name, avatar };
-        if (username === state.me) applyMyAvatar();
+        const { user_id, username, display_name, avatar } = e.payload;
+        if (!user_id) return;
+        state.profiles[user_id] = { username, display_name, avatar };
+        state.nameToId.set(username, user_id);
+        if (user_id === state.meId) applyMyAvatar();
         renderSidebar();
     });
 
@@ -130,51 +139,47 @@ export async function setupEvents() {
     // peer-online: fires when a peer (re)connects. This is the ONLY
     // reliable trigger for history sync in the offline→online case.
     //
-    // The server now emits this on EVERY new session (not just the first
-    // one), so a stale session entry from a silent disconnect can no
-    // longer suppress the notification.
+    // The server emits it on EVERY new session, so a stale session entry
+    // from a silent disconnect can no longer suppress the notification.
     //
-    // We schedule three attempts (0 ms, 500 ms, 2500 ms) to cover the
-    // race window in which the server has registered the peer's session
-    // but the peer's own reader loop isn't draining yet.
+    // We schedule three attempts (0 ms, 500 ms, 2500 ms) to cover the race
+    // window in which the server has registered the peer's session but the
+    // peer's own reader loop isn't draining yet.
     // ---------------------------------------------------------------------
     await listen("peer-online", (e) => {
-        const name = e.payload;
-        state.online.add(name);
-        state.peerStatus[name] = state.peerStatus[name] || "online";
-        state.peers.add(name);
+        const id = e.payload.user_id;
+        state.online.add(id);
+        state.peerStatus[id] = state.peerStatus[id] || "online";
         renderSidebar();
 
-        syncWithPeer(name);
-        syncWithPeer(name, { delay: 500 });
-        syncWithPeer(name, { delay: 2500 });
+        syncWithPeer(id);
+        syncWithPeer(id, { delay: 500 });
+        syncWithPeer(id, { delay: 2500 });
 
-        if (state.currentPeer === name) {
-            refreshReadState(name).then(() => {
-                if (state.currentPeer === name) void sendReadReceipt(name);
+        if (state.currentPeer === id) {
+            refreshReadState(id).then(() => {
+                if (state.currentPeer === id) void sendReadReceipt(id);
             });
-        }
-        if (!state.profiles[name]) {
-            invoke("get_profile", { username: name }).catch(() => {});
         }
     });
 
     await listen("peer-offline", (e) => {
-        state.online.delete(e.payload);
-        delete state.peerStatus[e.payload];
+        const id = e.payload.user_id;
+        state.online.delete(id);
+        delete state.peerStatus[id];
         renderSidebar();
     });
 
     await listen("status-update", (e) => {
-        const { username, status } = e.payload;
-        state.peerStatus[username] = status;
-        if (status === "invisible") state.online.delete(username);
-        else state.online.add(username);
+        const { user_id, status } = e.payload;
+        state.peerStatus[user_id] = status;
+        if (status === "invisible") state.online.delete(user_id);
+        else state.online.add(user_id);
         renderSidebar();
     });
 
     await listen("chat-left", (e) => {
-        const peer = e.payload;
+        const peer = e.payload.peer;
         state.peers.delete(peer);
         state.pending.delete(peer);
         delete state.msgCache[peer];
@@ -182,33 +187,38 @@ export async function setupEvents() {
         delete state.mightHaveMore[peer];
         delete state.lastPullLimit[peer];
         state.unread[peer] = 0;
-        if (state.currentPeer === peer) { state.currentPeer = null; renderMessages(); }
+        if (state.currentPeer === peer) {
+            state.currentPeer = null;
+            renderMessages();
+        }
         renderSidebar();
         void updateBadge();
         toast(`Chat with ${peer} was closed.`);
     });
 
     await listen("message", (e) => {
-        const m = e.payload;
-        state.pending.delete(m.peer);
-        state.peers.add(m.peer);
+        const m = e.payload; // { id, from, ts, edit_ts, kind, payload }
+        const peerId = m.from;
+        state.pending.delete(peerId);
+        state.peers.add(peerId);
 
-        if (!state.msgCache[m.peer]) state.msgCache[m.peer] = [];
-        const idx = state.msgCache[m.peer].findIndex((x) => x.id === m.id);
-
+        if (!state.msgCache[peerId]) state.msgCache[peerId] = [];
+        const idx = state.msgCache[peerId].findIndex((x) => x.id === m.id);
         const entry = {
-            id: m.id, direction: m.direction, ts: m.ts, edit_ts: m.edit_ts,
-            kind: m.kind, payload: m.payload, read: m.direction === "out",
+            id: m.id,
+            direction: "in",
+            ts: m.ts,
+            edit_ts: m.edit_ts,
+            kind: m.kind,
+            payload: m.payload,
+            read: false,
         };
+        if (idx >= 0) state.msgCache[peerId][idx] = entry;
+        else state.msgCache[peerId].push(entry);
 
-        if (idx >= 0) state.msgCache[m.peer][idx] = entry;
-        else state.msgCache[m.peer].push(entry);
-
-        const isInbound = m.direction === "in";
-        const isOpen = state.currentPeer === m.peer;
-
-        if (isInbound && !isOpen) {
-            state.unread[m.peer] = (state.unread[m.peer] || 0) + 1;
+        const isOpen = state.currentPeer === peerId;
+        if (!isOpen) {
+            state.unread[peerId] = (state.unread[peerId] || 0) + 1;
             void updateBadge();
         }
 
@@ -216,11 +226,11 @@ export async function setupEvents() {
         renderPendingList();
         if (isOpen) {
             renderMessages();
-            void sendReadReceipt(m.peer);
+            void sendReadReceipt(peerId);
         }
     });
 
-    await listen("note-message", async (e) => {
+    await listen("note-message", async () => {
         state.peers.add(NOTES_PEER);
         try {
             state.msgCache[NOTES_PEER] = await invoke("get_messages", {
@@ -245,7 +255,7 @@ export async function setupEvents() {
     });
 
     await listen("history-received", async (e) => {
-        const peer = e.payload;
+        const peer = e.payload.from;
 
         try {
             const latest = await invoke("get_messages", {
@@ -274,8 +284,8 @@ export async function setupEvents() {
 
         try {
             const counts = await invoke("get_unread_counts");
-            const map = Object.fromEntries(counts);
-            state.unread[peer] = map[peer] || 0;
+            const map = Object.fromEntries(counts.map(([id, n]) => [String(id), n]));
+            state.unread[peer] = map[String(peer)] || 0;
             void updateBadge();
         } catch (_) {}
 
@@ -295,12 +305,10 @@ export async function setupEvents() {
 
     await listen("error", (e) => {
         const msg = String(e.payload);
-        const m = msg.match(/^peer (.+?) is offline/);
+        const m = msg.match(/^peer (\d+) is offline/);
         if (m) {
-            // Swallow. This is an expected condition during the
-            // offline→online handshake window; PeerOnline will retrigger.
-            state.pulling.delete(m[1]);
-            state.loadingOlder.delete(m[1]);
+            const id = Number(m[1]);
+            state.loadingOlder.delete(id);
             state.suppressScrollLoad = false;
             return;
         }
@@ -318,7 +326,10 @@ export async function setupEvents() {
             try { await invoke("wipe_local_data"); } catch (_) {}
             await refreshEncryptionStatus();
         } else if (reason === "session_taken_over") {
-            await showAlert("You were signed in from another window or device. This session has been closed.", { title: "Session closed" });
+            await showAlert(
+                "You were signed in from another window or device. This session has been closed.",
+                { title: "Session closed" },
+            );
         } else {
             await showAlert("The server closed this session.", { title: "Session closed" });
         }
@@ -327,7 +338,7 @@ export async function setupEvents() {
     });
 
     await listen("disconnected", () => {
-        if (state.me) resetToLogin();
+        if (state.meId) resetToLogin();
     });
 }
 

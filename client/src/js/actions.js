@@ -70,53 +70,74 @@ export async function openNotes() {
     void updateBadge();
 }
 
-export async function openPeer(peer) {
-    if (!peer) return;
-    if (peer === state.me) return toast("You can't chat with yourself.");
-    if (state.blocked.has(peer)) {
+/**
+ * Open a chat given a numeric peer ID.
+ */
+export async function openPeer(peerId) {
+    if (peerId === null || peerId === undefined) return;
+    if (peerId === state.meId) return toast("You can't chat with yourself.");
+    if (state.blocked.has(peerId)) {
         const unblock = await showConfirm(
-            `${displayName(peer)} is blocked. Unblock to open the chat?`,
+            `${displayName(peerId)} is blocked. Unblock to open the chat?`,
             { title: "Blocked user", okText: "Unblock" },
         );
         if (!unblock) return;
-        try { await invoke("unblock_user", { username: peer }); } catch (e) {
-            toast("Unblock error: " + e); return;
-        }
-        state.blocked.delete(peer);
+        try { await invoke("unblock_user", { userId: peerId }); }
+        catch (e) { toast("Unblock error: " + e); return; }
+        state.blocked.delete(peerId);
     }
 
-    state.pending.delete(peer);
-    state.currentPeer = peer;
-    state.peers.add(peer);
-    state.unread[peer] = 0;
+    state.pending.delete(peerId);
+    state.currentPeer = peerId;
+    state.peers.add(peerId);
+    state.unread[peerId] = 0;
     showChatView();
 
     try {
-        state.msgCache[peer] = await invoke("get_messages", {
-            peer, beforeTs: null, limit: INITIAL_LIMIT,
+        state.msgCache[peerId] = await invoke("get_messages", {
+            peer: peerId, beforeTs: null, limit: INITIAL_LIMIT,
         });
     } catch (_) {
-        state.msgCache[peer] = state.msgCache[peer] || [];
-    }
-
-    if (!state.profiles[peer]) {
-        try { await invoke("get_profile", { username: peer }); } catch (_) {}
+        state.msgCache[peerId] = state.msgCache[peerId] || [];
     }
 
     renderSidebar();
     renderMessages();
-    autoPull(peer);
-    void sendReadReceipt(peer);
+    autoPull(peerId);
+    void sendReadReceipt(peerId);
     void updateBadge();
     closeSidebar();
 }
 
-export async function acceptPending(peer) {
-    state.pending.delete(peer);
-    state.peers.add(peer);
+/**
+ * Resolve a typed-in username and open the chat. Used by the "Start chat"
+ * box. The server responds with the resolved ID; the local `peers` table
+ * is also populated as a side effect (via the `profile` event).
+ */
+export async function openPeerByName(username) {
+    if (!username) return;
+    if (username === state.meName) return toast("You can't chat with yourself.");
+    const cached = state.nameToId.get(username);
+    if (cached !== undefined) return openPeer(cached);
+    try {
+        const id = await invoke("resolve_user", { username });
+        // Seed profile so the sidebar can render the name immediately.
+        if (!state.profiles[id]) {
+            state.profiles[id] = { username, display_name: null, avatar: null };
+        }
+        state.nameToId.set(username, id);
+        await openPeer(id);
+    } catch (e) {
+        toast(String(e));
+    }
+}
+
+export async function acceptPending(peerId) {
+    state.pending.delete(peerId);
+    state.peers.add(peerId);
     renderSidebar();
     renderPendingList();
-    await openPeer(peer);
+    await openPeer(peerId);
 }
 
 export async function refreshPending() {
@@ -124,15 +145,15 @@ export async function refreshPending() {
     catch (e) { toast("Refresh pending error: " + e); }
 }
 
-function mergeSent(peer, msg) {
-    const cache = state.msgCache[peer] || (state.msgCache[peer] = []);
+function mergeSent(peerId, msg) {
+    const cache = state.msgCache[peerId] || (state.msgCache[peerId] = []);
     const idx = cache.findIndex((x) => x.id === msg.id);
     if (idx >= 0) cache[idx] = msg;
     else cache.push(msg);
 }
 
 export async function send() {
-    if (!state.currentPeer) return;
+    if (state.currentPeer === null) return;
     const input = document.getElementById("msg");
     const text = input.value;
     if (!text.trim()) return;
@@ -154,7 +175,7 @@ export async function send() {
 
 export async function sendMedia(kind, payload) {
     const peer = state.currentPeer;
-    if (!peer) return;
+    if (peer === null) return;
     try {
         const msg = await invoke("send_media", { to: peer, kind, payload });
         if (peer !== NOTES_PEER) {
@@ -220,7 +241,7 @@ export async function sendFile(file) {
 
 export async function editMessage(id) {
     const peer = state.currentPeer;
-    if (!peer) return;
+    if (peer === null) return;
     const msg = (state.msgCache[peer] || []).find((m) => m.id === id);
     const currentText = msg ? msg.payload : "";
 
@@ -240,7 +261,7 @@ export async function editMessage(id) {
 
 export async function deleteMessage(id) {
     const peer = state.currentPeer;
-    if (!peer) return;
+    if (peer === null) return;
     const ok = await showConfirm("Delete this message?", {
         title: "Delete message", okText: "Delete", danger: true,
     });
@@ -256,7 +277,7 @@ export async function deleteMessage(id) {
 
 export async function clearChat() {
     const peer = state.currentPeer;
-    if (!peer) return;
+    if (peer === null) return;
     if (peer === NOTES_PEER) {
         const ok = await showConfirm("Clear all notes on this device?", {
             title: "Clear notes", okText: "Clear", danger: true,
@@ -286,7 +307,7 @@ export async function clearChat() {
 
 export async function leaveChat() {
     const peer = state.currentPeer;
-    if (!peer || peer === NOTES_PEER) return;
+    if (peer === null || peer === NOTES_PEER) return;
     const ok = await showConfirm(
         `Leave the chat with ${displayName(peer)}? Both sides will lose the relationship and local history will be deleted on your side.`,
         { title: "Leave chat", okText: "Leave", danger: true },
@@ -298,14 +319,14 @@ export async function leaveChat() {
 
 export async function blockUser() {
     const peer = state.currentPeer;
-    if (!peer || peer === NOTES_PEER) return;
+    if (peer === null || peer === NOTES_PEER) return;
     const ok = await showConfirm(
         `Block ${displayName(peer)}? They won't be able to send you messages.`,
         { title: "Block user", okText: "Block", danger: true },
     );
     if (!ok) return;
     try {
-        await invoke("block_user", { username: peer });
+        await invoke("block_user", { userId: peer });
         state.blocked.add(peer);
         state.peers.delete(peer);
         state.pending.delete(peer);
@@ -320,8 +341,8 @@ export async function blockUser() {
 // ---------- read receipts ----------
 
 export async function sendReadReceipt(peer) {
-    if (!peer || peer === NOTES_PEER) return;
-    if (!state.me) return;
+    if (peer === null || peer === NOTES_PEER) return;
+    if (!state.meId) return;
     const upTo = latestInboundTs(peer);
     if (upTo <= 0) return;
     try {
@@ -336,7 +357,7 @@ export async function sendReadReceipt(peer) {
 }
 
 export async function refreshReadState(peer) {
-    if (!peer || peer === NOTES_PEER) return;
+    if (peer === null || peer === NOTES_PEER) return;
     try {
         const latest = await invoke("get_messages", {
             peer, beforeTs: null, limit: INITIAL_LIMIT,
@@ -348,7 +369,7 @@ export async function refreshReadState(peer) {
         for (const m of existing) byId.set(m.id, m);
         for (const m of latest) byId.set(m.id, m);
         state.msgCache[peer] = [...byId.values()].sort(
-            (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts
+            (a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts,
         );
         if (state.currentPeer === peer) renderMessages();
     } catch (_) {}
@@ -373,10 +394,8 @@ export async function refreshReadState(peer) {
  * a message the other has never seen.
  */
 export async function autoPull(peer) {
-    if (!peer || peer === state.me || peer === NOTES_PEER) return;
+    if (peer === null || peer === state.meId || peer === NOTES_PEER) return;
     try {
-        // Cheap local warm-up: don't await network, just make sure the
-        // cache exists so the UI shows something while the sync flies.
         if (!state.msgCache[peer]) {
             state.msgCache[peer] = await invoke("get_messages", {
                 peer, beforeTs: null, limit: INITIAL_LIMIT,
@@ -392,7 +411,7 @@ export async function autoPull(peer) {
 
 export async function loadOlder() {
     const peer = state.currentPeer;
-    if (!peer || peer === NOTES_PEER) return;
+    if (peer === null || peer === NOTES_PEER) return;
     if (state.loadingOlder.has(peer)) return;
     if (state.mightHaveMore[peer] === false) return;
 
@@ -410,7 +429,10 @@ export async function loadOlder() {
         });
         if (older.length > 0) {
             const existing = new Set((state.msgCache[peer] || []).map((m) => m.id));
-            const merged = [...older.filter((m) => !existing.has(m.id)), ...(state.msgCache[peer] || [])];
+            const merged = [
+                ...older.filter((m) => !existing.has(m.id)),
+                ...(state.msgCache[peer] || []),
+            ];
             merged.sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
             state.msgCache[peer] = merged;
             renderMessages(true);
@@ -430,13 +452,6 @@ export async function loadOlder() {
         toast("Load older error: " + e);
         renderMessages();
     }
-}
-
-export function lastReceivedEditTs(peer) {
-    const msgs = state.msgCache[peer] || [];
-    let max = 0;
-    for (const m of msgs) if (m.direction === "in" && m.edit_ts > max) max = m.edit_ts;
-    return max;
 }
 
 // ---------- badge ----------
