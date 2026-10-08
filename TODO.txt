@@ -1,7 +1,3 @@
 (Some of them may be already implemented, but untested)
  - Android/IOS support (better adaptive UI?)
- - Make a proper pending requests tab (DO NOT ADD ALL PENDING REQUESTS TO CHATS WHEN CLICKING ON THIS TAB)
- - Make other cool tabs like blocked users tab with releted actions
- - When no chat is selected, do not show chat typing text box
- - Custom media files: show filename; allow to download files (ensure custom files also supported). also maybe make a better look on audio player, add image viewer somehow???
  - What to do when system notifications are disabled???

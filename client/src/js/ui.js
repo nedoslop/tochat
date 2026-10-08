@@ -39,10 +39,6 @@ export function renderMyStatus() {
   document.getElementById("me-status-label").textContent = state.myStatus;
 }
 
-/**
- * Renders either a profile-picture <img> or an initial-letter text node
- * into `el`, based on `state.profiles[id].avatar`.
- */
 function renderAvatar(el, peerId, fallbackText) {
   const img = avatarFor(peerId);
   el.innerHTML = "";
@@ -50,6 +46,7 @@ function renderAvatar(el, peerId, fallbackText) {
     const i = document.createElement("img");
     i.src = img;
     i.alt = "";
+    i.draggable = false;
     i.className = "avatar-img";
     el.appendChild(i);
     el.style.background = "var(--surface-3)";
@@ -67,8 +64,6 @@ export function renderSidebar() {
   const peersEl = document.getElementById("peers");
   peersEl.innerHTML = "";
 
-  // Only established chats live in the sidebar. Pending requests live
-  // exclusively in the pending view; blocked users in the blocked view.
   const all = new Set(state.peers);
   if (state.meId) all.add(NOTES_PEER);
 
@@ -293,6 +288,34 @@ function emptyState(icon, title, sub) {
   return d;
 }
 
+/** Builds a "filename + download" caption row. */
+function captionEl(name, downloadFn) {
+  const cap = document.createElement("div");
+  cap.className = "msg-caption";
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "caption-name";
+  nameEl.textContent = name;
+  nameEl.title = name;
+  cap.appendChild(nameEl);
+
+  if (downloadFn) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "caption-dl";
+    btn.title = "Download";
+    btn.textContent = "⬇";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      downloadFn();
+    });
+    cap.appendChild(btn);
+  }
+
+  return cap;
+}
+
 /** Builds the custom audio player element for a data-URL audio message. */
 function audioPlayerEl(src) {
   const wrap = document.createElement("div");
@@ -317,6 +340,16 @@ function audioPlayerEl(src) {
   const time = document.createElement("span");
   time.className = "audio-time";
   time.textContent = "0:00";
+
+  const vol = document.createElement("input");
+  vol.type = "range";
+  vol.min = "0";
+  vol.max = "1";
+  vol.step = "0.01";
+  vol.value = "1";
+  vol.className = "audio-volume";
+  vol.title = "Volume";
+  vol.setAttribute("aria-label", "Volume");
 
   playBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -350,10 +383,14 @@ function audioPlayerEl(src) {
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     audio.currentTime = pct * audio.duration;
   });
+  vol.addEventListener("input", () => {
+    audio.volume = Number(vol.value);
+  });
 
   wrap.appendChild(playBtn);
   wrap.appendChild(track);
   wrap.appendChild(time);
+  wrap.appendChild(vol);
   wrap.appendChild(audio);
   return wrap;
 }
@@ -374,7 +411,12 @@ function messageEl(m, isNotes, isFresh = false) {
   if (deleted) {
     body.textContent = "(deleted)";
   } else if (m.kind === "image") {
-    if (!/^data:image\//i.test(m.payload)) {
+    const info = parseFilePayload(m.payload);
+    const dataUrl = info.data;
+    const ext = extFromDataUrl(dataUrl) || "png";
+    const name = info.name || ("image." + ext);
+
+    if (!/^data:image\//i.test(dataUrl)) {
       const err = document.createElement("div");
       err.className = "msg-image-error";
       err.textContent = "🔒 Cannot display image — encryption key mismatch?";
@@ -382,8 +424,9 @@ function messageEl(m, isNotes, isFresh = false) {
     } else {
       const img = document.createElement("img");
       img.className = "msg-image";
-      img.src = m.payload;
-      img.alt = "image";
+      img.src = dataUrl;
+      img.alt = name;
+      img.draggable = false;
       img.loading = "lazy";
       img.addEventListener("error", () => {
         body.innerHTML = "";
@@ -392,22 +435,29 @@ function messageEl(m, isNotes, isFresh = false) {
         err.textContent = "⚠️ Image failed to load.";
         body.appendChild(err);
       });
-      img.addEventListener("click", () => openImageViewer(m.payload));
+      img.addEventListener("click", () => openImageViewer(dataUrl, name));
       body.appendChild(img);
+
+      const cap = captionEl(name, () => downloadDataUrl(dataUrl, name));
+      body.appendChild(cap);
     }
   } else if (m.kind === "audio") {
-    const wrap = document.createElement("div");
-    wrap.className = "msg-audio-wrap";
-    wrap.appendChild(audioPlayerEl(m.payload));
-    body.appendChild(wrap);
+    const info = parseFilePayload(m.payload);
+    const dataUrl = info.data;
+    const ext = extFromDataUrl(dataUrl) || "mp3";
+    const name = info.name || ("audio." + ext);
+
+    body.appendChild(audioPlayerEl(dataUrl));
+    body.appendChild(captionEl(name, () => downloadDataUrl(dataUrl, name)));
   } else if (m.kind === "file") {
     const info = parseFilePayload(m.payload);
+    const name = info.name || "file";
     const a = document.createElement("a");
     a.className = "msg-file";
     a.href = info.data;
-    a.download = info.name || "file";
+    a.download = name;
     a.rel = "noopener";
-    a.title = "Download " + (info.name || "file");
+    a.title = "Download " + name;
 
     const icon = document.createElement("span");
     icon.className = "file-icon";
@@ -417,7 +467,7 @@ function messageEl(m, isNotes, isFresh = false) {
     meta.className = "file-meta";
     const nameEl = document.createElement("span");
     nameEl.className = "file-name";
-    nameEl.textContent = info.name || "file";
+    nameEl.textContent = name;
     meta.appendChild(nameEl);
     if (info.size) {
       const sizeEl = document.createElement("span");
@@ -434,13 +484,9 @@ function messageEl(m, isNotes, isFresh = false) {
     a.appendChild(meta);
     a.appendChild(dl);
 
-    // Explicit programmatic download — this is robust in the Tauri
-    // webview even when the <a download> attribute is ignored.
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
-      const ext = extFromDataUrl(info.data);
-      const filename = info.name || ("file" + (ext ? "." + ext : ""));
-      downloadDataUrl(info.data, filename);
+      downloadDataUrl(info.data, name);
     });
 
     body.appendChild(a);
@@ -587,18 +633,24 @@ export function latestInboundTs(peer) {
 
 // ---------- Image viewer ----------
 
-export function openImageViewer(src) {
+let viewerDownloadFn = null;
+
+export function openImageViewer(src, name) {
   const v = document.getElementById("image-viewer");
   const img = document.getElementById("image-viewer-img");
   const dl = document.getElementById("image-viewer-download");
   img.src = src;
+  img.draggable = false;
   v.hidden = false;
+
+  const ext = extFromDataUrl(src) || "png";
+  const filename = name || ("image." + ext);
+  viewerDownloadFn = () => downloadDataUrl(src, filename);
 
   if (dl) {
     dl.onclick = (ev) => {
       ev.stopPropagation();
-      const ext = extFromDataUrl(src) || "png";
-      downloadDataUrl(src, `image.${ext}`);
+      if (viewerDownloadFn) viewerDownloadFn();
     };
   }
 }
@@ -608,4 +660,5 @@ export function closeImageViewer() {
   const img = document.getElementById("image-viewer-img");
   img.src = "";
   v.hidden = true;
+  viewerDownloadFn = null;
 }

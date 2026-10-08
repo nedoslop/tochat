@@ -22,10 +22,6 @@ import { setupEvents } from "./events.js";
 
 // ---------- profile modal ----------
 
-// pendingAvatar semantics:
-//   undefined → user didn't touch the avatar; keep whatever we have.
-//   null      → user removed the avatar; send null.
-//   string    → new avatar data URL to send.
 let pendingAvatar = undefined;
 
 function openProfileModal() {
@@ -184,10 +180,10 @@ async function dispatchFiles(files) {
     try {
       if (kind === "image") {
         const dataUrl = await readAsDataUrl(file);
-        await sendImage(dataUrl);
+        await sendImage(dataUrl, file.name);
       } else if (kind === "audio") {
         const dataUrl = await readAsDataUrl(file);
-        await sendAudio(dataUrl);
+        await sendAudio(dataUrl, file.name);
       } else {
         await sendFile(file);
       }
@@ -216,7 +212,7 @@ function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
     try {
       const dataUrl = await readAsDataUrl(file);
       if (!dataUrl.startsWith("data:")) return;
-      onPayload(dataUrl);
+      onPayload(dataUrl, file.name);
     } catch (e) { toast("Failed to read file: " + e); }
   });
 }
@@ -294,13 +290,13 @@ async function init() {
     buttonId: "attach-image-btn",
     inputId: "image-input",
     kind: "image",
-    onPayload: (d) => sendImage(d),
+    onPayload: (d, name) => sendImage(d, name),
   });
   wireFilePicker({
     buttonId: "attach-audio-btn",
     inputId: "audio-input",
     kind: "audio",
-    onPayload: (d) => sendAudio(d),
+    onPayload: (d, name) => sendAudio(d, name),
   });
 
   {
@@ -325,7 +321,6 @@ async function init() {
   document.getElementById("blocked-btn").onclick = () => { showBlockedView(); refreshBlocked(); };
   document.getElementById("blocked-back-btn").onclick = () => showChatView();
 
-  // Hamburger / sidebar drawer (mobile).
   document.getElementById("hamburger-btn").onclick = openSidebar;
   document.getElementById("sidebar-backdrop").onclick = closeSidebar;
 
@@ -352,7 +347,6 @@ async function init() {
   document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
   document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
 
-  // Profile modal wiring.
   const profileModal = document.getElementById("profile-modal");
   const profileAvatarInput = document.getElementById("profile-avatar-input");
   document.getElementById("profile-cancel").onclick = closeProfileModal;
@@ -385,7 +379,6 @@ async function init() {
     if (ev.target === profileModal) closeProfileModal();
   });
 
-  // Image viewer.
   document.getElementById("image-viewer").addEventListener("click", (ev) => {
     if (
       ev.target.id === "image-viewer" ||

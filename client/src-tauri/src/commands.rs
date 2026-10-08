@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use serde_json::json;
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 
 use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
@@ -586,6 +588,55 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         let mut map = state.encryption.write().await;
         map.clear();
     }
+    Ok(())
+}
+
+// ---------- file saving ----------
+
+/// Decodes `data:<mime>;base64,<payload>` into raw bytes.
+fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
+    let rest = url
+        .strip_prefix("data:")
+        .ok_or_else(|| "not a data url".to_string())?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| "malformed data url".to_string())?;
+    if !meta.ends_with(";base64") {
+        return Err("only base64 data urls are supported".to_string());
+    }
+    STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("base64 decode error: {e}"))
+}
+
+/// Opens a native "save file" dialog and writes the decoded data-URL bytes
+/// to the chosen path. Silently no-ops if the user cancels the dialog.
+#[tauri::command]
+pub async fn save_data_url(
+    data_url: String,
+    suggested_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let bytes = decode_data_url(&data_url)?;
+    let name = suggested_name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "download".to_string());
+
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&name)
+        .save_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+
+    let picked = rx.await.map_err(|_| "dialog cancelled".to_string())?;
+    let Some(path) = picked else {
+        // User pressed Cancel — not an error.
+        return Ok(());
+    };
+    let path_buf = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path_buf, bytes).map_err(|e| format!("write failed: {e}"))?;
     Ok(())
 }
 

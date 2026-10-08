@@ -17,6 +17,7 @@ use crate::state::{read_theme, AppState};
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -60,6 +61,7 @@ fn main() {
             commands::resolve_user,
             commands::get_peer,
             commands::list_local_peers,
+            commands::save_data_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
