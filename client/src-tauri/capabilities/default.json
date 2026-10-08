@@ -17,6 +17,7 @@
     "core:resources:default",
     "core:menu:default",
     "core:tray:default",
-    "notification:default"
+    "notification:default",
+    "dialog:default"
   ]
 }

@@ -1,3 +1,5 @@
+import { invoke } from "./api.js";
+
 export function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
@@ -59,22 +61,25 @@ export function formatDuration(seconds) {
 }
 
 /**
- * Parses a `file`-kind payload. New messages use JSON:
+ * Parses a media/file payload. New payloads use JSON:
  *   {"name": "...", "size": 1234, "data": "data:..."}
- * Old messages (or unexpected shapes) fall back to a plain data URL.
+ * Old payloads (or plain data URLs) fall back gracefully.
+ *
+ * `name` is `null` when no explicit name was stored — callers choose a
+ * sensible default based on the message kind.
  */
 export function parseFilePayload(payload) {
   try {
     const v = JSON.parse(payload);
     if (v && typeof v === "object" && typeof v.data === "string") {
       return {
-        name: typeof v.name === "string" && v.name ? v.name : "file",
+        name: typeof v.name === "string" && v.name ? v.name : null,
         size: typeof v.size === "number" ? v.size : null,
         data: v.data,
       };
     }
   } catch (_) {}
-  return { name: "file", size: null, data: payload };
+  return { name: null, size: null, data: payload };
 }
 
 /** Approximate decoded size (bytes) of a base64 data URL. */
@@ -120,19 +125,30 @@ export function extFromDataUrl(dataUrl) {
 }
 
 /**
- * Triggers a browser/Tauri download for a `data:` URL.
- * The `download` attribute is honoured by the Tauri webview.
+ * Native download via Tauri's save dialog. Falls back to a plain
+ * `<a download>` anchor if the Tauri command isn't available.
  */
-export function downloadDataUrl(dataUrl, filename) {
+export async function downloadDataUrl(dataUrl, filename) {
   try {
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = filename || "download";
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    await invoke("save_data_url", {
+      dataUrl,
+      suggestedName: filename || "download",
+    });
+    return true;
   } catch (e) {
-    console.error("download failed", e);
+    console.warn("[downloadDataUrl] native save failed, falling back:", e);
+    try {
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename || "download";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return true;
+    } catch (e2) {
+      console.error("[downloadDataUrl] fallback failed:", e2);
+      return false;
+    }
   }
 }

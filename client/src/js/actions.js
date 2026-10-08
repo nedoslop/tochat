@@ -1,6 +1,6 @@
 import { invoke } from "./api.js";
 import { state, resetState, NOTES_PEER, INITIAL_LIMIT, totalUnread, displayName } from "./state.js";
-import { toast, dataUrlBytes } from "./utils.js";
+import { toast, dataUrlBytes, extFromDataUrl } from "./utils.js";
 import { showConfirm, showPrompt } from "./dialog.js";
 import {
   renderSidebar, renderMessages, renderPendingList, renderBlockedList, showChatView,
@@ -240,12 +240,27 @@ async function compressImage(dataUrl, maxDim = 1280, quality = 0.85) {
   }
 }
 
-export async function sendImage(dataUrl) {
-  const compressed = await compressImage(dataUrl);
-  await sendMedia("image", compressed);
+/** Swaps the file extension of `name` to match what's inside `dataUrl`. */
+function alignExtension(name, dataUrl, fallbackExt) {
+  const ext = extFromDataUrl(dataUrl) || fallbackExt;
+  if (!name) return "file." + ext;
+  const dot = name.lastIndexOf(".");
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  return `${base}.${ext}`;
 }
 
-export async function sendAudio(dataUrl) { await sendMedia("audio", dataUrl); }
+export async function sendImage(dataUrl, originalName) {
+  const compressed = await compressImage(dataUrl);
+  const name = alignExtension(originalName, compressed, "jpg");
+  const payload = JSON.stringify({ name, data: compressed });
+  await sendMedia("image", payload);
+}
+
+export async function sendAudio(dataUrl, originalName) {
+  const name = alignExtension(originalName, dataUrl, "mp3");
+  const payload = JSON.stringify({ name, data: dataUrl });
+  await sendMedia("audio", payload);
+}
 
 export async function sendFile(file) {
   const dataUrl = await new Promise((resolve, reject) => {
