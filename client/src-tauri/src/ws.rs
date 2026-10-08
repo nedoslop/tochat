@@ -95,13 +95,27 @@ pub async fn connect(
                 _ => {}
             }
         }
-        {
+
+        // IMPORTANT: only announce the disconnect if THIS session was the
+        // currently-active one. When `connect` is called while an older
+        // session is still winding down (normal re-login, or the brief
+        // window during shutdown), that older reader exits here *after*
+        // `state.ws` has already been replaced with the new session. If
+        // we blindly emitted `disconnected`, the JS side would call
+        // `resetToLogin()` and kick the user straight back to the login
+        // screen — the "sign in, then 1 s later signed out" symptom.
+        let was_current = {
             let mut ws = reader_state.ws.lock().await;
             if ws.as_ref().map(|s| s.id == session_id).unwrap_or(false) {
                 *ws = None;
+                true
+            } else {
+                false
             }
+        };
+        if was_current {
+            let _ = reader_state.app.emit("disconnected", json!(reader_username));
         }
-        let _ = reader_state.app.emit("disconnected", json!(reader_username));
     });
 
     *state.ws.lock().await = Some(WsSession { id: session_id, tx, reader, writer });
