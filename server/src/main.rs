@@ -24,6 +24,7 @@ async fn main() {
     let state = AppState {
         db,
         online: Arc::new(DashMap::new()),
+        user_status: Arc::new(DashMap::new()),
     };
 
     let app = Router::new()

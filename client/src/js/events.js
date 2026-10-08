@@ -1,5 +1,5 @@
 import { invoke, listen } from "./api.js";
-import { state, NOTES_PEER, INITIAL_LIMIT } from "./state.js";
+import { state, NOTES_PEER, INITIAL_LIMIT, persistMyStatus } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
@@ -50,6 +50,15 @@ function syncWithPeer(peerId, { delay = 0 } = {}) {
     const run = () => { autoPull(peerId); };
     if (delay > 0) setTimeout(run, delay);
     else run();
+}
+
+/**
+ * Returns true iff the main window is actually in front of the user.
+ * Delegates to Rust so we correctly exclude minimized windows.
+ */
+async function windowIsFocused() {
+    try { return await invoke("is_window_focused"); }
+    catch (_) { return false; }
 }
 
 export async function setupEvents() {
@@ -136,20 +145,18 @@ export async function setupEvents() {
     });
 
     // ---------------------------------------------------------------------
-    // peer-online: fires when a peer (re)connects. This is the ONLY
-    // reliable trigger for history sync in the offline→online case.
+    // peer-online: fires when a peer (re)connects.
     //
-    // The server emits it on EVERY new session, so a stale session entry
-    // from a silent disconnect can no longer suppress the notification.
-    //
-    // We schedule three attempts (0 ms, 500 ms, 2500 ms) to cover the race
-    // window in which the server has registered the peer's session but the
-    // peer's own reader loop isn't draining yet.
+    // The `status` field tells us whether they're actually online, busy,
+    // away, or invisible. `invisible` means they connect but want to be
+    // shown as offline — respect that here, exactly as StatusUpdate does.
     // ---------------------------------------------------------------------
     await listen("peer-online", (e) => {
         const id = e.payload.user_id;
-        state.online.add(id);
-        state.peerStatus[id] = state.peerStatus[id] || "online";
+        const status = e.payload.status || "online";
+        state.peerStatus[id] = status;
+        if (status === "invisible") state.online.delete(id);
+        else state.online.add(id);
         renderSidebar();
 
         syncWithPeer(id);
@@ -158,7 +165,10 @@ export async function setupEvents() {
 
         if (state.currentPeer === id) {
             refreshReadState(id).then(() => {
-                if (state.currentPeer === id) void sendReadReceipt(id);
+                if (state.currentPeer !== id) return;
+                windowIsFocused().then((focused) => {
+                    if (focused && state.currentPeer === id) void sendReadReceipt(id);
+                });
             });
         }
     });
@@ -172,6 +182,13 @@ export async function setupEvents() {
 
     await listen("status-update", (e) => {
         const { user_id, status } = e.payload;
+        // Our own status can change from another device — mirror it into
+        // local state (JS + Rust) so the badge and `should_alert` agree.
+        if (user_id === state.meId) {
+            state.myStatus = status;
+            persistMyStatus(status);
+            renderMyStatus();
+        }
         state.peerStatus[user_id] = status;
         if (status === "invisible") state.online.delete(user_id);
         else state.online.add(user_id);
@@ -197,7 +214,7 @@ export async function setupEvents() {
     });
 
     await listen("message", (e) => {
-        const m = e.payload; // { id, from, ts, edit_ts, kind, payload }
+        const m = e.payload;
         const peerId = m.from;
         state.pending.delete(peerId);
         state.peers.add(peerId);
@@ -211,13 +228,13 @@ export async function setupEvents() {
             edit_ts: m.edit_ts,
             kind: m.kind,
             payload: m.payload,
-            read: false,
+            read: !!m.windowFocused && state.currentPeer === peerId,
         };
         if (idx >= 0) state.msgCache[peerId][idx] = entry;
         else state.msgCache[peerId].push(entry);
 
         const isOpen = state.currentPeer === peerId;
-        if (!isOpen) {
+        if (!isOpen || !m.windowFocused) {
             state.unread[peerId] = (state.unread[peerId] || 0) + 1;
             void updateBadge();
         }
@@ -226,7 +243,12 @@ export async function setupEvents() {
         renderPendingList();
         if (isOpen) {
             renderMessages();
-            void sendReadReceipt(peerId);
+            // CRITICAL: only auto-mark as read if the window is actually
+            // in front of the user. Otherwise a backgrounded (or minimized)
+            // window silently clears the "new message" badge for the sender.
+            if (m.windowFocused) {
+                void sendReadReceipt(peerId);
+            }
         }
     });
 
@@ -296,7 +318,8 @@ export async function setupEvents() {
             if (wasLoadingOlder) {
                 requestAnimationFrame(() => { state.suppressScrollLoad = false; });
             } else {
-                void sendReadReceipt(peer);
+                const focused = await windowIsFocused();
+                if (focused) void sendReadReceipt(peer);
             }
         } else {
             state.suppressScrollLoad = false;

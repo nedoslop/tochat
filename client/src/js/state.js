@@ -1,6 +1,21 @@
 export const NOTES_PEER = 0;
 export const INITIAL_LIMIT = 50;
 
+const STATUS_KEY = "chat_my_status";
+const VALID_STATUS = new Set(["online", "away", "busy", "invisible"]);
+
+function loadMyStatus() {
+    try {
+        const s = localStorage.getItem(STATUS_KEY);
+        if (s && VALID_STATUS.has(s)) return s;
+    } catch (_) { /* localStorage unavailable */ }
+    return "online";
+}
+
+export function persistMyStatus(status) {
+    try { localStorage.setItem(STATUS_KEY, status); } catch (_) {}
+}
+
 export const state = {
     // Logged-in user (id + username). Populated on auth-ok.
     meId: null,
@@ -30,7 +45,8 @@ export const state = {
     // id -> unread count
     unread: {},
 
-    myStatus: "online",
+    // Persisted across restarts so `busy` survives reconnects.
+    myStatus: loadMyStatus(),
 
     // id -> bool
     mightHaveMore: {},

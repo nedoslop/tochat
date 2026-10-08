@@ -1,5 +1,5 @@
 import { invoke } from "./api.js";
-import { state, NOTES_PEER } from "./state.js";
+import { state, NOTES_PEER, persistMyStatus } from "./state.js";
 import { toast } from "./utils.js";
 import {
     register, login, send, logout, reloadUI, deleteAccount,
@@ -88,14 +88,9 @@ async function saveProfile() {
     const hint = document.getElementById("profile-hint");
     const name = document.getElementById("profile-name").value.trim();
 
-    // Always send BOTH fields with their current value. The server does a
-    // full replace, so a missing field would wipe the column.
     const currentAvatar = state.profiles[state.meId]?.avatar ?? null;
     const avatarToSend = pendingAvatar === undefined ? currentAvatar : pendingAvatar;
 
-    // NOTE: Tauri 2 converts Rust snake_case param names to camelCase for
-    // JS. `display_name` in Rust → `displayName` in JS. Sending
-    // `display_name` would be silently ignored (or default to None).
     const payload = {
         displayName: name || null,
         avatar: avatarToSend,
@@ -103,8 +98,6 @@ async function saveProfile() {
 
     try {
         await invoke("set_profile", payload);
-        // Optimistic local update; the server also echoes the authoritative
-        // value back through the "profile" event.
         state.profiles[state.meId] = {
             username: state.meName,
             display_name: name || null,
@@ -499,6 +492,15 @@ async function init() {
 
     window.addEventListener("beforeunload", () => { try { invoke("disconnect"); } catch (_) {} });
 
+    // When the window regains focus, flush read receipts for the chat the
+    // user is currently looking at. Covers the "minimized, messages arrived,
+    // user restores the window" path.
+    window.addEventListener("focus", () => {
+        const peer = state.currentPeer;
+        if (peer === null || peer === NOTES_PEER) return;
+        void import("./actions.js").then((m) => m.sendReadReceipt(peer));
+    });
+
     installScrollPagination();
     installDragDrop();
 
@@ -514,6 +516,7 @@ async function cycleMyStatus() {
     const idx = STATUS_CYCLE.indexOf(state.myStatus);
     const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
     state.myStatus = next;
+    persistMyStatus(next);
     renderMyStatus();
     try { await invoke("set_status", { status: next }); }
     catch (e) { toast("Status error: " + e); }

@@ -129,8 +129,12 @@ pub enum ServerMsg {
     PendingChats {
         users: Vec<PeerInfo>,
     },
+    /// Peer became reachable. `status` carries the peer's current status so
+    /// the receiver can render `busy` / `away` correctly right away instead
+    /// of assuming `online`.
     PeerOnline {
         user_id: i64,
+        status: UserStatus,
     },
     PeerOffline {
         user_id: i64,

@@ -19,6 +19,10 @@ pub struct AppState {
     pub db: Database,
     /// Per-user list of active sessions (multi-device).
     pub online: Arc<DashMap<i64, Vec<OnlineSession>>>,
+    /// Last known status per user. Persists across session disconnects so a
+    /// user who was Busy stays Busy after reconnecting — without relying on
+    /// the client to re-announce it. Cleared only on process restart.
+    pub user_status: Arc<DashMap<i64, UserStatus>>,
 }
 
 impl AppState {
@@ -27,6 +31,14 @@ impl AppState {
             .get(&user_id)
             .map(|v| !v.is_empty())
             .unwrap_or(false)
+    }
+
+    /// Returns the current status for `user_id`, defaulting to Online.
+    pub fn status_of(&self, user_id: i64) -> UserStatus {
+        self.user_status
+            .get(&user_id)
+            .map(|v| *v)
+            .unwrap_or(UserStatus::Online)
     }
 
     /// Send `msg` to every session of `user_id`. Returns # of sessions reached.

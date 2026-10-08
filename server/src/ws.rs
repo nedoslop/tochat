@@ -13,7 +13,7 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::protocol::{ClientMsg, MessageKind, PeerInfo, ServerMsg, StoredMsg, UserStatus};
+use crate::protocol::{ClientMsg, MessageKind, PeerInfo, ServerMsg, StoredMsg};
 use crate::state::{AppState, OnlineSession};
 use crate::util::{hash_password, now_ms};
 
@@ -69,14 +69,17 @@ async fn handle_socket(
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Register the session. The `_was_empty` return is deliberately ignored —
-    // we announce presence on every new session regardless (see below).
+    // Inherit the last known status for this user. This is what makes
+    // "I was Busy, closed the app, reopened it" survive: the server still
+    // remembers Busy, so peers see Busy immediately when we reconnect.
+    let initial_status = state.status_of(user_id);
+
     let _was_empty = state.add_session(
         user_id,
         OnlineSession {
             tx: tx.clone(),
             session_id,
-            status: UserStatus::Online,
+            status: initial_status,
         },
     );
 
@@ -86,6 +89,13 @@ async fn handle_socket(
         user_id,
         username: username.clone(),
         last_seen,
+    });
+
+    // Echo our own status back so the client can sync its UI (e.g. if the
+    // user changed status on another device while we were offline).
+    let _ = tx.send(ServerMsg::StatusUpdate {
+        user_id,
+        status: initial_status,
     });
 
     if let Some((dn, av)) = state.db.get_profile(user_id).await {
@@ -114,10 +124,9 @@ async fn handle_socket(
     // Ship each known peer's profile so the sidebar is fully populated
     // before the client even renders.
     for p in peers.iter().chain(pending.iter()).chain(blocked.iter()) {
-        if let (Some(name), Some((dn, av))) = (
-            state.db.username(*p).await,
-            state.db.get_profile(*p).await,
-        ) {
+        if let (Some(name), Some((dn, av))) =
+            (state.db.username(*p).await, state.db.get_profile(*p).await)
+        {
             let _ = tx.send(ServerMsg::Profile {
                 user_id: *p,
                 username: name,
@@ -127,22 +136,26 @@ async fn handle_socket(
         }
     }
 
-    // Announce presence to peers on EVERY new session.
-    //
-    // Peers rely on PeerOnline as the trigger to pull history. If we only
-    // announced on "first session", a stale entry left behind by a silent
-    // disconnect (network drop, kill -9) would make the reconnect look like
-    // a second session and peers would never hear about it, so
-    // offline-sent messages would never sync. Duplicate PeerOnline events
-    // are harmless: the client reacts by firing an id-keyed history pull.
+    // Announce presence to peers on EVERY new session, with the current
+    // status attached so peers don't flash "online" for a Busy/Away user.
     for p in &peers {
-        state.send_to_user(*p, ServerMsg::PeerOnline { user_id });
+        state.send_to_user(
+            *p,
+            ServerMsg::PeerOnline {
+                user_id,
+                status: initial_status,
+            },
+        );
     }
 
-    // Tell the newly-connected client which of its peers are online now.
+    // Tell the newly-connected client which of its peers are online now
+    // (and with which status).
     for p in &peers {
         if state.is_online(*p) {
-            let _ = tx.send(ServerMsg::PeerOnline { user_id: *p });
+            let _ = tx.send(ServerMsg::PeerOnline {
+                user_id: *p,
+                status: state.status_of(*p),
+            });
         }
     }
 
@@ -195,6 +208,9 @@ async fn handle_socket(
         for p in &peers {
             state.send_to_user(*p, ServerMsg::PeerOffline { user_id });
         }
+        // NOTE: we intentionally keep `user_status[user_id]` around so that
+        // the next reconnect can restore the same status without the client
+        // having to re-announce it.
     }
 }
 
@@ -206,25 +222,49 @@ async fn handle_client(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     match cm {
-        ClientMsg::Send { to, id, ts, kind, payload } => {
-            handle_send(me_id, to, id, ts, kind, payload, state, tx).await
-        }
+        ClientMsg::Send {
+            to,
+            id,
+            ts,
+            kind,
+            payload,
+        } => handle_send(me_id, to, id, ts, kind, payload, state, tx).await,
 
-        ClientMsg::Edit { to, id, ts, edit_ts, kind, payload } => {
-            handle_edit(me_id, to, id, ts, edit_ts, kind, payload, state, tx).await
-        }
+        ClientMsg::Edit {
+            to,
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => handle_edit(me_id, to, id, ts, edit_ts, kind, payload, state, tx).await,
 
-        ClientMsg::SendToSelf { id, ts, edit_ts, kind, payload } => {
+        ClientMsg::SendToSelf {
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
             state.send_to_user_except(
                 me_id,
                 session_id,
-                ServerMsg::NoteMessage { id, ts, edit_ts, kind, payload },
+                ServerMsg::NoteMessage {
+                    id,
+                    ts,
+                    edit_ts,
+                    kind,
+                    payload,
+                },
             );
         }
 
-        ClientMsg::PullHistory { from, since, limit, before } => {
-            handle_pull_history(me_id, from, since, limit, before, state, tx).await
-        }
+        ClientMsg::PullHistory {
+            from,
+            since,
+            limit,
+            before,
+        } => handle_pull_history(me_id, from, since, limit, before, state, tx).await,
 
         ClientMsg::HistoryResponse { to, messages } => {
             handle_history_response(me_id, to, messages, state).await
@@ -242,14 +282,33 @@ async fn handle_client(
         }
 
         ClientMsg::SetStatus { status } => {
+            // Authoritative per-user status; survives reconnects.
+            state.user_status.insert(me_id, status);
             if let Some(mut sessions) = state.online.get_mut(&me_id) {
                 for s in sessions.iter_mut() {
-                    if s.session_id == session_id {
-                        s.status = status;
-                    }
+                    s.status = status;
                 }
             }
-            broadcast_status(state, me_id, status).await;
+            // Broadcast to peers.
+            let peers = state.db.list_peers(me_id).await;
+            for p in &peers {
+                state.send_to_user(
+                    *p,
+                    ServerMsg::StatusUpdate {
+                        user_id: me_id,
+                        status,
+                    },
+                );
+            }
+            // Mirror to our own other sessions (multi-device).
+            state.send_to_user_except(
+                me_id,
+                session_id,
+                ServerMsg::StatusUpdate {
+                    user_id: me_id,
+                    status,
+                },
+            );
         }
 
         ClientMsg::LeaveChat { peer } => handle_leave_chat(me_id, peer, state, tx).await,
@@ -269,7 +328,13 @@ async fn handle_client(
             if state.db.is_blocked(to, me_id).await {
                 return;
             }
-            state.send_to_user(to, ServerMsg::ReadReceipt { from: me_id, up_to_ts });
+            state.send_to_user(
+                to,
+                ServerMsg::ReadReceipt {
+                    from: me_id,
+                    up_to_ts,
+                },
+            );
         }
 
         ClientMsg::GetProfile { username } => {
@@ -289,7 +354,10 @@ async fn handle_client(
             }
         }
 
-        ClientMsg::SetProfile { display_name, avatar } => {
+        ClientMsg::SetProfile {
+            display_name,
+            avatar,
+        } => {
             state
                 .db
                 .set_profile(me_id, display_name.as_deref(), avatar.as_deref())
@@ -322,13 +390,6 @@ async fn handle_client(
     }
 }
 
-async fn broadcast_status(state: &AppState, me_id: i64, status: UserStatus) {
-    let peers = state.db.list_peers(me_id).await;
-    for p in &peers {
-        state.send_to_user(*p, ServerMsg::StatusUpdate { user_id: me_id, status });
-    }
-}
-
 /// Broadcast PeerOnline to both sides of a peer pair.
 ///
 /// IMPORTANT: the "are they online?" check is on the SUBJECT of each
@@ -338,10 +399,22 @@ async fn broadcast_status(state: &AppState, me_id: i64, status: UserStatus) {
 /// get a "peer offline" error.
 async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
     if state.is_online(me_id) {
-        state.send_to_user(to_id, ServerMsg::PeerOnline { user_id: me_id });
+        state.send_to_user(
+            to_id,
+            ServerMsg::PeerOnline {
+                user_id: me_id,
+                status: state.status_of(me_id),
+            },
+        );
     }
     if state.is_online(to_id) {
-        state.send_to_user(me_id, ServerMsg::PeerOnline { user_id: to_id });
+        state.send_to_user(
+            me_id,
+            ServerMsg::PeerOnline {
+                user_id: to_id,
+                status: state.status_of(to_id),
+            },
+        );
     }
 }
 
@@ -356,15 +429,21 @@ async fn handle_send(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     if me_id == to_id {
-        let _ = tx.send(ServerMsg::Error { msg: "cannot send to yourself".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "cannot send to yourself".into(),
+        });
         return;
     }
     if payload.is_empty() {
-        let _ = tx.send(ServerMsg::Error { msg: "empty message".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "empty message".into(),
+        });
         return;
     }
     if state.db.username(to_id).await.is_none() {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} does not exist", to_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} does not exist", to_id),
+        });
         return;
     }
 
@@ -390,7 +469,14 @@ async fn handle_send(
     if deliverable {
         state.send_to_user(
             to_id,
-            ServerMsg::Message { id, from: me_id, ts, edit_ts: ts, kind, payload },
+            ServerMsg::Message {
+                id,
+                from: me_id,
+                ts,
+                edit_ts: ts,
+                kind,
+                payload,
+            },
         );
     }
 }
@@ -411,19 +497,31 @@ async fn handle_edit(
         return;
     }
     if state.db.username(to_id).await.is_none() {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} does not exist", to_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} does not exist", to_id),
+        });
         return;
     }
     if state.db.is_blocked(to_id, me_id).await {
         return;
     }
-    let established = matches!(state.db.get_relationship(me_id, to_id).await, Some((_, true)));
+    let established = matches!(
+        state.db.get_relationship(me_id, to_id).await,
+        Some((_, true))
+    );
     if !established {
         return;
     }
     state.send_to_user(
         to_id,
-        ServerMsg::Message { id, from: me_id, ts, edit_ts, kind, payload },
+        ServerMsg::Message {
+            id,
+            from: me_id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        },
     );
 }
 
@@ -437,23 +535,33 @@ async fn handle_pull_history(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     if me_id == from_id {
-        let _ = tx.send(ServerMsg::Error { msg: "cannot pull from yourself".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "cannot pull from yourself".into(),
+        });
         return;
     }
     if state.db.username(from_id).await.is_none() {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} does not exist", from_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} does not exist", from_id),
+        });
         return;
     }
     if state.db.is_blocked(from_id, me_id).await {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} has blocked you", from_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} has blocked you", from_id),
+        });
         return;
     }
     let Some((initiator_id, established)) = state.db.get_relationship(me_id, from_id).await else {
-        let _ = tx.send(ServerMsg::Error { msg: format!("no chat with user {}", from_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("no chat with user {}", from_id),
+        });
         return;
     };
     if !established && initiator_id != from_id {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} has not messaged you", from_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} has not messaged you", from_id),
+        });
         return;
     }
     if !state.is_online(from_id) {
@@ -464,7 +572,12 @@ async fn handle_pull_history(
     }
     state.send_to_user(
         from_id,
-        ServerMsg::PullHistoryRequest { from: me_id, since, limit, before },
+        ServerMsg::PullHistoryRequest {
+            from: me_id,
+            since,
+            limit,
+            before,
+        },
     );
 }
 
@@ -489,7 +602,13 @@ async fn handle_history_response(
             notify_peer_pair(state, me_id, to_id).await;
         }
     }
-    state.send_to_user(to_id, ServerMsg::HistoryResponse { from: me_id, messages });
+    state.send_to_user(
+        to_id,
+        ServerMsg::HistoryResponse {
+            from: me_id,
+            messages,
+        },
+    );
 }
 
 async fn handle_leave_chat(
@@ -499,7 +618,9 @@ async fn handle_leave_chat(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     if state.db.username(peer_id).await.is_none() {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} does not exist", peer_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} does not exist", peer_id),
+        });
         return;
     }
     state.db.delete_relationship(me_id, peer_id).await;
@@ -517,12 +638,16 @@ async fn handle_block(
         return;
     }
     if state.db.username(target_id).await.is_none() {
-        let _ = tx.send(ServerMsg::Error { msg: format!("user {} does not exist", target_id) });
+        let _ = tx.send(ServerMsg::Error {
+            msg: format!("user {} does not exist", target_id),
+        });
         return;
     }
     state.db.add_block(me_id, target_id).await;
     let ids = state.db.list_blocks(me_id).await;
-    let _ = tx.send(ServerMsg::Blocked { users: resolve_peers(state, &ids).await });
+    let _ = tx.send(ServerMsg::Blocked {
+        users: resolve_peers(state, &ids).await,
+    });
     let _ = tx.send(ServerMsg::ChatLeft { peer: target_id });
     state.send_to_user(target_id, ServerMsg::ChatLeft { peer: me_id });
 }
@@ -538,7 +663,9 @@ async fn handle_unblock(
     }
     state.db.remove_block(me_id, target_id).await;
     let ids = state.db.list_blocks(me_id).await;
-    let _ = tx.send(ServerMsg::Blocked { users: resolve_peers(state, &ids).await });
+    let _ = tx.send(ServerMsg::Blocked {
+        users: resolve_peers(state, &ids).await,
+    });
 }
 
 async fn handle_delete_account(
@@ -548,18 +675,26 @@ async fn handle_delete_account(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     let Some((_name, h, _)) = state.db.get_user_by_id(me_id).await else {
-        let _ = tx.send(ServerMsg::Error { msg: "unknown user".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "unknown user".into(),
+        });
         return;
     };
     if h != hash_password(password) {
-        let _ = tx.send(ServerMsg::Error { msg: "invalid password".into() });
+        let _ = tx.send(ServerMsg::Error {
+            msg: "invalid password".into(),
+        });
         return;
     }
     let peers = state.db.list_peers(me_id).await;
     state.db.delete_user(me_id).await;
     state.online.remove(&me_id);
+    state.user_status.remove(&me_id);
     for p in peers {
         state.send_to_user(p, ServerMsg::PeerOffline { user_id: me_id });
     }
-    let _ = tx.send(ServerMsg::Close { reason: "account_deleted".into() });
+    let _ = tx.send(ServerMsg::Close {
+        reason: "account_deleted".into(),
+    });
 }
+

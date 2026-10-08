@@ -30,6 +30,7 @@ fn main() {
             commands::register,
             commands::connect,
             commands::disconnect,
+            commands::is_window_focused,
             commands::send_message,
             commands::send_media,
             commands::edit_message,

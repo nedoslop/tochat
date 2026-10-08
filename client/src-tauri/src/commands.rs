@@ -41,16 +41,24 @@ pub async fn connect(
     base_url: String,
     username: String,
     password: String,
+    status: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let st = state.inner().clone();
-    ws::connect(st, base_url, username, password).await
+    let s = UserStatus::parse(&status);
+    ws::connect(st, base_url, username, password, s).await
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let st = state.inner().clone();
     ws::disconnect(&st).await
+}
+
+/// Returns true iff the main window is visible AND focused.
+#[tauri::command]
+pub fn is_window_focused(app: tauri::AppHandle) -> bool {
+    crate::ws::is_window_focused(&app)
 }
 
 // ---------- username resolution ----------
@@ -574,7 +582,6 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         let path = user_db_path(&state.data_dir, &m.username, &url);
         let _ = std::fs::remove_file(&path);
     }
-    // Encryption lives in the (now wiped) DB, so just drop the cache.
     {
         let mut map = state.encryption.write().await;
         map.clear();
@@ -590,9 +597,6 @@ pub struct EncryptionInfo {
     pub has_secret: bool,
 }
 
-/// Returns the encryption config **for a specific chat**.
-/// `peer` is the user id of the other side, or `NOTES_PEER` for the notes
-/// chat. There is no global encryption setting.
 #[tauri::command]
 pub async fn get_encryption(
     peer: i64,
@@ -606,7 +610,6 @@ pub async fn get_encryption(
     })
 }
 
-/// Sets the encryption config **for a specific chat**.
 #[tauri::command]
 pub async fn set_encryption(
     peer: i64,
@@ -617,7 +620,6 @@ pub async fn set_encryption(
     let m = EncryptionMethod::parse(&method);
     let mut secret = secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
-    // Empty secret + same method → keep the existing secret.
     if secret.is_none() {
         let map = state.encryption.read().await;
         let existing = map.get_config(peer);
@@ -643,11 +645,9 @@ pub async fn set_encryption(
 
     let config = EncryptionConfig { method: m, secret: secret.clone() };
 
-    // Persist (DB is the source of truth; the in-memory map is a cache).
     let db = state.active_db().await?;
     db.set_encryption(peer, m.as_str(), secret.as_deref()).await;
 
-    // Update the cache.
     let mut map = state.encryption.write().await;
     map.set(peer, config);
     Ok(())
