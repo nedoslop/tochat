@@ -3,7 +3,7 @@ import { state, NOTES_PEER } from "./state.js";
 import { toast } from "./utils.js";
 import {
     register, login, send, logout, reloadUI, deleteAccount,
-    openPeer, openNotes, editMessage, deleteMessage,
+    openPeer, openNotes, openPeerByName, editMessage, deleteMessage,
     acceptPending, refreshPending, clearChat, leaveChat, blockUser,
     loadOlder, sendImage, sendAudio, sendFile, updateBadge,
     openSidebar, closeSidebar,
@@ -34,7 +34,7 @@ function openProfileModal() {
     const phEl = document.getElementById("profile-avatar-placeholder");
     const hint = document.getElementById("profile-hint");
 
-    const mine = state.profiles[state.me] || {};
+    const mine = state.profiles[state.meId] || {};
     nameInput.value = mine.display_name || "";
     pendingAvatar = undefined;
     hint.hidden = true;
@@ -46,7 +46,7 @@ function openProfileModal() {
     } else {
         imgEl.hidden = true;
         phEl.hidden = false;
-        phEl.textContent = (state.me || "?").charAt(0).toUpperCase();
+        phEl.textContent = (state.meName || "?").charAt(0).toUpperCase();
     }
     modal.hidden = false;
     requestAnimationFrame(() => nameInput.focus());
@@ -90,7 +90,7 @@ async function saveProfile() {
 
     // Always send BOTH fields with their current value. The server does a
     // full replace, so a missing field would wipe the column.
-    const currentAvatar = state.profiles[state.me]?.avatar ?? null;
+    const currentAvatar = state.profiles[state.meId]?.avatar ?? null;
     const avatarToSend = pendingAvatar === undefined ? currentAvatar : pendingAvatar;
 
     // NOTE: Tauri 2 converts Rust snake_case param names to camelCase for
@@ -105,7 +105,8 @@ async function saveProfile() {
         await invoke("set_profile", payload);
         // Optimistic local update; the server also echoes the authoritative
         // value back through the "profile" event.
-        state.profiles[state.me] = {
+        state.profiles[state.meId] = {
+            username: state.meName,
             display_name: name || null,
             avatar: avatarToSend,
         };
@@ -242,13 +243,13 @@ function installDragDrop() {
     };
 
     window.addEventListener("dragenter", (e) => {
-        if (!state.currentPeer) return;
+        if (state.currentPeer === null) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
         dragDepth++; showOverlay();
     });
     window.addEventListener("dragover", (e) => {
-        if (!state.currentPeer) return;
+        if (state.currentPeer === null) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
@@ -259,7 +260,7 @@ function installDragDrop() {
         if (dragDepth === 0) hideOverlay();
     });
     window.addEventListener("drop", (e) => {
-        if (!state.currentPeer) return;
+        if (state.currentPeer === null) return;
         if (!hasFiles(e)) return;
         e.preventDefault();
         dragDepth = 0; hideOverlay();
@@ -274,7 +275,7 @@ function installScrollPagination() {
     if (!el) return;
     el.addEventListener("scroll", () => {
         if (state.suppressScrollLoad) return;
-        if (!state.currentPeer || state.currentPeer === NOTES_PEER) return;
+        if (state.currentPeer === null || state.currentPeer === NOTES_PEER) return;
         if (state.loadingOlder.has(state.currentPeer)) return;
         if (state.mightHaveMore[state.currentPeer] === false) return;
         if (el.scrollTop < 80) loadOlder();
@@ -348,7 +349,7 @@ async function init() {
         const m = document.getElementById("chat-menu");
         const wasHidden = m.hidden;
         closeAllMenus();
-        if (!state.currentPeer) return;
+        if (state.currentPeer === null) return;
         m.hidden = !wasHidden;
     };
     document.getElementById("clear-chat-btn").onclick = () => { closeAllMenus(); clearChat(); };
@@ -366,7 +367,7 @@ async function init() {
         document.getElementById("profile-avatar-img").hidden = true;
         const ph = document.getElementById("profile-avatar-placeholder");
         ph.hidden = false;
-        ph.textContent = (state.me || "?").charAt(0).toUpperCase();
+        ph.textContent = (state.meName || "?").charAt(0).toUpperCase();
     };
     document.getElementById("profile-delete").onclick = () => {
         closeProfileModal();
@@ -399,7 +400,10 @@ async function init() {
 
     document.getElementById("new-peer-btn").onclick = () => {
         const p = document.getElementById("new-peer").value.trim();
-        if (p) { openPeer(p); document.getElementById("new-peer").value = ""; }
+        if (p) {
+            void openPeerByName(p);
+            document.getElementById("new-peer").value = "";
+        }
     };
 
     const msgInput = document.getElementById("msg");
@@ -431,7 +435,10 @@ async function init() {
     document.getElementById("new-peer").addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             const p = e.target.value.trim();
-            if (p) { openPeer(p); e.target.value = ""; }
+            if (p) {
+                void openPeerByName(p);
+                e.target.value = "";
+            }
         }
     });
 
@@ -448,10 +455,10 @@ async function init() {
     document.getElementById("peers").addEventListener("click", (e) => {
         const el = e.target.closest("[data-peer]");
         if (!el) return;
-        const peer = el.dataset.peer;
-        if (peer === NOTES_PEER) openNotes();
-        else if (state.pending.has(peer)) acceptPending(peer);
-        else openPeer(peer);
+        const peerId = Number(el.dataset.peer);
+        if (peerId === NOTES_PEER) openNotes();
+        else if (state.pending.has(peerId)) acceptPending(peerId);
+        else openPeer(peerId);
     });
 
     document.getElementById("messages").addEventListener("click", (e) => {
@@ -467,7 +474,7 @@ async function init() {
     document.getElementById("pending-list").addEventListener("click", (e) => {
         const btn = e.target.closest("[data-accept]");
         if (!btn) return;
-        acceptPending(btn.dataset.accept);
+        acceptPending(Number(btn.dataset.accept));
     });
 
     document.getElementById("enc-btn").onclick = (ev) => {

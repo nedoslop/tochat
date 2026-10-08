@@ -23,14 +23,14 @@ export function renderMyStatus() {
 
 /**
  * Renders either a profile-picture <img> or an initial-letter text node
- * into `el`, based on `state.profiles[username].avatar`.
+ * into `el`, based on `state.profiles[id].avatar`.
  *
  * NOTE: do NOT touch `el.textContent` in the image branch — assigning to
  * textContent replaces every child node (including the freshly appended
  * <img>), which was silently wiping all avatars.
  */
-function renderAvatar(el, username, fallbackText) {
-    const img = avatarFor(username);
+function renderAvatar(el, peerId, fallbackText) {
+    const img = avatarFor(peerId);
     el.innerHTML = "";
     if (img) {
         const i = document.createElement("img");
@@ -44,12 +44,17 @@ function renderAvatar(el, username, fallbackText) {
     }
 }
 
+function peerColorKey(peerId) {
+    const p = state.profiles[peerId];
+    return (p && p.username) || String(peerId);
+}
+
 export function renderSidebar() {
     const peersEl = document.getElementById("peers");
     peersEl.innerHTML = "";
 
     const all = new Set([...state.peers, ...state.pending]);
-    if (state.me) all.add(NOTES_PEER);
+    if (state.meId) all.add(NOTES_PEER);
 
     if (all.size === 0) {
         const empty = document.createElement("div");
@@ -64,7 +69,7 @@ export function renderSidebar() {
             const pa = state.pending.has(a) ? 0 : 1;
             const pb = state.pending.has(b) ? 0 : 1;
             if (pa !== pb) return pa - pb;
-            return a.localeCompare(b);
+            return displayName(a).localeCompare(displayName(b));
         });
 
         for (const p of sorted) {
@@ -78,7 +83,7 @@ export function renderSidebar() {
                 (isOnline ? " online" : " offline") +
                 (status === "away" ? " status-away" : "") +
                 (status === "busy" ? " status-busy" : "");
-            d.dataset.peer = p;
+            d.dataset.peer = String(p);
 
             const av = document.createElement("div");
             av.className = "peer-avatar";
@@ -86,10 +91,10 @@ export function renderSidebar() {
                 av.textContent = "📝";
                 av.style.background = "#8b5cf6";
             } else if (avatarFor(p)) {
-                renderAvatar(av, p, initial(p));
+                renderAvatar(av, p, initial(displayName(p)));
             } else {
-                av.style.background = avatarColor(p);
-                av.textContent = initial(p);
+                av.style.background = avatarColor(peerColorKey(p));
+                av.textContent = initial(displayName(p));
             }
 
             const body = document.createElement("div");
@@ -127,17 +132,17 @@ export function renderSidebar() {
     const statusEl = document.getElementById("peer-status");
     const peerAvatar = document.getElementById("peer-avatar");
 
-    if (state.currentPeer) {
+    if (state.currentPeer !== null) {
         const isNotes = state.currentPeer === NOTES_PEER;
         titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
         if (isNotes) {
             peerAvatar.innerHTML = "📝";
             peerAvatar.style.background = "#8b5cf6";
         } else if (avatarFor(state.currentPeer)) {
-            renderAvatar(peerAvatar, state.currentPeer, initial(state.currentPeer));
+            renderAvatar(peerAvatar, state.currentPeer, initial(displayName(state.currentPeer)));
         } else {
-            peerAvatar.style.background = avatarColor(state.currentPeer);
-            peerAvatar.textContent = initial(state.currentPeer);
+            peerAvatar.style.background = avatarColor(peerColorKey(state.currentPeer));
+            peerAvatar.textContent = initial(displayName(state.currentPeer));
         }
         if (isNotes) {
             statusEl.textContent = "synced across your devices";
@@ -172,7 +177,7 @@ export function renderMessages(preserveScroll = false) {
 
     el.innerHTML = "";
 
-    if (!state.currentPeer) {
+    if (state.currentPeer === null) {
         el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
         return;
     }
@@ -404,10 +409,10 @@ export function renderPendingList() {
         av.className = "peer-avatar";
         av.style.position = "relative";
         if (avatarFor(p)) {
-            renderAvatar(av, p, initial(p));
+            renderAvatar(av, p, initial(displayName(p)));
         } else {
-            av.style.background = avatarColor(p);
-            av.textContent = initial(p);
+            av.style.background = avatarColor(peerColorKey(p));
+            av.textContent = initial(displayName(p));
         }
 
         const name = document.createElement("span");
@@ -420,7 +425,7 @@ export function renderPendingList() {
         const btn = document.createElement("button");
         btn.className = "btn btn-primary btn-sm";
         btn.textContent = "Pull history";
-        btn.dataset.accept = p;
+        btn.dataset.accept = String(p);
 
         row.appendChild(left);
         row.appendChild(btn);

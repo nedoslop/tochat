@@ -20,11 +20,20 @@ pub enum UserStatus {
     Invisible,
 }
 
+/// A peer as sent to a client: stable ID + current username.
+/// `username` never changes, but is included so the client can render it
+/// without a second lookup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub id: i64,
+    pub username: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Send {
-        to: String,
+        to: i64,
         id: String,
         ts: i64,
         #[serde(default)]
@@ -32,7 +41,7 @@ pub enum ClientMsg {
         payload: String,
     },
     Edit {
-        to: String,
+        to: i64,
         id: String,
         ts: i64,
         edit_ts: i64,
@@ -49,7 +58,7 @@ pub enum ClientMsg {
         payload: String,
     },
     PullHistory {
-        from: String,
+        from: i64,
         since: i64,
         #[serde(default)]
         limit: Option<u32>,
@@ -57,7 +66,7 @@ pub enum ClientMsg {
         before: Option<i64>,
     },
     HistoryResponse {
-        to: String,
+        to: i64,
         messages: Vec<StoredMsg>,
     },
     ListPending,
@@ -68,19 +77,21 @@ pub enum ClientMsg {
         status: UserStatus,
     },
     LeaveChat {
-        peer: String,
+        peer: i64,
     },
     BlockUser {
-        username: String,
+        user_id: i64,
     },
     UnblockUser {
-        username: String,
+        user_id: i64,
     },
     ListBlocked,
     ReadReceipt {
-        to: String,
+        to: i64,
         up_to_ts: i64,
     },
+    /// Resolve a username to a user id (plus profile info). Used when the
+    /// user types a new peer name into the "start chat" box.
     GetProfile {
         username: String,
     },
@@ -95,8 +106,8 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMsg {
     pub id: String,
-    pub from: String,
-    pub to: String,
+    pub from: i64,
+    pub to: i64,
     pub ts: i64,
     pub edit_ts: i64,
     #[serde(default)]
@@ -108,28 +119,29 @@ pub struct StoredMsg {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     AuthOk {
+        user_id: i64,
         username: String,
         last_seen: i64,
     },
     Peers {
-        peers: Vec<String>,
+        peers: Vec<PeerInfo>,
     },
     PendingChats {
-        users: Vec<String>,
+        users: Vec<PeerInfo>,
     },
     PeerOnline {
-        username: String,
+        user_id: i64,
     },
     PeerOffline {
-        username: String,
+        user_id: i64,
     },
     StatusUpdate {
-        username: String,
+        user_id: i64,
         status: UserStatus,
     },
     Message {
         id: String,
-        from: String,
+        from: i64,
         ts: i64,
         edit_ts: i64,
         kind: MessageKind,
@@ -143,7 +155,7 @@ pub enum ServerMsg {
         payload: String,
     },
     PullHistoryRequest {
-        from: String,
+        from: i64,
         since: i64,
         #[serde(default)]
         limit: Option<u32>,
@@ -151,11 +163,11 @@ pub enum ServerMsg {
         before: Option<i64>,
     },
     HistoryResponse {
-        from: String,
+        from: i64,
         messages: Vec<StoredMsg>,
     },
     ReadReceipt {
-        from: String,
+        from: i64,
         up_to_ts: i64,
     },
     Error {
@@ -165,14 +177,17 @@ pub enum ServerMsg {
         reason: String,
     },
     ChatLeft {
-        peer: String,
+        peer: i64,
     },
     Blocked {
-        users: Vec<String>,
+        users: Vec<PeerInfo>,
     },
     Profile {
+        user_id: i64,
         username: String,
+        #[serde(default)]
         display_name: Option<String>,
+        #[serde(default)]
         avatar: Option<String>,
     },
 }

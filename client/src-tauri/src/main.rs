@@ -55,8 +55,10 @@ fn main() {
             commands::unblock_user,
             commands::list_blocked,
             commands::generate_psk,
-            commands::get_profile,
             commands::set_profile,
+            commands::resolve_user,
+            commands::get_peer,
+            commands::list_local_peers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
