@@ -3,3 +3,4 @@
  - Maybe don't delete a chat when blocking? maybe just don't allow to not send a message (from both sides)
  - Android/IOS support (better adaptive UI?)
  - What to do when system notifications are disabled???
+ - Maybe show my current name (not login) at the top left corner
