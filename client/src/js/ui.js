@@ -1,457 +1,611 @@
 import { state, NOTES_PEER, displayName, avatarFor } from "./state.js";
 import {
-    avatarColor, initial, formatTime, formatDate, formatBytes, parseFilePayload,
+  avatarColor, initial, formatTime, formatDate, formatBytes, parseFilePayload,
+  formatDuration, extFromDataUrl, downloadDataUrl,
 } from "./utils.js";
 
 export function showChatView() {
-    document.getElementById("chat-view").hidden = false;
-    document.getElementById("pending-view").hidden = true;
+  document.getElementById("chat-view").hidden = false;
+  document.getElementById("pending-view").hidden = true;
+  document.getElementById("blocked-view").hidden = true;
+  updateComposerVisibility();
 }
 
 export function showPendingView() {
-    document.getElementById("chat-view").hidden = true;
-    document.getElementById("pending-view").hidden = false;
-    renderPendingList();
+  document.getElementById("chat-view").hidden = true;
+  document.getElementById("pending-view").hidden = false;
+  document.getElementById("blocked-view").hidden = true;
+  renderPendingList();
+}
+
+export function showBlockedView() {
+  document.getElementById("chat-view").hidden = true;
+  document.getElementById("pending-view").hidden = true;
+  document.getElementById("blocked-view").hidden = false;
+  renderBlockedList();
+}
+
+/** Show the composer only when a chat is actually selected. */
+function updateComposerVisibility() {
+  const composer = document.getElementById("composer");
+  if (!composer) return;
+  composer.hidden = state.currentPeer === null;
 }
 
 export function renderMyStatus() {
-    const el = document.getElementById("me-status");
-    if (!el) return;
-    el.dataset.status = state.myStatus;
-    document.getElementById("me-status-label").textContent = state.myStatus;
+  const el = document.getElementById("me-status");
+  if (!el) return;
+  el.dataset.status = state.myStatus;
+  document.getElementById("me-status-label").textContent = state.myStatus;
 }
 
 /**
  * Renders either a profile-picture <img> or an initial-letter text node
  * into `el`, based on `state.profiles[id].avatar`.
- *
- * NOTE: do NOT touch `el.textContent` in the image branch — assigning to
- * textContent replaces every child node (including the freshly appended
- * <img>), which was silently wiping all avatars.
  */
 function renderAvatar(el, peerId, fallbackText) {
-    const img = avatarFor(peerId);
-    el.innerHTML = "";
-    if (img) {
-        const i = document.createElement("img");
-        i.src = img;
-        i.alt = "";
-        i.className = "avatar-img";
-        el.appendChild(i);
-        el.style.background = "var(--surface-3)";
-    } else {
-        el.textContent = fallbackText;
-    }
+  const img = avatarFor(peerId);
+  el.innerHTML = "";
+  if (img) {
+    const i = document.createElement("img");
+    i.src = img;
+    i.alt = "";
+    i.className = "avatar-img";
+    el.appendChild(i);
+    el.style.background = "var(--surface-3)";
+  } else {
+    el.textContent = fallbackText;
+  }
 }
 
 function peerColorKey(peerId) {
-    const p = state.profiles[peerId];
-    return (p && p.username) || String(peerId);
+  const p = state.profiles[peerId];
+  return (p && p.username) || String(peerId);
 }
 
 export function renderSidebar() {
-    const peersEl = document.getElementById("peers");
-    peersEl.innerHTML = "";
+  const peersEl = document.getElementById("peers");
+  peersEl.innerHTML = "";
 
-    const all = new Set([...state.peers, ...state.pending]);
-    if (state.meId) all.add(NOTES_PEER);
+  // Only established chats live in the sidebar. Pending requests live
+  // exclusively in the pending view; blocked users in the blocked view.
+  const all = new Set(state.peers);
+  if (state.meId) all.add(NOTES_PEER);
 
-    if (all.size === 0) {
-        const empty = document.createElement("div");
-        empty.className = "hint";
-        empty.style.padding = "8px 6px";
-        empty.textContent = "No chats yet.";
-        peersEl.appendChild(empty);
-    } else {
-        const sorted = [...all].sort((a, b) => {
-            if (a === NOTES_PEER) return -1;
-            if (b === NOTES_PEER) return 1;
-            const pa = state.pending.has(a) ? 0 : 1;
-            const pb = state.pending.has(b) ? 0 : 1;
-            if (pa !== pb) return pa - pb;
-            return displayName(a).localeCompare(displayName(b));
-        });
+  if (all.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.style.padding = "8px 6px";
+    empty.textContent = "No chats yet.";
+    peersEl.appendChild(empty);
+  } else {
+    const sorted = [...all].sort((a, b) => {
+      if (a === NOTES_PEER) return -1;
+      if (b === NOTES_PEER) return 1;
+      return displayName(a).localeCompare(displayName(b));
+    });
 
-        for (const p of sorted) {
-            const d = document.createElement("div");
-            const isNotes = p === NOTES_PEER;
-            const status = state.peerStatus[p] || (state.online.has(p) ? "online" : null);
-            const isOnline = isNotes || state.online.has(p) || state.pending.has(p);
-            d.className =
-                "peer" +
-                (p === state.currentPeer ? " active" : "") +
-                (isOnline ? " online" : " offline") +
-                (status === "away" ? " status-away" : "") +
-                (status === "busy" ? " status-busy" : "");
-            d.dataset.peer = String(p);
+    for (const p of sorted) {
+      const d = document.createElement("div");
+      const isNotes = p === NOTES_PEER;
+      const status = state.peerStatus[p] || (state.online.has(p) ? "online" : null);
+      const isOnline = isNotes || state.online.has(p);
+      d.className =
+        "peer" +
+        (p === state.currentPeer ? " active" : "") +
+        (isOnline ? " online" : " offline") +
+        (status === "away" ? " status-away" : "") +
+        (status === "busy" ? " status-busy" : "");
+      d.dataset.peer = String(p);
 
-            const av = document.createElement("div");
-            av.className = "peer-avatar";
-            if (isNotes) {
-                av.textContent = "📝";
-                av.style.background = "#8b5cf6";
-            } else if (avatarFor(p)) {
-                renderAvatar(av, p, initial(displayName(p)));
-            } else {
-                av.style.background = avatarColor(peerColorKey(p));
-                av.textContent = initial(displayName(p));
-            }
+      const av = document.createElement("div");
+      av.className = "peer-avatar";
+      if (isNotes) {
+        av.textContent = "📝";
+        av.style.background = "#8b5cf6";
+      } else if (avatarFor(p)) {
+        renderAvatar(av, p, initial(displayName(p)));
+      } else {
+        av.style.background = avatarColor(peerColorKey(p));
+        av.textContent = initial(displayName(p));
+      }
 
-            const body = document.createElement("div");
-            body.className = "peer-body";
-            const name = document.createElement("div");
-            name.className = "peer-name";
-            name.textContent = isNotes ? "Notes" : displayName(p);
-            body.appendChild(name);
+      const body = document.createElement("div");
+      body.className = "peer-body";
+      const name = document.createElement("div");
+      name.className = "peer-name";
+      name.textContent = isNotes ? "Notes" : displayName(p);
+      body.appendChild(name);
 
-            d.appendChild(av);
-            d.appendChild(body);
+      d.appendChild(av);
+      d.appendChild(body);
 
-            const unread = state.unread[p] || 0;
-            if (unread > 0) {
-                const b = document.createElement("span");
-                b.className = "peer-unread";
-                b.textContent = String(unread);
-                d.appendChild(b);
-            } else if (state.pending.has(p)) {
-                const b = document.createElement("span");
-                b.className = "badge";
-                b.textContent = "new";
-                d.appendChild(b);
-            }
+      const unread = state.unread[p] || 0;
+      if (unread > 0) {
+        const b = document.createElement("span");
+        b.className = "peer-unread";
+        b.textContent = String(unread);
+        d.appendChild(b);
+      }
 
-            peersEl.appendChild(d);
-        }
+      peersEl.appendChild(d);
     }
+  }
 
-    const countEl = document.getElementById("pending-count");
-    countEl.textContent = String(state.pending.size);
-    countEl.dataset.empty = state.pending.size === 0 ? "true" : "false";
+  const pendingCountEl = document.getElementById("pending-count");
+  if (pendingCountEl) {
+    pendingCountEl.textContent = String(state.pending.size);
+    pendingCountEl.dataset.empty = state.pending.size === 0 ? "true" : "false";
+  }
 
-    const titleEl = document.getElementById("peer-title");
-    const statusEl = document.getElementById("peer-status");
-    const peerAvatar = document.getElementById("peer-avatar");
+  const blockedCountEl = document.getElementById("blocked-count");
+  if (blockedCountEl) {
+    blockedCountEl.textContent = String(state.blocked.size);
+    blockedCountEl.dataset.empty = state.blocked.size === 0 ? "true" : "false";
+  }
 
-    if (state.currentPeer !== null) {
-        const isNotes = state.currentPeer === NOTES_PEER;
-        titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
-        if (isNotes) {
-            peerAvatar.innerHTML = "📝";
-            peerAvatar.style.background = "#8b5cf6";
-        } else if (avatarFor(state.currentPeer)) {
-            renderAvatar(peerAvatar, state.currentPeer, initial(displayName(state.currentPeer)));
-        } else {
-            peerAvatar.style.background = avatarColor(peerColorKey(state.currentPeer));
-            peerAvatar.textContent = initial(displayName(state.currentPeer));
-        }
-        if (isNotes) {
-            statusEl.textContent = "synced across your devices";
-            statusEl.classList.remove("online", "away", "busy");
-        } else {
-            const st = state.peerStatus[state.currentPeer];
-            if (state.online.has(state.currentPeer)) {
-                statusEl.textContent = st && st !== "online" ? st : "online";
-                statusEl.classList.toggle("online", !st || st === "online");
-                statusEl.classList.toggle("away", st === "away");
-                statusEl.classList.toggle("busy", st === "busy");
-            } else {
-                statusEl.textContent = "offline";
-                statusEl.classList.remove("online", "away", "busy");
-            }
-        }
+  const titleEl = document.getElementById("peer-title");
+  const statusEl = document.getElementById("peer-status");
+  const peerAvatar = document.getElementById("peer-avatar");
+
+  if (state.currentPeer !== null) {
+    const isNotes = state.currentPeer === NOTES_PEER;
+    titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
+    if (isNotes) {
+      peerAvatar.innerHTML = "📝";
+      peerAvatar.style.background = "#8b5cf6";
+    } else if (avatarFor(state.currentPeer)) {
+      renderAvatar(peerAvatar, state.currentPeer, initial(displayName(state.currentPeer)));
     } else {
-        titleEl.textContent = "Select a chat";
-        peerAvatar.textContent = "?";
-        peerAvatar.style.background = "var(--border-strong)";
-        statusEl.textContent = "";
+      peerAvatar.style.background = avatarColor(peerColorKey(state.currentPeer));
+      peerAvatar.textContent = initial(displayName(state.currentPeer));
+    }
+    if (isNotes) {
+      statusEl.textContent = "synced across your devices";
+      statusEl.classList.remove("online", "away", "busy");
+    } else {
+      const st = state.peerStatus[state.currentPeer];
+      if (state.online.has(state.currentPeer)) {
+        statusEl.textContent = st && st !== "online" ? st : "online";
+        statusEl.classList.toggle("online", !st || st === "online");
+        statusEl.classList.toggle("away", st === "away");
+        statusEl.classList.toggle("busy", st === "busy");
+      } else {
+        statusEl.textContent = "offline";
         statusEl.classList.remove("online", "away", "busy");
+      }
     }
+  } else {
+    titleEl.textContent = "Select a chat";
+    peerAvatar.textContent = "?";
+    peerAvatar.style.background = "var(--border-strong)";
+    statusEl.textContent = "";
+    statusEl.classList.remove("online", "away", "busy");
+  }
 }
 
 export function renderMessages(preserveScroll = false) {
-    const el = document.getElementById("messages");
-    const prevHeight = el.scrollHeight;
-    const prevTop = el.scrollTop;
-    const prevClientHeight = el.clientHeight;
-    const wasAtBottom = prevHeight - prevTop - prevClientHeight < 60;
+  const el = document.getElementById("messages");
+  updateComposerVisibility();
 
-    el.innerHTML = "";
+  const prevHeight = el.scrollHeight;
+  const prevTop = el.scrollTop;
+  const prevClientHeight = el.clientHeight;
+  const wasAtBottom = prevHeight - prevTop - prevClientHeight < 60;
 
-    if (state.currentPeer === null) {
-        el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
-        return;
+  el.innerHTML = "";
+
+  if (state.currentPeer === null) {
+    el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
+    return;
+  }
+
+  const peer = state.currentPeer;
+  const msgs = (state.msgCache[peer] || []).slice().sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
+
+  if (msgs.length === 0) {
+    el.appendChild(emptyState(
+      peer === NOTES_PEER ? "📝" : "📭",
+      peer === NOTES_PEER ? "No notes yet" : "No messages yet",
+      peer === NOTES_PEER
+        ? "Anything you type here stays on this device — and syncs across your sessions."
+        : `Say hi to ${displayName(peer)}.`,
+    ));
+    return;
+  }
+
+  const seen = state.seenIds[peer] || (state.seenIds[peer] = new Set());
+
+  if (peer !== NOTES_PEER) {
+    const loading = state.loadingOlder.has(peer);
+    const reachedStart = state.mightHaveMore[peer] === false;
+    if (loading) {
+      const b = document.createElement("div");
+      b.className = "load-older";
+      b.textContent = "Loading…";
+      el.appendChild(b);
+    } else if (reachedStart) {
+      const b = document.createElement("div");
+      b.className = "load-older-note";
+      b.textContent = "— start of conversation —";
+      el.appendChild(b);
+    } else {
+      const b = document.createElement("div");
+      b.className = "load-older";
+      b.textContent = "Scroll up to load older messages";
+      el.appendChild(b);
     }
+  }
 
-    const peer = state.currentPeer;
-    const msgs = (state.msgCache[peer] || []).slice().sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
-
-    if (msgs.length === 0) {
-        el.appendChild(emptyState(
-            peer === NOTES_PEER ? "📝" : "📭",
-            peer === NOTES_PEER ? "No notes yet" : "No messages yet",
-            peer === NOTES_PEER
-                ? "Anything you type here stays on this device — and syncs across your sessions."
-                : `Say hi to ${displayName(peer)}.`,
-        ));
-        return;
+  let lastDate = null;
+  for (const m of msgs) {
+    const dateStr = formatDate(m.ts);
+    if (dateStr !== lastDate) {
+      const sep = document.createElement("div");
+      sep.className = "date-sep";
+      sep.textContent = dateStr;
+      el.appendChild(sep);
+      lastDate = dateStr;
     }
+    const isFresh = !seen.has(m.id);
+    seen.add(m.id);
+    el.appendChild(messageEl(m, peer === NOTES_PEER, isFresh));
+  }
 
-    const seen = state.seenIds[peer] || (state.seenIds[peer] = new Set());
+  if (preserveScroll) {
+    const newHeight = el.scrollHeight;
+    el.scrollTop = newHeight - prevHeight + prevTop;
+  } else if (wasAtBottom) {
+    el.scrollTop = el.scrollHeight;
+  }
 
-    if (peer !== NOTES_PEER) {
-        const loading = state.loadingOlder.has(peer);
-        const reachedStart = state.mightHaveMore[peer] === false;
-        if (loading) {
-            const b = document.createElement("div");
-            b.className = "load-older";
-            b.textContent = "Loading…";
-            el.appendChild(b);
-        } else if (reachedStart) {
-            const b = document.createElement("div");
-            b.className = "load-older-note";
-            b.textContent = "— start of conversation —";
-            el.appendChild(b);
-        } else {
-            const b = document.createElement("div");
-            b.className = "load-older";
-            b.textContent = "Scroll up to load older messages";
-            el.appendChild(b);
-        }
-    }
-
-    let lastDate = null;
-    for (const m of msgs) {
-        const dateStr = formatDate(m.ts);
-        if (dateStr !== lastDate) {
-            const sep = document.createElement("div");
-            sep.className = "date-sep";
-            sep.textContent = dateStr;
-            el.appendChild(sep);
-            lastDate = dateStr;
-        }
-        const isFresh = !seen.has(m.id);
-        seen.add(m.id);
-        el.appendChild(messageEl(m, peer === NOTES_PEER, isFresh));
-    }
-
-    if (preserveScroll) {
-        const newHeight = el.scrollHeight;
-        el.scrollTop = newHeight - prevHeight + prevTop;
-    } else if (wasAtBottom) {
-        el.scrollTop = el.scrollHeight;
-    }
-
-    if (seen.size > msgs.length * 2 + 200) {
-        const live = new Set(msgs.map((m) => m.id));
-        state.seenIds[peer] = live;
-    }
+  if (seen.size > msgs.length * 2 + 200) {
+    const live = new Set(msgs.map((m) => m.id));
+    state.seenIds[peer] = live;
+  }
 }
 
 export function updateReadIndicators(peer) {
-    if (state.currentPeer !== peer) return;
-    const el = document.getElementById("messages");
-    if (!el) return;
-    for (const m of state.msgCache[peer] || []) {
-        if (m.direction !== "out" || m.payload === "") continue;
-        const node = el.querySelector(`.msg[data-id="${cssEscape(m.id)}"] .msg-time`);
-        if (!node) continue;
-        const label = formatTime(m.ts) + (m.read ? "  ✓✓" : "  ✓");
-        if (node.textContent !== label) node.textContent = label;
-    }
+  if (state.currentPeer !== peer) return;
+  const el = document.getElementById("messages");
+  if (!el) return;
+  for (const m of state.msgCache[peer] || []) {
+    if (m.direction !== "out" || m.payload === "") continue;
+    const node = el.querySelector(`.msg[data-id="${cssEscape(m.id)}"] .msg-time`);
+    if (!node) continue;
+    const label = formatTime(m.ts) + (m.read ? "  ✓✓" : "  ✓");
+    if (node.textContent !== label) node.textContent = label;
+  }
 }
 
 function cssEscape(s) {
-    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(s);
-    return String(s).replace(/["\\]/g, "\\$&");
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(s);
+  return String(s).replace(/["\\]/g, "\\$&");
 }
 
 function emptyState(icon, title, sub) {
-    const d = document.createElement("div");
-    d.className = "empty-state";
-    const i = document.createElement("div"); i.className = "empty-icon"; i.textContent = icon;
-    const t = document.createElement("div"); t.className = "empty-title"; t.textContent = title;
-    const s = document.createElement("div"); s.className = "empty-sub"; s.textContent = sub;
-    d.appendChild(i); d.appendChild(t); d.appendChild(s);
-    return d;
+  const d = document.createElement("div");
+  d.className = "empty-state";
+  const i = document.createElement("div"); i.className = "empty-icon"; i.textContent = icon;
+  const t = document.createElement("div"); t.className = "empty-title"; t.textContent = title;
+  const s = document.createElement("div"); s.className = "empty-sub"; s.textContent = sub;
+  d.appendChild(i); d.appendChild(t); d.appendChild(s);
+  return d;
+}
+
+/** Builds the custom audio player element for a data-URL audio message. */
+function audioPlayerEl(src) {
+  const wrap = document.createElement("div");
+  wrap.className = "audio-player";
+
+  const audio = document.createElement("audio");
+  audio.src = src;
+  audio.preload = "metadata";
+
+  const playBtn = document.createElement("button");
+  playBtn.type = "button";
+  playBtn.className = "audio-play-btn";
+  playBtn.textContent = "▶";
+  playBtn.setAttribute("aria-label", "Play");
+
+  const track = document.createElement("div");
+  track.className = "audio-track";
+  const fill = document.createElement("div");
+  fill.className = "audio-progress-fill";
+  track.appendChild(fill);
+
+  const time = document.createElement("span");
+  time.className = "audio-time";
+  time.textContent = "0:00";
+
+  playBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (audio.paused) {
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  });
+  audio.addEventListener("play", () => { playBtn.textContent = "⏸"; });
+  audio.addEventListener("pause", () => { playBtn.textContent = "▶"; });
+  audio.addEventListener("ended", () => {
+    playBtn.textContent = "▶";
+    fill.style.width = "0%";
+    time.textContent = formatDuration(audio.duration || 0);
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    time.textContent = formatDuration(audio.duration);
+  });
+  audio.addEventListener("timeupdate", () => {
+    if (audio.duration && isFinite(audio.duration)) {
+      const pct = (audio.currentTime / audio.duration) * 100;
+      fill.style.width = pct + "%";
+      time.textContent = formatDuration(audio.currentTime);
+    }
+  });
+  track.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!audio.duration || !isFinite(audio.duration)) return;
+    const rect = track.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = pct * audio.duration;
+  });
+
+  wrap.appendChild(playBtn);
+  wrap.appendChild(track);
+  wrap.appendChild(time);
+  wrap.appendChild(audio);
+  return wrap;
 }
 
 function messageEl(m, isNotes, isFresh = false) {
-    const div = document.createElement("div");
-    const deleted = m.payload === "";
-    div.className =
-        "msg " + (m.direction === "out" ? "out" : "in") +
-        (deleted ? " deleted" : "") +
-        (m.kind && m.kind !== "text" ? " kind-" + m.kind : "") +
-        (isFresh ? " fresh" : "");
-    div.dataset.id = m.id;
+  const div = document.createElement("div");
+  const deleted = m.payload === "";
+  div.className =
+    "msg " + (m.direction === "out" ? "out" : "in") +
+    (deleted ? " deleted" : "") +
+    (m.kind && m.kind !== "text" ? " kind-" + m.kind : "") +
+    (isFresh ? " fresh" : "");
+  div.dataset.id = m.id;
 
-    const body = document.createElement("div");
-    body.className = "msg-body";
+  const body = document.createElement("div");
+  body.className = "msg-body";
 
-    if (deleted) {
-        body.textContent = "(deleted)";
-    } else if (m.kind === "image") {
-        if (!/^data:image\//i.test(m.payload)) {
-            const err = document.createElement("div");
-            err.className = "msg-image-error";
-            err.textContent = "🔒 Cannot display image — encryption key mismatch?";
-            body.appendChild(err);
-        } else {
-            const img = document.createElement("img");
-            img.className = "msg-image";
-            img.src = m.payload;
-            img.alt = "image";
-            img.loading = "lazy";
-            img.addEventListener("error", () => {
-                body.innerHTML = "";
-                const err = document.createElement("div");
-                err.className = "msg-image-error";
-                err.textContent = "⚠️ Image failed to load.";
-                body.appendChild(err);
-            });
-            img.addEventListener("click", () => openImageViewer(m.payload));
-            body.appendChild(img);
-        }
-    } else if (m.kind === "audio") {
-        const wrap = document.createElement("div");
-        wrap.className = "msg-audio-wrap";
-        const audio = document.createElement("audio");
-        audio.className = "msg-audio";
-        audio.controls = true;
-        audio.preload = "metadata";
-        audio.src = m.payload;
-        wrap.appendChild(audio);
-        body.appendChild(wrap);
-    } else if (m.kind === "file") {
-        const info = parseFilePayload(m.payload);
-        const a = document.createElement("a");
-        a.className = "msg-file";
-        a.href = info.data;
-        a.download = info.name || "file";
-        a.rel = "noopener";
-        a.title = "Download " + (info.name || "file");
-
-        const icon = document.createElement("span");
-        icon.className = "file-icon";
-        icon.textContent = "📎";
-
-        const nameEl = document.createElement("span");
-        nameEl.className = "file-name";
-        nameEl.textContent = info.name || "file";
-
-        a.appendChild(icon);
-        a.appendChild(nameEl);
-        if (info.size) {
-            const sizeEl = document.createElement("span");
-            sizeEl.className = "file-size";
-            sizeEl.textContent = formatBytes(info.size);
-            a.appendChild(sizeEl);
-        }
-        body.appendChild(a);
+  if (deleted) {
+    body.textContent = "(deleted)";
+  } else if (m.kind === "image") {
+    if (!/^data:image\//i.test(m.payload)) {
+      const err = document.createElement("div");
+      err.className = "msg-image-error";
+      err.textContent = "🔒 Cannot display image — encryption key mismatch?";
+      body.appendChild(err);
     } else {
-        body.textContent = m.payload;
+      const img = document.createElement("img");
+      img.className = "msg-image";
+      img.src = m.payload;
+      img.alt = "image";
+      img.loading = "lazy";
+      img.addEventListener("error", () => {
+        body.innerHTML = "";
+        const err = document.createElement("div");
+        err.className = "msg-image-error";
+        err.textContent = "⚠️ Image failed to load.";
+        body.appendChild(err);
+      });
+      img.addEventListener("click", () => openImageViewer(m.payload));
+      body.appendChild(img);
+    }
+  } else if (m.kind === "audio") {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-audio-wrap";
+    wrap.appendChild(audioPlayerEl(m.payload));
+    body.appendChild(wrap);
+  } else if (m.kind === "file") {
+    const info = parseFilePayload(m.payload);
+    const a = document.createElement("a");
+    a.className = "msg-file";
+    a.href = info.data;
+    a.download = info.name || "file";
+    a.rel = "noopener";
+    a.title = "Download " + (info.name || "file");
+
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = "📎";
+
+    const meta = document.createElement("span");
+    meta.className = "file-meta";
+    const nameEl = document.createElement("span");
+    nameEl.className = "file-name";
+    nameEl.textContent = info.name || "file";
+    meta.appendChild(nameEl);
+    if (info.size) {
+      const sizeEl = document.createElement("span");
+      sizeEl.className = "file-size";
+      sizeEl.textContent = formatBytes(info.size);
+      meta.appendChild(sizeEl);
     }
 
-    const time = document.createElement("div");
-    time.className = "msg-time";
-    let label = formatTime(m.ts);
-    if (m.direction === "out" && !deleted) label += m.read ? "  ✓✓" : "  ✓";
-    time.textContent = label;
+    const dl = document.createElement("span");
+    dl.className = "file-download";
+    dl.textContent = "⬇";
 
-    div.appendChild(body);
-    div.appendChild(time);
+    a.appendChild(icon);
+    a.appendChild(meta);
+    a.appendChild(dl);
 
-    if (m.direction === "out" && !deleted) {
-        const actions = document.createElement("div");
-        actions.className = "msg-actions";
+    // Explicit programmatic download — this is robust in the Tauri
+    // webview even when the <a download> attribute is ignored.
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const ext = extFromDataUrl(info.data);
+      const filename = info.name || ("file" + (ext ? "." + ext : ""));
+      downloadDataUrl(info.data, filename);
+    });
 
-        if (m.kind === "text" || !m.kind) {
-            const editBtn = document.createElement("button");
-            editBtn.dataset.act = "edit";
-            editBtn.title = "Edit";
-            editBtn.textContent = "✏️";
-            actions.appendChild(editBtn);
-        }
+    body.appendChild(a);
+  } else {
+    body.textContent = m.payload;
+  }
 
-        const delBtn = document.createElement("button");
-        delBtn.dataset.act = "del";
-        delBtn.title = "Delete";
-        delBtn.textContent = "🗑";
-        actions.appendChild(delBtn);
+  const time = document.createElement("div");
+  time.className = "msg-time";
+  let label = formatTime(m.ts);
+  if (m.direction === "out" && !deleted) label += m.read ? "  ✓✓" : "  ✓";
+  time.textContent = label;
 
-        div.appendChild(actions);
+  div.appendChild(body);
+  div.appendChild(time);
+
+  if (m.direction === "out" && !deleted) {
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+
+    if (m.kind === "text" || !m.kind) {
+      const editBtn = document.createElement("button");
+      editBtn.dataset.act = "edit";
+      editBtn.title = "Edit";
+      editBtn.textContent = "✏️";
+      actions.appendChild(editBtn);
     }
 
-    void isNotes;
-    return div;
+    const delBtn = document.createElement("button");
+    delBtn.dataset.act = "del";
+    delBtn.title = "Delete";
+    delBtn.textContent = "🗑";
+    actions.appendChild(delBtn);
+
+    div.appendChild(actions);
+  }
+
+  void isNotes;
+  return div;
 }
 
 export function renderPendingList() {
-    const el = document.getElementById("pending-list");
-    el.innerHTML = "";
+  const el = document.getElementById("pending-list");
+  if (!el) return;
+  el.innerHTML = "";
 
-    if (state.pending.size === 0) {
-        const p = document.createElement("div");
-        p.className = "hint";
-        p.textContent = "No pending chats.";
-        el.appendChild(p);
-        return;
+  if (state.pending.size === 0) {
+    const p = document.createElement("div");
+    p.className = "hint";
+    p.textContent = "No pending chats.";
+    el.appendChild(p);
+    return;
+  }
+
+  for (const p of state.pending) {
+    const row = document.createElement("div");
+    row.className = "pending-row";
+
+    const left = document.createElement("div");
+    left.className = "pending-left";
+
+    const av = document.createElement("div");
+    av.className = "peer-avatar";
+    av.style.position = "relative";
+    if (avatarFor(p)) {
+      renderAvatar(av, p, initial(displayName(p)));
+    } else {
+      av.style.background = avatarColor(peerColorKey(p));
+      av.textContent = initial(displayName(p));
     }
 
-    for (const p of state.pending) {
-        const row = document.createElement("div");
-        row.className = "pending-row";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = displayName(p);
 
-        const left = document.createElement("div");
-        left.className = "pending-left";
+    left.appendChild(av);
+    left.appendChild(name);
 
-        const av = document.createElement("div");
-        av.className = "peer-avatar";
-        av.style.position = "relative";
-        if (avatarFor(p)) {
-            renderAvatar(av, p, initial(displayName(p)));
-        } else {
-            av.style.background = avatarColor(peerColorKey(p));
-            av.textContent = initial(displayName(p));
-        }
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary btn-sm";
+    btn.textContent = "Pull history";
+    btn.dataset.accept = String(p);
 
-        const name = document.createElement("span");
-        name.className = "name";
-        name.textContent = displayName(p);
+    row.appendChild(left);
+    row.appendChild(btn);
+    el.appendChild(row);
+  }
+}
 
-        left.appendChild(av);
-        left.appendChild(name);
+export function renderBlockedList() {
+  const el = document.getElementById("blocked-list");
+  if (!el) return;
+  el.innerHTML = "";
 
-        const btn = document.createElement("button");
-        btn.className = "btn btn-primary btn-sm";
-        btn.textContent = "Pull history";
-        btn.dataset.accept = String(p);
+  if (state.blocked.size === 0) {
+    const p = document.createElement("div");
+    p.className = "hint";
+    p.textContent = "You haven't blocked anyone.";
+    el.appendChild(p);
+    return;
+  }
 
-        row.appendChild(left);
-        row.appendChild(btn);
-        el.appendChild(row);
+  for (const p of state.blocked) {
+    const row = document.createElement("div");
+    row.className = "pending-row";
+
+    const left = document.createElement("div");
+    left.className = "pending-left";
+
+    const av = document.createElement("div");
+    av.className = "peer-avatar";
+    av.style.position = "relative";
+    if (avatarFor(p)) {
+      renderAvatar(av, p, initial(displayName(p)));
+    } else {
+      av.style.background = avatarColor(peerColorKey(p));
+      av.textContent = initial(displayName(p));
     }
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = displayName(p);
+
+    left.appendChild(av);
+    left.appendChild(name);
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-ghost btn-sm";
+    btn.textContent = "Unblock";
+    btn.dataset.unblock = String(p);
+
+    row.appendChild(left);
+    row.appendChild(btn);
+    el.appendChild(row);
+  }
 }
 
 export function latestInboundTs(peer) {
-    const msgs = state.msgCache[peer] || [];
-    let max = 0;
-    for (const m of msgs) if (m.direction === "in" && m.ts > max) max = m.ts;
-    return max;
+  const msgs = state.msgCache[peer] || [];
+  let max = 0;
+  for (const m of msgs) if (m.direction === "in" && m.ts > max) max = m.ts;
+  return max;
 }
 
 // ---------- Image viewer ----------
 
 export function openImageViewer(src) {
-    const v = document.getElementById("image-viewer");
-    const img = document.getElementById("image-viewer-img");
-    img.src = src;
-    v.hidden = false;
+  const v = document.getElementById("image-viewer");
+  const img = document.getElementById("image-viewer-img");
+  const dl = document.getElementById("image-viewer-download");
+  img.src = src;
+  v.hidden = false;
+
+  if (dl) {
+    dl.onclick = (ev) => {
+      ev.stopPropagation();
+      const ext = extFromDataUrl(src) || "png";
+      downloadDataUrl(src, `image.${ext}`);
+    };
+  }
 }
 
 export function closeImageViewer() {
-    const v = document.getElementById("image-viewer");
-    const img = document.getElementById("image-viewer-img");
-    img.src = "";
-    v.hidden = true;
+  const v = document.getElementById("image-viewer");
+  const img = document.getElementById("image-viewer-img");
+  img.src = "";
+  v.hidden = true;
 }
