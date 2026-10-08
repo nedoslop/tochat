@@ -1,3 +1,5 @@
 (Some of them may be already implemented, but untested)
+ - Add loading circle when syncing messages
+ - Maybe don't delete a chat when blocking? maybe just don't allow to not send a message (from both sides)
  - Android/IOS support (better adaptive UI?)
  - What to do when system notifications are disabled???
