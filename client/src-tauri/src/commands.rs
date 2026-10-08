@@ -7,11 +7,9 @@ use tauri::{Manager, State};
 use tokio::sync::oneshot;
 
 use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
-use crate::db::{Database, LocalMsg};
+use crate::db::LocalMsg;
 use crate::protocol::{ClientMsg, MessageKind, UserStatus};
-use crate::state::{
-    encryption_path, read_theme, theme_path, user_db_path, AppState, Me,
-};
+use crate::state::{read_theme, theme_path, user_db_path, AppState};
 use crate::util::{now_ms, random_id};
 use crate::ws;
 
@@ -57,8 +55,6 @@ pub async fn disconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 
 // ---------- username resolution ----------
 
-/// Resolve a username to a user ID. Checks the local `peers` cache first,
-/// then asks the server and waits (bounded) for the `profile` response.
 #[tauri::command]
 pub async fn resolve_user(
     username: String,
@@ -73,8 +69,6 @@ pub async fn resolve_user(
     let (tx, rx) = oneshot::channel();
     {
         let mut lookups = state.pending_lookups.lock().await;
-        // If another lookup is already pending for the same username, just
-        // replace it — a duplicate request is not expected in practice.
         lookups.insert(username.clone(), tx);
     }
 
@@ -137,7 +131,7 @@ pub async fn send_media(
         let ts = now_ms();
         db.upsert_message(NOTES_PEER, &id, "out", ts, ts, k.as_str(), &payload, true, true)
             .await;
-        let wire = state.encrypt_for_wire(&payload).await?;
+        let wire = state.encrypt_for_wire(NOTES_PEER, &payload).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
@@ -199,7 +193,7 @@ pub async fn edit_message(
     if peer == NOTES_PEER {
         db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), &text, true, true)
             .await;
-        let wire = state.encrypt_for_wire(&text).await?;
+        let wire = state.encrypt_for_wire(NOTES_PEER, &text).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
@@ -255,7 +249,7 @@ pub async fn delete_message(
     if peer == NOTES_PEER {
         db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), "", true, true)
             .await;
-        let wire = state.encrypt_for_wire("").await?;
+        let wire = state.encrypt_for_wire(NOTES_PEER, "").await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
             let _ = tx.send(ClientMsg::SendToSelf {
@@ -303,7 +297,7 @@ async fn send_outgoing(
     is_edit: bool,
 ) -> Result<(), String> {
     let db = state.active_db().await?;
-    let wire_payload = state.encrypt_for_wire(plaintext).await?;
+    let wire_payload = state.encrypt_for_wire(to, plaintext).await?;
 
     db.upsert_message(to, id, "out", ts, edit_ts, kind.as_str(), plaintext, true, false)
         .await;
@@ -580,12 +574,11 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
         let path = user_db_path(&state.data_dir, &m.username, &url);
         let _ = std::fs::remove_file(&path);
     }
-    let config = EncryptionConfig::default();
+    // Encryption lives in the (now wiped) DB, so just drop the cache.
     {
-        let mut enc = state.encryption.write().await;
-        enc.set(config);
+        let mut map = state.encryption.write().await;
+        map.clear();
     }
-    let _ = std::fs::remove_file(encryption_path(&state.data_dir));
     Ok(())
 }
 
@@ -597,17 +590,26 @@ pub struct EncryptionInfo {
     pub has_secret: bool,
 }
 
+/// Returns the encryption config **for a specific chat**.
+/// `peer` is the user id of the other side, or `NOTES_PEER` for the notes
+/// chat. There is no global encryption setting.
 #[tauri::command]
-pub async fn get_encryption(state: State<'_, Arc<AppState>>) -> Result<EncryptionInfo, String> {
-    let enc = state.encryption.read().await;
+pub async fn get_encryption(
+    peer: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<EncryptionInfo, String> {
+    let map = state.encryption.read().await;
+    let cfg = map.get_config(peer);
     Ok(EncryptionInfo {
-        method: enc.config.method.as_str().to_string(),
-        has_secret: enc.config.secret.as_deref().map_or(false, |s| !s.is_empty()),
+        method: cfg.method.as_str().to_string(),
+        has_secret: cfg.secret.as_deref().map_or(false, |s| !s.is_empty()),
     })
 }
 
+/// Sets the encryption config **for a specific chat**.
 #[tauri::command]
 pub async fn set_encryption(
+    peer: i64,
     method: String,
     secret: Option<String>,
     state: State<'_, Arc<AppState>>,
@@ -615,10 +617,12 @@ pub async fn set_encryption(
     let m = EncryptionMethod::parse(&method);
     let mut secret = secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
+    // Empty secret + same method → keep the existing secret.
     if secret.is_none() {
-        let enc = state.encryption.read().await;
-        if enc.config.method == m {
-            secret = enc.config.secret.clone();
+        let map = state.encryption.read().await;
+        let existing = map.get_config(peer);
+        if existing.method == m {
+            secret = existing.secret.clone();
         }
     }
 
@@ -638,11 +642,14 @@ pub async fn set_encryption(
     }
 
     let config = EncryptionConfig { method: m, secret: secret.clone() };
-    let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
-    std::fs::write(encryption_path(&state.data_dir), json)
-        .map_err(|e| format!("persist error: {e}"))?;
-    let mut enc = state.encryption.write().await;
-    enc.set(config);
+
+    // Persist (DB is the source of truth; the in-memory map is a cache).
+    let db = state.active_db().await?;
+    db.set_encryption(peer, m.as_str(), secret.as_deref()).await;
+
+    // Update the cache.
+    let mut map = state.encryption.write().await;
+    map.set(peer, config);
     Ok(())
 }
 
@@ -688,7 +695,3 @@ pub fn apply_window_theme(app: &tauri::AppHandle, theme: &str) {
 pub fn is_release() -> bool {
     cfg!(not(debug_assertions))
 }
-
-// Silence unused-import warning when Database isn't otherwise needed.
-#[allow(dead_code)]
-fn _keep_imports(_: Database, _: Me) {}

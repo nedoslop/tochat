@@ -61,13 +61,25 @@ CREATE TABLE IF NOT EXISTS peers (
     avatar       TEXT
 );
 
+-- Per-chat encryption. Peer 0 is the Notes chat.
+-- `method` is one of "none" | "shared_password" | "pre_shared_key".
+-- `secret` is the password / raw hex key. Nothing here ever touches the
+-- server — it's a local-only table, one row per chat.
+CREATE TABLE IF NOT EXISTS peer_encryption (
+    peer_id INTEGER PRIMARY KEY,
+    method  TEXT NOT NULL,
+    secret  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     // ---- peers ----
@@ -96,20 +108,26 @@ CREATE TABLE IF NOT EXISTS settings (
         conn.query_row(
             "SELECT id, username, display_name, avatar FROM peers WHERE id = ?1",
             [id],
-            |r| Ok(LocalPeer {
-                id: r.get(0)?,
-                username: r.get(1)?,
-                display_name: r.get(2)?,
-                avatar: r.get(3)?,
-            }),
+            |r| {
+                Ok(LocalPeer {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    display_name: r.get(2)?,
+                    avatar: r.get(3)?,
+                })
+            },
         )
         .ok()
     }
 
     pub async fn peer_id_by_username(&self, username: &str) -> Option<i64> {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT id FROM peers WHERE username = ?1", [username], |r| r.get(0))
-            .ok()
+        conn.query_row(
+            "SELECT id FROM peers WHERE username = ?1",
+            [username],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
     pub async fn list_peers(&self) -> Vec<LocalPeer> {
@@ -177,8 +195,7 @@ CREATE TABLE IF NOT EXISTS settings (
     /// (or the newest `limit` if `before_ts` is None), oldest-first.
     ///
     /// IMPORTANT: `limit = None` is bound as `-1` (SQLite's "no limit"),
-    /// NOT NULL. `LIMIT NULL` is silently treated as `LIMIT 0` by SQLite,
-    /// which used to make every history-serve path return an empty set.
+    /// NOT NULL. `LIMIT NULL` is silently treated as `LIMIT 0` by SQLite.
     pub async fn get_messages(
         &self,
         peer_id: i64,
@@ -272,10 +289,44 @@ CREATE TABLE IF NOT EXISTS settings (
         let _ = conn.execute("DELETE FROM messages WHERE peer_id = ?1", [peer_id]);
     }
 
+    // ---- per-chat encryption ----
+
+    /// Persists the encryption config for `peer_id`. Method "none" removes
+    /// the row (so plaintext chats stay truly stateless).
+    pub async fn set_encryption(&self, peer_id: i64, method: &str, secret: Option<&str>) {
+        let conn = self.conn.lock().await;
+        if method == "none" {
+            let _ = conn.execute("DELETE FROM peer_encryption WHERE peer_id = ?1", [peer_id]);
+        } else {
+            let _ = conn.execute(
+                "INSERT INTO peer_encryption (peer_id, method, secret) \
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(peer_id) DO UPDATE SET
+                     method = excluded.method,
+                     secret = excluded.secret",
+                params![peer_id, method, secret],
+            );
+        }
+    }
+
+    pub async fn load_all_encryption(&self) -> Vec<(i64, String, Option<String>)> {
+        let conn = self.conn.lock().await;
+        let mut stmt = match conn.prepare("SELECT peer_id, method, secret FROM peer_encryption") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub async fn wipe_all(&self) {
         let conn = self.conn.lock().await;
         let _ = conn.execute("DELETE FROM messages", []);
         let _ = conn.execute("DELETE FROM peers", []);
+        let _ = conn.execute("DELETE FROM peer_encryption", []);
         let _ = conn.execute("DELETE FROM settings", []);
     }
 }
