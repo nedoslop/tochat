@@ -56,6 +56,10 @@ pub async fn connect(
     *state.server_url.write().await = Some(base_url.clone());
     *state.my_status.write().await = UserStatus::Online;
 
+    // Load per-chat encryption configs from this user's local DB.
+    // Each chat has its own key; there is no global key file.
+    state.load_encryption_from_db().await.ok();
+
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             let s = match serde_json::to_string(&m) {
@@ -109,6 +113,10 @@ pub async fn disconnect(state: &Arc<AppState>) -> Result<(), String> {
     *state.db.write().await = None;
     *state.me.write().await = None;
     *state.server_url.write().await = None;
+    {
+        let mut map = state.encryption.write().await;
+        map.clear();
+    }
     Ok(())
 }
 
@@ -201,8 +209,6 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
 
         ServerMsg::Error { msg } => {
-            // Attempt to resolve a pending username lookup from the
-            // canonical "user 'X' does not exist" error.
             if let Some(name) = msg
                 .strip_prefix("user '")
                 .and_then(|s| s.strip_suffix("' does not exist"))
@@ -258,8 +264,6 @@ async fn should_alert(state: &Arc<AppState>) -> bool {
 fn request_attention(state: &Arc<AppState>) {
     let app = state.app.clone();
     tokio::spawn(async move {
-        // A single Critical request on Windows keeps flashing until focus.
-        // On macOS it bounces the dock; on Linux it sets urgency.
         for _ in 0..3 {
             let Some(window) = app.get_webview_window("main") else {
                 return;
@@ -275,7 +279,6 @@ fn request_attention(state: &Arc<AppState>) {
 }
 
 /// Best-effort lookup of the peer's display label for a notification.
-/// Prefers `display_name`, falls back to `username`, and finally to the raw ID.
 async fn peer_display_label(state: &Arc<AppState>, peer_id: i64) -> String {
     if let Ok(db) = state.active_db().await {
         if let Some(p) = db.get_peer(peer_id).await {
@@ -300,10 +303,10 @@ async fn handle_incoming(
     kind: String,
     payload: String,
 ) {
-    let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
+    // Decrypt with the per-chat key for this peer.
+    let (stored, is_plaintext) = state.decode_from_wire(from, &payload).await;
 
     if let Ok(db) = state.active_db().await {
-        // Incoming = not yet read by us.
         db.upsert_message(from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext, false)
             .await;
     }
@@ -392,7 +395,8 @@ async fn handle_note_incoming(
     kind: String,
     payload: String,
 ) {
-    let (stored, is_plaintext) = state.decode_from_wire(&payload).await;
+    // Notes have their own per-chat key (peer id = 0).
+    let (stored, is_plaintext) = state.decode_from_wire(NOTES_PEER, &payload).await;
     if let Ok(db) = state.active_db().await {
         db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, &kind, &stored, is_plaintext, true)
             .await;
@@ -419,8 +423,6 @@ async fn handle_pull_request(
     let Ok(db) = state.active_db().await else {
         return;
     };
-    // Serve the ENTIRE local history (limit=None → LIMIT -1 in SQL, i.e.
-    // truly unbounded). The requester applies its own paging.
     let msgs = db.get_messages(from, None, None).await;
     let Some(me) = state.me.read().await.clone() else { return };
 
@@ -433,7 +435,6 @@ async fn handle_pull_request(
     if let Some(lim) = limit {
         let lim = lim as usize;
         if filtered.len() > lim {
-            // Keep the NEWEST `lim` messages.
             let drop_count = filtered.len() - lim;
             filtered.drain(0..drop_count);
         }
@@ -441,11 +442,12 @@ async fn handle_pull_request(
 
     let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
     {
+        // Encrypt outgoing history with the key for THIS chat.
         let enc = state.encryption.read().await;
         for m in filtered {
             let payload = if !m.plaintext {
                 m.payload.clone()
-            } else if let Some(c) = enc.cipher.as_ref() {
+            } else if let Some(c) = enc.cipher(from) {
                 c.encrypt(&m.payload).unwrap_or_else(|| m.payload.clone())
             } else {
                 m.payload.clone()
@@ -488,9 +490,8 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
     if let Ok(db) = state.active_db().await {
         for m in messages {
             let direction = if m.from == me.id { "out" } else { "in" };
-            let (stored, is_plaintext) = state.decode_from_wire(&m.payload).await;
-            // History messages from peer are treated as unread so they
-            // contribute to unread badges after a fresh login.
+            // Decrypt with the key for THIS chat.
+            let (stored, is_plaintext) = state.decode_from_wire(from, &m.payload).await;
             let read = direction == "out";
             db.upsert_message(
                 from,

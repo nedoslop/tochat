@@ -7,28 +7,60 @@ use tauri::AppHandle;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::crypto::{build_cipher, Cipher, EncryptionConfig};
+use crate::crypto::{build_cipher, Cipher, EncryptionConfig, EncryptionMethod};
 use crate::db::Database;
 use crate::protocol::{ClientMsg, UserStatus};
 
-pub struct EncryptionState {
-    pub config: EncryptionConfig,
-    pub cipher: Option<Box<dyn Cipher>>,
+/// Per-peer encryption: config + cached cipher.
+///
+/// Encryption in this app is end-to-end: each chat is its own trust
+/// domain with its own key. The server never sees keys and never sees
+/// plaintext. There is deliberately no global key.
+pub struct EncryptionMap {
+    configs: HashMap<i64, EncryptionConfig>,
+    ciphers: HashMap<i64, Box<dyn Cipher>>,
 }
 
-impl Default for EncryptionState {
-    fn default() -> Self {
+impl EncryptionMap {
+    pub fn new() -> Self {
         Self {
-            config: EncryptionConfig::default(),
-            cipher: None,
+            configs: HashMap::new(),
+            ciphers: HashMap::new(),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.configs.clear();
+        self.ciphers.clear();
+    }
+
+    /// Sets the config for `peer_id`. `method = None` removes the entry.
+    pub fn set(&mut self, peer_id: i64, config: EncryptionConfig) {
+        self.ciphers.remove(&peer_id);
+        if config.method == EncryptionMethod::None {
+            self.configs.remove(&peer_id);
+            return;
+        }
+        if let Some(c) = build_cipher(config.method, config.secret.as_deref()) {
+            self.ciphers.insert(peer_id, c);
+        }
+        // Keep the config even if the cipher couldn't be built, so the
+        // UI can surface "secret is set but invalid" states.
+        self.configs.insert(peer_id, config);
+    }
+
+    pub fn get_config(&self, peer_id: i64) -> EncryptionConfig {
+        self.configs.get(&peer_id).cloned().unwrap_or_default()
+    }
+
+    pub fn cipher(&self, peer_id: i64) -> Option<&dyn Cipher> {
+        self.ciphers.get(&peer_id).map(|b| b.as_ref())
     }
 }
 
-impl EncryptionState {
-    pub fn set(&mut self, config: EncryptionConfig) {
-        self.cipher = build_cipher(config.method, config.secret.as_deref());
-        self.config = config;
+impl Default for EncryptionMap {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -54,26 +86,16 @@ pub struct AppState {
     pub db: RwLock<Option<Arc<Database>>>,
     pub me: RwLock<Option<Me>>,
     pub ws: Mutex<Option<WsSession>>,
-    pub encryption: RwLock<EncryptionState>,
-    /// My current status.
+    /// Per-peer encryption state (in memory; persisted in the local DB).
+    pub encryption: RwLock<EncryptionMap>,
     pub my_status: RwLock<UserStatus>,
     pub ws_counter: AtomicU64,
-    /// In-flight `resolve_user` lookups keyed by username. When a
-    /// `ServerMsg::Profile` (or matching error) arrives, the sender is
-    /// consumed with the resolved ID (or `None`).
+    /// In-flight `resolve_user` lookups keyed by username.
     pub pending_lookups: Mutex<HashMap<String, oneshot::Sender<Option<i64>>>>,
 }
 
 impl AppState {
     pub fn new(app: AppHandle, data_dir: PathBuf) -> Self {
-        let config = std::fs::read_to_string(encryption_path(&data_dir))
-            .ok()
-            .and_then(|s| serde_json::from_str::<EncryptionConfig>(&s).ok())
-            .unwrap_or_default();
-
-        let mut encryption = EncryptionState::default();
-        encryption.set(config);
-
         Self {
             app,
             data_dir,
@@ -81,7 +103,7 @@ impl AppState {
             db: RwLock::new(None),
             me: RwLock::new(None),
             ws: Mutex::new(None),
-            encryption: RwLock::new(encryption),
+            encryption: RwLock::new(EncryptionMap::new()),
             my_status: RwLock::new(UserStatus::Online),
             ws_counter: AtomicU64::new(1),
             pending_lookups: Mutex::new(HashMap::new()),
@@ -96,9 +118,28 @@ impl AppState {
             .ok_or_else(|| "not logged in".to_string())
     }
 
-    pub async fn encrypt_for_wire(&self, plaintext: &str) -> Result<String, String> {
-        let enc = self.encryption.read().await;
-        match enc.cipher.as_ref() {
+    /// Loads every persisted per-peer encryption config from the DB into
+    /// memory. Called once after a successful login (the DB is per-user,
+    /// per-server, so switching servers/users reloads from scratch).
+    pub async fn load_encryption_from_db(&self) -> Result<(), String> {
+        let db = self.active_db().await?;
+        let rows = db.load_all_encryption().await;
+        let mut map = self.encryption.write().await;
+        map.clear();
+        for (peer_id, method_str, secret) in rows {
+            let method = EncryptionMethod::parse(&method_str);
+            map.set(peer_id, EncryptionConfig { method, secret });
+        }
+        Ok(())
+    }
+
+    pub async fn encrypt_for_wire(
+        &self,
+        peer_id: i64,
+        plaintext: &str,
+    ) -> Result<String, String> {
+        let map = self.encryption.read().await;
+        match map.cipher(peer_id) {
             Some(c) => c
                 .encrypt(plaintext)
                 .ok_or_else(|| "encryption failed".to_string()),
@@ -106,9 +147,9 @@ impl AppState {
         }
     }
 
-    pub async fn decode_from_wire(&self, wire: &str) -> (String, bool) {
-        let enc = self.encryption.read().await;
-        match enc.cipher.as_ref() {
+    pub async fn decode_from_wire(&self, peer_id: i64, wire: &str) -> (String, bool) {
+        let map = self.encryption.read().await;
+        match map.cipher(peer_id) {
             Some(c) => match c.decrypt(wire) {
                 Some(pt) => (pt, true),
                 None => (wire.to_string(), false),
@@ -116,10 +157,6 @@ impl AppState {
             None => (wire.to_string(), false),
         }
     }
-}
-
-pub fn encryption_path(dir: &Path) -> PathBuf {
-    dir.join("encryption.json")
 }
 
 pub fn theme_path(dir: &Path) -> PathBuf {

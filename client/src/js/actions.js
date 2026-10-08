@@ -5,6 +5,7 @@ import { showConfirm, showPrompt } from "./dialog.js";
 import {
     renderSidebar, renderMessages, renderPendingList, showChatView, latestInboundTs,
 } from "./ui.js";
+import { refreshEncryptionStatus, closeEncPanel } from "./encryption.js";
 
 // ---------- auth ----------
 
@@ -58,6 +59,9 @@ export async function openNotes() {
     state.peers.add(NOTES_PEER);
     state.unread[NOTES_PEER] = 0;
     showChatView();
+    // Close the enc panel; it targets the previous chat.
+    closeEncPanel();
+    void refreshEncryptionStatus(NOTES_PEER);
     try {
         state.msgCache[NOTES_PEER] = await invoke("get_messages", {
             peer: NOTES_PEER, beforeTs: null, limit: null,
@@ -70,9 +74,6 @@ export async function openNotes() {
     void updateBadge();
 }
 
-/**
- * Open a chat given a numeric peer ID.
- */
 export async function openPeer(peerId) {
     if (peerId === null || peerId === undefined) return;
     if (peerId === state.meId) return toast("You can't chat with yourself.");
@@ -92,6 +93,9 @@ export async function openPeer(peerId) {
     state.peers.add(peerId);
     state.unread[peerId] = 0;
     showChatView();
+    // Close the enc panel; it targets the previous chat.
+    closeEncPanel();
+    void refreshEncryptionStatus(peerId);
 
     try {
         state.msgCache[peerId] = await invoke("get_messages", {
@@ -109,11 +113,6 @@ export async function openPeer(peerId) {
     closeSidebar();
 }
 
-/**
- * Resolve a typed-in username and open the chat. Used by the "Start chat"
- * box. The server responds with the resolved ID; the local `peers` table
- * is also populated as a side effect (via the `profile` event).
- */
 export async function openPeerByName(username) {
     if (!username) return;
     if (username === state.meName) return toast("You can't chat with yourself.");
@@ -121,7 +120,6 @@ export async function openPeerByName(username) {
     if (cached !== undefined) return openPeer(cached);
     try {
         const id = await invoke("resolve_user", { username });
-        // Seed profile so the sidebar can render the name immediately.
         if (!state.profiles[id]) {
             state.profiles[id] = { username, display_name: null, avatar: null };
         }
@@ -362,8 +360,6 @@ export async function refreshReadState(peer) {
         const latest = await invoke("get_messages", {
             peer, beforeTs: null, limit: INITIAL_LIMIT,
         });
-        // Merge, don't replace — otherwise we'd drop older pages loaded
-        // via scroll-back pagination.
         const existing = state.msgCache[peer] || [];
         const byId = new Map();
         for (const m of existing) byId.set(m.id, m);
@@ -377,22 +373,6 @@ export async function refreshReadState(peer) {
 
 // ---------- history sync ----------
 
-/**
- * Ask the peer for their newest page of messages.
- *
- * No in-flight guard: the previous guard was the cause of the
- * "peer never syncs" bug — the first attempt (fired right after the
- * peer's PeerOnline arrived, potentially before their session was fully
- * registered server-side) would fail, and every retry within the next
- * 6 s was silently dropped because `state.pulling` still contained the
- * peer. Duplicate pulls are safe: DB upsert is keyed on message id.
- *
- * Always uses `since: 0` (not a timestamp from our local cache). The
- * cache is a strict subset of the peer's history, so asking "give me
- * everything" and relying on id-keyed upsert to dedupe is both simpler
- * and correct — including the offline→online flip where one side has
- * a message the other has never seen.
- */
 export async function autoPull(peer) {
     if (peer === null || peer === state.meId || peer === NOTES_PEER) return;
     try {
@@ -486,4 +466,5 @@ export function resetToLogin() {
     renderSidebar();
     renderMessages();
     void updateBadge();
+    void refreshEncryptionStatus(null);
 }
