@@ -102,5 +102,6 @@ __pycache__
 *.patch
 joined.txt
 .crash
+.koltin
 tmp/
 temp/
