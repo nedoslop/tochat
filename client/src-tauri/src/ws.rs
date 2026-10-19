@@ -114,11 +114,18 @@ pub async fn connect(
             }
         };
         if was_current {
-            let _ = reader_state.app.emit("disconnected", json!(reader_username));
+            let _ = reader_state
+                .app
+                .emit("disconnected", json!(reader_username));
         }
     });
 
-    *state.ws.lock().await = Some(WsSession { id: session_id, tx, reader, writer });
+    *state.ws.lock().await = Some(WsSession {
+        id: session_id,
+        tx,
+        reader,
+        writer,
+    });
     Ok(())
 }
 
@@ -158,7 +165,11 @@ fn to_ws_url(base: &str) -> Result<String, String> {
 
 async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     match sm {
-        ServerMsg::AuthOk { user_id, username, last_seen } => {
+        ServerMsg::AuthOk {
+            user_id,
+            username,
+            last_seen,
+        } => {
             *state.me.write().await = Some(Me {
                 id: user_id,
                 username: username.clone(),
@@ -189,7 +200,9 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
 
         ServerMsg::PeerOffline { user_id } => {
-            let _ = state.app.emit("peer-offline", json!({ "user_id": user_id }));
+            let _ = state
+                .app
+                .emit("peer-offline", json!({ "user_id": user_id }));
         }
 
         ServerMsg::StatusUpdate { user_id, status } => {
@@ -208,15 +221,42 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             );
         }
 
-        ServerMsg::Message { id, from, ts, edit_ts, kind, payload } => {
-            handle_incoming(state, id, from, ts, edit_ts, kind.as_str().to_string(), payload).await;
+        ServerMsg::Message {
+            id,
+            from,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
+            handle_incoming(
+                state,
+                id,
+                from,
+                ts,
+                edit_ts,
+                kind.as_str().to_string(),
+                payload,
+            )
+            .await;
         }
 
-        ServerMsg::NoteMessage { id, ts, edit_ts, kind, payload } => {
+        ServerMsg::NoteMessage {
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
             handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
 
-        ServerMsg::PullHistoryRequest { from, since, limit, before } => {
+        ServerMsg::PullHistoryRequest {
+            from,
+            since,
+            limit,
+            before,
+        } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
 
@@ -259,10 +299,20 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             let _ = state.app.emit("blocked", json!(users));
         }
 
-        ServerMsg::Profile { user_id, username, display_name, avatar } => {
+        ServerMsg::Profile {
+            user_id,
+            username,
+            display_name,
+            avatar,
+        } => {
             if let Ok(db) = state.active_db().await {
-                db.upsert_peer(user_id, &username, display_name.as_deref(), avatar.as_deref())
-                    .await;
+                db.upsert_peer(
+                    user_id,
+                    &username,
+                    display_name.as_deref(),
+                    avatar.as_deref(),
+                )
+                .await;
             }
             {
                 let mut lookups = state.pending_lookups.lock().await;
@@ -306,27 +356,30 @@ pub fn is_window_focused(app: &tauri::AppHandle) -> bool {
 /// another always-on-top window or if the request races with the
 /// notification toast. Re-issuing it every two seconds keeps it alive.
 fn request_attention(state: &Arc<AppState>) {
-    let app = state.app.clone();
-    tokio::spawn(async move {
-        for _ in 0..30 {
-            if app.get_webview_window("main").is_none() {
-                return;
-            }
-            if is_window_focused(&app) {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.request_user_attention(None);
+    #[cfg(not(target_os = "android"))]
+    {
+        let app = state.app.clone();
+        tokio::spawn(async move {
+            for _ in 0..30 {
+                if app.get_webview_window("main").is_none() {
+                    return;
                 }
-                return;
+                if is_window_focused(&app) {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.request_user_attention(None);
+                    }
+                    return;
+                }
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.request_user_attention(Some(UserAttentionType::Critical));
+                }
+                tokio::time::sleep(Duration::from_millis(2000)).await;
             }
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.request_user_attention(Some(UserAttentionType::Critical));
+                let _ = w.request_user_attention(None);
             }
-            tokio::time::sleep(Duration::from_millis(2000)).await;
-        }
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.request_user_attention(None);
-        }
-    });
+        });
+    }
 }
 
 /// Best-effort lookup of the peer's display label for a notification.
@@ -358,8 +411,18 @@ async fn handle_incoming(
     let (stored, is_plaintext) = state.decode_from_wire(from, &payload).await;
 
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext, false)
-            .await;
+        db.upsert_message(
+            from,
+            &id,
+            "in",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            false,
+        )
+        .await;
     }
 
     // A minimized window is NEVER "in front of the user", regardless of what
@@ -448,8 +511,18 @@ async fn handle_note_incoming(
     // Notes have their own per-chat key (peer id = 0).
     let (stored, is_plaintext) = state.decode_from_wire(NOTES_PEER, &payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, &kind, &stored, is_plaintext, true)
-            .await;
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            true,
+        )
+        .await;
     }
     let _ = state.app.emit(
         "note-message",
@@ -474,7 +547,9 @@ async fn handle_pull_request(
         return;
     };
     let msgs = db.get_messages(from, None, None).await;
-    let Some(me) = state.me.read().await.clone() else { return };
+    let Some(me) = state.me.read().await.clone() else {
+        return;
+    };
 
     let mut filtered: Vec<_> = msgs
         .into_iter()
@@ -529,12 +604,17 @@ async fn handle_pull_request(
 
     let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
     if let Some(tx) = tx {
-        let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: wire });
+        let _ = tx.send(ClientMsg::HistoryResponse {
+            to: from,
+            messages: wire,
+        });
     }
 }
 
 async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec<StoredMsg>) {
-    let Some(me) = state.me.read().await.clone() else { return };
+    let Some(me) = state.me.read().await.clone() else {
+        return;
+    };
 
     if let Ok(db) = state.active_db().await {
         for m in messages {
