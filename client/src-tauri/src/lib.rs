@@ -14,6 +14,7 @@ use tauri::Manager;
 
 use crate::state::{read_theme, AppState};
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -65,12 +66,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(target_os = "android")]
-#[no_mangle]
-fn android_main(app: tauri::android::AndroidApp) {
-    tauri::android::init(app, move |env| {
-        run();
-    });
 }

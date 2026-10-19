@@ -3,7 +3,11 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tauri::{Emitter, Manager, UserAttentionType};
+
+#[cfg(not(target_os = "android"))]
+use tauri::UserAttentionType;
+
+use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
