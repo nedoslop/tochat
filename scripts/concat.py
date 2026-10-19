@@ -9,6 +9,7 @@ if '--server' in sys.argv:
     files.append('server/Cargo.toml')
     files.append('server/src/auth.rs')
     files.append('server/src/db.rs')
+    files.append('server/src/lib.rs')
     files.append('server/src/main.rs')
     files.append('server/src/protocol.rs')
     files.append('server/src/state.rs')
