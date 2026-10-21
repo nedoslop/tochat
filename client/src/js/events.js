@@ -29,6 +29,19 @@ function applyMyAvatar() {
   }
 }
 
+export function applyMyProfile() {
+  const meNameEl = document.getElementById("me-name");
+  const mine = state.profiles[state.meId];
+  if (meNameEl) {
+    const shown = (mine && mine.display_name && mine.display_name.trim())
+      ? mine.display_name.trim()
+      : (state.meName || "—");
+    meNameEl.textContent = shown;
+    meNameEl.title = state.meName ? `@${state.meName}` : "";
+  }
+  applyMyAvatar();
+}
+
 function mergeIntoCache(peerId, incoming) {
   const existing = state.msgCache[peerId] || [];
   const byId = new Map();
@@ -57,10 +70,13 @@ export async function setupEvents() {
     state.meId = e.payload.user_id;
     state.meName = e.payload.username;
 
-    document.getElementById("me-name").textContent = state.meName;
-    const av = document.getElementById("me-avatar");
-    av.textContent = initial(state.meName);
-    av.style.background = avatarColor(state.meName);
+    applyMyProfile();
+    try {
+      const ok = await invoke("check_notifications_enabled");
+      state.notificationsEnabled = !!ok;
+      const warn = document.getElementById("notif-warning");
+      if (warn) warn.hidden = !!ok;
+    } catch (_) {}
 
     document.getElementById("login-view").hidden = true;
     document.getElementById("app-view").hidden = false;
@@ -141,7 +157,7 @@ export async function setupEvents() {
     if (!user_id) return;
     state.profiles[user_id] = { username, display_name, avatar };
     state.nameToId.set(username, user_id);
-    if (user_id === state.meId) applyMyAvatar();
+    if (user_id === state.meId) applyMyProfile();
     renderSidebar();
   });
 
@@ -266,6 +282,7 @@ export async function setupEvents() {
 
   await listen("history-received", async (e) => {
     const peer = e.payload.from;
+    state.syncingPeers.delete(peer);
 
     try {
       const latest = await invoke("get_messages", {
@@ -327,6 +344,7 @@ export async function setupEvents() {
   });
 
   await listen("in-app-notification", (e) => {
+    if (state.currentPeer === e.payload.peer) return;
     showInAppBanner(e.payload.title, e.payload.body, e.payload.peer);
   });
 

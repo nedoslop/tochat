@@ -1,6 +1,23 @@
-(Some of them may be already implemented, but untested)
- - Add loading circle when syncing messages
- - Maybe don't delete a chat when blocking? maybe just don't allow to not send a message (from both sides)
- - Android/IOS support (better adaptive UI?)
- - What to do when system notifications are disabled???
- - Maybe show my current name (not login) at the top left corner
+(Implemented)
+ [x] Add loading circle when syncing messages
+     - Added SVG/CSS loading spinner in chat header when syncing (`chat-sync-indicator`).
+     - Added animated spinner when loading older messages (`loading-spinner-row`).
+     - Added syncing empty state in message history while initial pull is in progress.
+ [x] Maybe don't delete a chat when blocking? maybe just don't allow to not send a message (from both sides)
+     - Preserved chat messages and peer relationship on block (removed `clear_peer` on block).
+     - Disabled message sending in UI with explicit notice (`blocked-banner` with quick "Unblock" button).
+     - Added `Blocked` badge to peer items in the sidebar.
+     - Prevented outbound send attempts if target user is blocked.
+ [x] Android/IOS support (better adaptive UI?)
+     - Added dynamic viewport units `100dvh` and safe-area insets (`env(safe-area-inset-top/bottom)`).
+     - Added mobile back button in chat header to return to chat list.
+     - Enforced `16px` font size on inputs to prevent unwanted iOS Safari zooming.
+     - Added Escape key / back navigation support.
+ [x] What to do when system notifications are disabled???
+     - Added `check_notifications_enabled` command to verify OS notification permission status.
+     - Added warning banner in Profile dialog if OS notifications are disabled.
+     - In-app notification banner (`in-app-banner`) is now emitted for all background/inactive chats as a reliable fallback.
+     - Retained audio chime (`play_notification_chirp`) and taskbar flash (`request_attention`).
+ [x] Maybe show my current name (not login) at the top left corner
+     - Created `applyMyProfile()` to show `display_name` (falling back to username) in `#me-name`.
+     - Automatically updates in real-time on `auth-ok`, `profile` events, and after saving profile changes.

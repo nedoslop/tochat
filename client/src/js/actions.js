@@ -82,16 +82,6 @@ export async function openNotes() {
 export async function openPeer(peerId) {
   if (peerId === null || peerId === undefined) return;
   if (peerId === state.meId) return toast("You can't chat with yourself.");
-  if (state.blocked.has(peerId)) {
-    const unblock = await showConfirm(
-      `${displayName(peerId)} is blocked. Unblock to open the chat?`,
-      { title: "Blocked user", okText: "Unblock" },
-    );
-    if (!unblock) return;
-    try { await invoke("unblock_user", { userId: peerId }); }
-    catch (e) { toast("Unblock error: " + e); return; }
-    state.blocked.delete(peerId);
-  }
 
   state.pending.delete(peerId);
   state.currentPeer = peerId;
@@ -177,6 +167,9 @@ function mergeSent(peerId, msg) {
 
 export async function send() {
   if (state.currentPeer === null) return;
+  if (state.blocked.has(state.currentPeer)) {
+    return toast("You cannot send messages to a blocked user. Unblock them first.");
+  }
   const input = document.getElementById("msg");
   const text = input.value;
   if (!text.trim()) return;
@@ -199,6 +192,9 @@ export async function send() {
 export async function sendMedia(kind, payload) {
   const peer = state.currentPeer;
   if (peer === null) return;
+  if (state.blocked.has(peer)) {
+    return toast("You cannot send messages to a blocked user. Unblock them first.");
+  }
   try {
     const msg = await invoke("send_media", { to: peer, kind, payload });
     if (peer !== NOTES_PEER) {
@@ -359,21 +355,17 @@ export async function blockUser() {
   const peer = state.currentPeer;
   if (peer === null || peer === NOTES_PEER) return;
   const ok = await showConfirm(
-    `Block ${displayName(peer)}? They won't be able to send you messages.`,
+    `Block ${displayName(peer)}? They won't be able to send you messages and message sending will be disabled.`,
     { title: "Block user", okText: "Block", danger: true },
   );
   if (!ok) return;
   try {
     await invoke("block_user", { userId: peer });
     state.blocked.add(peer);
-    state.peers.delete(peer);
-    state.pending.delete(peer);
-    state.currentPeer = null;
-    delete state.msgCache[peer];
-    delete state.seenIds[peer];
     renderSidebar();
     renderMessages();
     renderBlockedList();
+    toast("User blocked.");
   } catch (e) { toast("Block error: " + e); }
 }
 
@@ -416,6 +408,10 @@ export async function refreshReadState(peer) {
 
 export async function autoPull(peer) {
   if (peer === null || peer === state.meId || peer === NOTES_PEER) return;
+  state.syncingPeers.add(peer);
+  renderSidebar();
+  if (state.currentPeer === peer) renderMessages();
+
   try {
     if (!state.msgCache[peer]) {
       state.msgCache[peer] = await invoke("get_messages", {
@@ -427,7 +423,24 @@ export async function autoPull(peer) {
     });
   } catch (e) {
     console.warn("[autoPull] failed for", peer, e);
+    state.syncingPeers.delete(peer);
+    renderSidebar();
+    if (state.currentPeer === peer) renderMessages();
   }
+
+  // Safety fallback timeout if peer never replies
+  setTimeout(() => {
+    if (state.syncingPeers.delete(peer)) {
+      renderSidebar();
+      if (state.currentPeer === peer) renderMessages();
+    }
+  }, 6000);
+}
+
+export function closeCurrentChat() {
+  state.currentPeer = null;
+  renderSidebar();
+  renderMessages();
 }
 
 export async function loadOlder() {

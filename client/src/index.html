@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Chat</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -113,12 +113,24 @@
     <main class="main">
       <section id="chat-view" class="chat-view">
         <header class="chat-header">
+          <button id="mobile-back-btn" class="btn btn-ghost btn-icon mobile-back-btn" title="Back to chats">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"></line>
+              <polyline points="12 19 5 12 12 5"></polyline>
+            </svg>
+          </button>
           <button id="hamburger-btn" class="btn btn-ghost btn-icon hamburger" title="Menu">☰</button>
           <div class="chat-peer">
             <div class="avatar" id="peer-avatar">?</div>
             <div class="chat-peer-meta">
               <div class="chat-peer-name" id="peer-title">Select a chat</div>
-              <div class="chat-peer-status" id="peer-status"></div>
+              <div class="peer-status-wrap">
+                <div class="chat-peer-status" id="peer-status"></div>
+                <div id="chat-sync-indicator" class="chat-sync-indicator" hidden>
+                  <span class="loading-spinner sm"></span>
+                  <span class="sync-label">syncing…</span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="header-actions">
@@ -164,6 +176,14 @@
         </header>
 
         <div id="messages" class="messages"></div>
+
+        <div id="blocked-banner" class="blocked-banner" hidden>
+          <div class="blocked-banner-info">
+            <span class="blocked-banner-icon">🚫</span>
+            <span id="blocked-banner-text">This user is blocked. Messages cannot be sent.</span>
+          </div>
+          <button id="unblock-in-chat-btn" class="btn btn-secondary btn-sm">Unblock</button>
+        </div>
 
         <div id="composer" class="composer" hidden>
           <input id="image-input" type="file" accept="image/*" hidden />
@@ -280,6 +300,9 @@
   <div id="profile-modal" class="modal-overlay" hidden>
     <div class="modal">
       <div class="modal-title">Profile</div>
+      <div id="notif-warning" class="notif-warning" hidden>
+        <span>⚠️ System notifications are disabled in your OS. Turn them on to receive message alerts.</span>
+      </div>
 
       <div class="profile-preview">
         <div class="profile-avatar-wrap">

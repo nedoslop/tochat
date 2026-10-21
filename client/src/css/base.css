@@ -507,3 +507,52 @@ Scrollbars
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+/* Dynamic viewport & Safe area support */
+html, body {
+  height: 100vh;
+  height: 100dvh;
+}
+
+@media (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents auto-zoom on iOS */
+  }
+}
+
+/* Spinner component */
+.loading-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rotate 0.75s linear infinite;
+  flex-shrink: 0;
+}
+.loading-spinner.sm {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+.loading-spinner.lg {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Notifications disabled warning banner */
+.notif-warning {
+  background: var(--warning-soft, rgba(245, 158, 11, 0.12));
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}

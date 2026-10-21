@@ -57,6 +57,12 @@ export const state = {
 
     // id -> Set<msg-id>
     seenIds: {},
+
+    // Set of peer IDs currently syncing messages
+    syncingPeers: new Set(),
+
+    // OS notification permission state
+    notificationsEnabled: true,
 };
 
 export function resetState() {
@@ -75,6 +81,8 @@ export function resetState() {
     state.loadingOlder.clear();
     state.lastPullLimit = {};
     state.suppressScrollLoad = false;
+    state.syncingPeers.clear();
+    state.notificationsEnabled = true;
     for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
     for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
 }

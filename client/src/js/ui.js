@@ -28,8 +28,21 @@ export function showBlockedView() {
 /** Show the composer only when a chat is actually selected. */
 function updateComposerVisibility() {
   const composer = document.getElementById("composer");
-  if (!composer) return;
-  composer.hidden = state.currentPeer === null;
+  const blockedBanner = document.getElementById("blocked-banner");
+  const appView = document.getElementById("app-view");
+
+  if (appView) {
+    appView.classList.toggle("has-active-chat", state.currentPeer !== null);
+  }
+
+  const isBlocked = state.currentPeer !== null && state.blocked.has(state.currentPeer);
+
+  if (blockedBanner) {
+    blockedBanner.hidden = !isBlocked;
+  }
+  if (composer) {
+    composer.hidden = isBlocked || state.currentPeer === null;
+  }
 }
 
 export function renderMyStatus() {
@@ -110,6 +123,13 @@ export function renderSidebar() {
       const name = document.createElement("div");
       name.className = "peer-name";
       name.textContent = isNotes ? "Notes" : displayName(p);
+      if (state.blocked.has(p)) {
+        d.classList.add("is-blocked");
+        const tag = document.createElement("span");
+        tag.className = "peer-blocked-tag";
+        tag.textContent = "Blocked";
+        name.appendChild(tag);
+      }
       body.appendChild(name);
 
       d.appendChild(av);
@@ -155,8 +175,16 @@ export function renderSidebar() {
       peerAvatar.style.background = avatarColor(peerColorKey(state.currentPeer));
       peerAvatar.textContent = initial(displayName(state.currentPeer));
     }
+    const syncEl = document.getElementById("chat-sync-indicator");
+    if (syncEl) {
+      syncEl.hidden = !state.syncingPeers.has(state.currentPeer);
+    }
+
     if (isNotes) {
       statusEl.textContent = "synced across your devices";
+      statusEl.classList.remove("online", "away", "busy");
+    } else if (state.blocked.has(state.currentPeer)) {
+      statusEl.textContent = "blocked";
       statusEl.classList.remove("online", "away", "busy");
     } else {
       const st = state.peerStatus[state.currentPeer];
@@ -171,6 +199,8 @@ export function renderSidebar() {
       }
     }
   } else {
+    const syncEl = document.getElementById("chat-sync-indicator");
+    if (syncEl) syncEl.hidden = true;
     titleEl.textContent = "Select a chat";
     peerAvatar.textContent = "?";
     peerAvatar.style.background = "var(--border-strong)";
@@ -199,6 +229,13 @@ export function renderMessages(preserveScroll = false) {
   const msgs = (state.msgCache[peer] || []).slice().sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
 
   if (msgs.length === 0) {
+    if (state.syncingPeers.has(peer)) {
+      const sp = document.createElement("div");
+      sp.className = "empty-state-spinner";
+      sp.innerHTML = '<span class="loading-spinner lg"></span><div>Syncing messages…</div>';
+      el.appendChild(sp);
+      return;
+    }
     el.appendChild(emptyState(
       peer === NOTES_PEER ? "📝" : "📭",
       peer === NOTES_PEER ? "No notes yet" : "No messages yet",
@@ -216,8 +253,8 @@ export function renderMessages(preserveScroll = false) {
     const reachedStart = state.mightHaveMore[peer] === false;
     if (loading) {
       const b = document.createElement("div");
-      b.className = "load-older";
-      b.textContent = "Loading…";
+      b.className = "load-older loading-spinner-row";
+      b.innerHTML = '<span class="loading-spinner sm"></span><span>Loading older messages…</span>';
       el.appendChild(b);
     } else if (reachedStart) {
       const b = document.createElement("div");

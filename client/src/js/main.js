@@ -7,7 +7,7 @@ import {
   acceptPending, refreshPending, refreshBlocked, unblockUser,
   clearChat, leaveChat, blockUser,
   loadOlder, sendImage, sendAudio, sendFile, updateBadge,
-  openSidebar, closeSidebar,
+  openSidebar, closeSidebar, closeCurrentChat,
 } from "./actions.js";
 import {
   renderMessages, renderMyStatus, showChatView, showPendingView, showBlockedView,
@@ -18,7 +18,7 @@ import {
   applyEncryption, generatePsk,
 } from "./encryption.js";
 import { initTheme, cycleTheme } from "./theme.js";
-import { setupEvents } from "./events.js";
+import { setupEvents, applyMyProfile } from "./events.js";
 
 // ---------- profile modal ----------
 
@@ -26,6 +26,8 @@ let pendingAvatar = undefined;
 
 function openProfileModal() {
   const modal = document.getElementById("profile-modal");
+  const warn = document.getElementById("notif-warning");
+  if (warn) warn.hidden = state.notificationsEnabled;
   const nameInput = document.getElementById("profile-name");
   const imgEl = document.getElementById("profile-avatar-img");
   const phEl = document.getElementById("profile-avatar-placeholder");
@@ -99,6 +101,7 @@ async function saveProfile() {
       display_name: name || null,
       avatar: avatarToSend,
     };
+    applyMyProfile();
     closeProfileModal();
     toast("Profile updated.");
   } catch (e) {
@@ -320,6 +323,29 @@ async function init() {
 
   document.getElementById("blocked-btn").onclick = () => { showBlockedView(); refreshBlocked(); };
   document.getElementById("blocked-back-btn").onclick = () => showChatView();
+
+  const mobileBackBtn = document.getElementById("mobile-back-btn");
+  if (mobileBackBtn) mobileBackBtn.onclick = () => closeCurrentChat();
+
+  const unblockInChatBtn = document.getElementById("unblock-in-chat-btn");
+  if (unblockInChatBtn) {
+    unblockInChatBtn.onclick = () => {
+      if (state.currentPeer) unblockUser(state.currentPeer);
+    };
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const pm = document.getElementById("profile-modal");
+      if (pm && !pm.hidden) {
+        closeProfileModal();
+        return;
+      }
+      if (state.currentPeer !== null) {
+        closeCurrentChat();
+      }
+    }
+  });
 
   document.getElementById("hamburger-btn").onclick = openSidebar;
   document.getElementById("sidebar-backdrop").onclick = closeSidebar;
