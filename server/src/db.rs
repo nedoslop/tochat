@@ -219,11 +219,6 @@ CREATE TABLE IF NOT EXISTS blocks (
             "INSERT OR IGNORE INTO blocks (blocker, blocked) VALUES (?1, ?2)",
             params![blocker, blocked],
         );
-        let (a, b) = order(blocker, blocked);
-        let _ = conn.execute(
-            "DELETE FROM relationships WHERE user_a = ?1 AND user_b = ?2",
-            params![a, b],
-        );
     }
 
     pub async fn remove_block(&self, blocker: i64, blocked: i64) {

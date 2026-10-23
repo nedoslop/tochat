@@ -371,8 +371,10 @@ export async function setupEvents() {
   // session's reader exits. Stale readers from prior sessions are
   // silent, which is why we can safely treat this as a real drop.
   // -----------------------------------------------------------------
-  await listen("disconnected", async () => {
+  await listen("disconnected", async (e) => {
+    const username = e.payload;
     if (!state.meId) return;
+    if (username && state.meName && username !== state.meName) return;
     try { await invoke("disconnect"); } catch (_) {}
     resetToLogin();
   });

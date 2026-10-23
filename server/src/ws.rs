@@ -67,6 +67,7 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Inherit the last known status for this user. This is what makes
@@ -161,18 +162,28 @@ async fn handle_socket(
 
     // --- Outbound pump -----------------------------------------------------
     let mut send_task = tokio::spawn(async move {
-        while let Some(m) = rx.recv().await {
-            let is_close = matches!(m, ServerMsg::Close { .. });
-            let s = match serde_json::to_string(&m) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            if sender.send(Message::Text(s.into())).await.is_err() {
-                break;
-            }
-            if is_close {
-                let _ = sender.send(Message::Close(None)).await;
-                break;
+        loop {
+            tokio::select! {
+                Some(payload) = pong_rx.recv() => {
+                    if sender.send(Message::Pong(payload)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(m) = rx.recv() => {
+                    let is_close = matches!(m, ServerMsg::Close { .. });
+                    let s = match serde_json::to_string(&m) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    if sender.send(Message::Text(s.into())).await.is_err() {
+                        break;
+                    }
+                    if is_close {
+                        let _ = sender.send(Message::Close(None)).await;
+                        break;
+                    }
+                }
+                else => break,
             }
         }
     });
@@ -181,17 +192,25 @@ async fn handle_socket(
     let state2 = state.clone();
     let tx2 = tx.clone();
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(m)) = receiver.next().await {
-            let text = match m {
-                Message::Text(t) => t.to_string(),
+        while let Some(msg) = receiver.next().await {
+            let m = match msg {
+                Ok(m) => m,
+                Err(_) => break,
+            };
+            match m {
+                Message::Text(t) => {
+                    let cm: ClientMsg = match serde_json::from_str(&t) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    handle_client(cm, user_id, session_id, &state2, &tx2).await;
+                }
+                Message::Ping(payload) => {
+                    let _ = pong_tx.send(payload);
+                }
                 Message::Close(_) => break,
-                _ => continue,
-            };
-            let cm: ClientMsg = match serde_json::from_str(&text) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            handle_client(cm, user_id, session_id, &state2, &tx2).await;
+                _ => {}
+            }
         }
     });
 
@@ -447,7 +466,7 @@ async fn handle_send(
         return;
     }
 
-    if state.db.is_blocked(to_id, me_id).await {
+    if state.db.is_blocked(to_id, me_id).await || state.db.is_blocked(me_id, to_id).await {
         return;
     }
 
@@ -502,7 +521,7 @@ async fn handle_edit(
         });
         return;
     }
-    if state.db.is_blocked(to_id, me_id).await {
+    if state.db.is_blocked(to_id, me_id).await || state.db.is_blocked(me_id, to_id).await {
         return;
     }
     let established = matches!(
@@ -593,7 +612,7 @@ async fn handle_history_response(
     if state.db.username(to_id).await.is_none() {
         return;
     }
-    if state.db.is_blocked(to_id, me_id).await {
+    if state.db.is_blocked(to_id, me_id).await || state.db.is_blocked(me_id, to_id).await {
         return;
     }
     if let Some((_, established)) = state.db.get_relationship(me_id, to_id).await {
@@ -648,8 +667,6 @@ async fn handle_block(
     let _ = tx.send(ServerMsg::Blocked {
         users: resolve_peers(state, &ids).await,
     });
-    let _ = tx.send(ServerMsg::ChatLeft { peer: target_id });
-    state.send_to_user(target_id, ServerMsg::ChatLeft { peer: me_id });
 }
 
 async fn handle_unblock(

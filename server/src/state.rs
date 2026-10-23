@@ -29,7 +29,7 @@ impl AppState {
     pub fn is_online(&self, user_id: i64) -> bool {
         self.online
             .get(&user_id)
-            .map(|v| !v.is_empty())
+            .map(|v| v.iter().any(|s| !s.tx.is_closed()))
             .unwrap_or(false)
     }
 
@@ -43,9 +43,10 @@ impl AppState {
 
     /// Send `msg` to every session of `user_id`. Returns # of sessions reached.
     pub fn send_to_user(&self, user_id: i64, msg: ServerMsg) -> usize {
-        let Some(sessions) = self.online.get(&user_id) else {
+        let Some(mut sessions) = self.online.get_mut(&user_id) else {
             return 0;
         };
+        sessions.retain(|s| !s.tx.is_closed());
         let mut n = 0;
         for s in sessions.iter() {
             if s.tx.send(msg.clone()).is_ok() {
@@ -62,9 +63,10 @@ impl AppState {
         except_session: u64,
         msg: ServerMsg,
     ) -> usize {
-        let Some(sessions) = self.online.get(&user_id) else {
+        let Some(mut sessions) = self.online.get_mut(&user_id) else {
             return 0;
         };
+        sessions.retain(|s| !s.tx.is_closed());
         let mut n = 0;
         for s in sessions.iter() {
             if s.session_id == except_session {
@@ -80,6 +82,7 @@ impl AppState {
     /// Adds a new session. Returns `true` if this is the user's first session.
     pub fn add_session(&self, user_id: i64, session: OnlineSession) -> bool {
         let mut entry = self.online.entry(user_id).or_default();
+        entry.retain(|s| !s.tx.is_closed());
         let was_empty = entry.is_empty();
         entry.push(session);
         was_empty
@@ -90,7 +93,7 @@ impl AppState {
         let mut empty = false;
         let mut drop_entry = false;
         if let Some(mut e) = self.online.get_mut(&user_id) {
-            e.retain(|s| s.session_id != session_id);
+            e.retain(|s| s.session_id != session_id && !s.tx.is_closed());
             empty = e.is_empty();
             drop_entry = empty;
         }
