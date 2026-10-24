@@ -293,6 +293,7 @@ async def test_very_edge_case_offline_bidirectional_sync():
             await w1.send(json.dumps({
                 "type": "send", "to": id2, "id": "m0", "ts": 100, "kind": "text", "payload": "init"
             }))
+            await asyncio.sleep(0.05)
             await w2.send(json.dumps({"type": "pull_history", "from": id1, "since": 0}))
             await recv_type(w1, "pull_history_request")
             await w1.send(json.dumps({
@@ -501,3 +502,4 @@ async def test_delete_account_over_websocket():
 
     # Re-registering with the same name now works because old account is deleted
     assert register(name, "new_pw").status_code == 200
+
