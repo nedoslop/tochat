@@ -454,6 +454,7 @@ async def test_block_unblock_behavior():
 
             # Establish chat
             await w1.send(json.dumps({"type": "send", "to": id2, "id": "m1", "ts": 1, "kind": "text", "payload": "hi"}))
+            await asyncio.sleep(0.05)
             await w2.send(json.dumps({"type": "pull_history", "from": id1, "since": 0}))
             await recv_type(w1, "pull_history_request")
             await w1.send(json.dumps({
