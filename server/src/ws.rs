@@ -125,9 +125,7 @@ async fn handle_socket(
     // Ship each known peer's profile so the sidebar is fully populated
     // before the client even renders.
     for p in peers.iter().chain(pending.iter()).chain(blocked.iter()) {
-        if let (Some(name), Some((dn, av))) =
-            (state.db.username(*p).await, state.db.get_profile(*p).await)
-        {
+        if let Some((name, dn, av)) = state.db.get_user_profile(*p).await {
             let _ = tx.send(ServerMsg::Profile {
                 user_id: *p,
                 username: name,
@@ -417,6 +415,29 @@ async fn handle_client(
 /// online), which is a lie that makes the client try to pull history and
 /// get a "peer offline" error.
 async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
+    if let Some((me_name, me_dn, me_av)) = state.db.get_user_profile(me_id).await {
+        state.send_to_user(
+            to_id,
+            ServerMsg::Profile {
+                user_id: me_id,
+                username: me_name,
+                display_name: me_dn,
+                avatar: me_av,
+            },
+        );
+    }
+    if let Some((to_name, to_dn, to_av)) = state.db.get_user_profile(to_id).await {
+        state.send_to_user(
+            me_id,
+            ServerMsg::Profile {
+                user_id: to_id,
+                username: to_name,
+                display_name: to_dn,
+                avatar: to_av,
+            },
+        );
+    }
+
     if state.is_online(me_id) {
         state.send_to_user(
             to_id,

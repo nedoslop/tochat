@@ -4,7 +4,7 @@ import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
   renderSidebar, renderMessages, renderPendingList, renderBlockedList,
-  renderMyStatus, showChatView, updateReadIndicators,
+  renderMyStatus, showChatView, updateReadIndicators, updateChatHeader,
 } from "./ui.js";
 import {
   autoPull, resetToLogin, sendReadReceipt, refreshReadState, openPeer, updateBadge,
@@ -86,6 +86,24 @@ export async function setupEvents() {
       for (const [peerId, n] of counts) state.unread[peerId] = n;
     } catch (_) {}
 
+    try {
+      const locals = await invoke("list_local_peers");
+      for (const p of locals) {
+        const id = Number(p.id);
+        if (Number.isInteger(id) && id > 0) {
+          state.peers.add(id);
+          if (p.username) state.nameToId.set(p.username, id);
+          if (!state.profiles[id]) {
+            state.profiles[id] = {
+              username: p.username,
+              display_name: p.display_name,
+              avatar: p.avatar,
+            };
+          }
+        }
+      }
+    } catch (_) {}
+
     renderMyStatus();
     showChatView();
     renderSidebar();
@@ -95,10 +113,12 @@ export async function setupEvents() {
 
   await listen("peers", async (e) => {
     for (const info of e.payload) {
-      state.peers.add(info.id);
-      state.nameToId.set(info.username, info.id);
-      if (!state.profiles[info.id]) {
-        state.profiles[info.id] = {
+      const id = Number(info.id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      state.peers.add(id);
+      state.nameToId.set(info.username, id);
+      if (!state.profiles[id]) {
+        state.profiles[id] = {
           username: info.username,
           display_name: null,
           avatar: null,
@@ -106,15 +126,18 @@ export async function setupEvents() {
       }
     }
     renderSidebar();
+    if (state.currentPeer && state.peers.has(state.currentPeer)) updateChatHeader();
 
     for (const info of e.payload) {
+      const id = Number(info.id);
+      if (!Number.isInteger(id) || id <= 0) continue;
       try {
         const msgs = await invoke("get_messages", {
-          peer: info.id, beforeTs: null, limit: INITIAL_LIMIT,
+          peer: id, beforeTs: null, limit: INITIAL_LIMIT,
         });
-        mergeIntoCache(info.id, msgs);
+        mergeIntoCache(id, msgs);
       } catch (_) {}
-      syncWithPeer(info.id);
+      syncWithPeer(id);
     }
     renderSidebar();
   });
@@ -153,21 +176,25 @@ export async function setupEvents() {
   });
 
   await listen("profile", (e) => {
-    const { user_id, username, display_name, avatar } = e.payload;
-    if (!user_id) return;
+    const user_id = Number(e.payload.user_id);
+    if (!Number.isInteger(user_id) || user_id <= 0) return;
+    const { username, display_name, avatar } = e.payload;
     state.profiles[user_id] = { username, display_name, avatar };
-    state.nameToId.set(username, user_id);
+    if (username) state.nameToId.set(username, user_id);
     if (user_id === state.meId) applyMyProfile();
     renderSidebar();
+    if (state.currentPeer === user_id) updateChatHeader();
   });
 
   await listen("peer-online", (e) => {
-    const id = e.payload.user_id;
+    const id = Number(e.payload.user_id);
+    if (!Number.isInteger(id) || id <= 0) return;
     const status = e.payload.status || "online";
     state.peerStatus[id] = status;
     if (status === "invisible") state.online.delete(id);
     else state.online.add(id);
     renderSidebar();
+    if (state.currentPeer === id) updateChatHeader();
 
     syncWithPeer(id);
     syncWithPeer(id, { delay: 500 });
@@ -184,27 +211,33 @@ export async function setupEvents() {
   });
 
   await listen("peer-offline", (e) => {
-    const id = e.payload.user_id;
+    const id = Number(e.payload.user_id);
+    if (!Number.isInteger(id) || id <= 0) return;
     state.online.delete(id);
     delete state.peerStatus[id];
     renderSidebar();
+    if (state.currentPeer === id) updateChatHeader();
   });
 
   await listen("status-update", (e) => {
     const { user_id, status } = e.payload;
-    if (user_id === state.meId) {
+    const id = Number(user_id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    if (id === state.meId) {
       state.myStatus = status;
       persistMyStatus(status);
       renderMyStatus();
     }
-    state.peerStatus[user_id] = status;
-    if (status === "invisible") state.online.delete(user_id);
-    else state.online.add(user_id);
+    state.peerStatus[id] = status;
+    if (status === "invisible") state.online.delete(id);
+    else state.online.add(id);
     renderSidebar();
+    if (state.currentPeer === id) updateChatHeader();
   });
 
   await listen("chat-left", (e) => {
-    const peer = e.payload.peer;
+    const peer = Number(e.payload.peer);
+    if (!Number.isInteger(peer) || peer <= 0) return;
     state.peers.delete(peer);
     state.pending.delete(peer);
     delete state.msgCache[peer];
@@ -215,19 +248,22 @@ export async function setupEvents() {
     if (state.currentPeer === peer) {
       state.currentPeer = null;
       renderMessages();
+      updateChatHeader();
     }
     renderSidebar();
     void updateBadge();
   });
 
-  await listen("message", (e) => {
+  await listen("message", async (e) => {
     const m = e.payload;
-    const peerId = m.from;
+    const peerId = Number(m.from ?? m.peer);
+    if (!Number.isInteger(peerId) || peerId <= 0) return;
     state.pending.delete(peerId);
     state.peers.add(peerId);
 
     if (!state.msgCache[peerId]) state.msgCache[peerId] = [];
     const idx = state.msgCache[peerId].findIndex((x) => x.id === m.id);
+    const windowFocused = !!(m.window_focused ?? m.windowFocused);
     const entry = {
       id: m.id,
       direction: "in",
@@ -235,22 +271,37 @@ export async function setupEvents() {
       edit_ts: m.edit_ts,
       kind: m.kind,
       payload: m.payload,
-      read: !!m.windowFocused && state.currentPeer === peerId,
+      read: windowFocused && state.currentPeer === peerId,
     };
     if (idx >= 0) state.msgCache[peerId][idx] = entry;
     else state.msgCache[peerId].push(entry);
 
     const isOpen = state.currentPeer === peerId;
-    if (!isOpen || !m.windowFocused) {
+    if (!isOpen || !windowFocused) {
       state.unread[peerId] = (state.unread[peerId] || 0) + 1;
       void updateBadge();
+    }
+
+    if (!state.profiles[peerId]) {
+      try {
+        const lp = await invoke("get_peer", { id: peerId });
+        if (lp) {
+          state.profiles[peerId] = {
+            username: lp.username,
+            display_name: lp.display_name,
+            avatar: lp.avatar,
+          };
+          if (lp.username) state.nameToId.set(lp.username, peerId);
+        }
+      } catch (_) {}
     }
 
     renderSidebar();
     renderPendingList();
     if (isOpen) {
       renderMessages();
-      if (m.windowFocused) {
+      updateChatHeader();
+      if (windowFocused) {
         void sendReadReceipt(peerId);
       }
     }
@@ -264,11 +315,16 @@ export async function setupEvents() {
       });
     } catch (_) {}
     renderSidebar();
-    if (state.currentPeer === NOTES_PEER) renderMessages();
+    if (state.currentPeer === NOTES_PEER) {
+      renderMessages();
+      updateChatHeader();
+    }
   });
 
   await listen("read-receipt", (e) => {
-    const { peer, up_to_ts } = e.payload;
+    const peer = Number(e.payload.peer ?? e.payload.from);
+    if (!Number.isInteger(peer) || peer <= 0) return;
+    const { up_to_ts } = e.payload;
     const msgs = state.msgCache[peer] || [];
     let changed = false;
     for (const m of msgs) {
@@ -281,7 +337,8 @@ export async function setupEvents() {
   });
 
   await listen("history-received", async (e) => {
-    const peer = e.payload.from;
+    const peer = Number(e.payload.from ?? e.payload.peer);
+    if (!Number.isInteger(peer) || peer <= 0) return;
     state.syncingPeers.delete(peer);
 
     try {
@@ -309,6 +366,20 @@ export async function setupEvents() {
       renderPendingList();
     }
 
+    if (!state.profiles[peer]) {
+      try {
+        const lp = await invoke("get_peer", { id: peer });
+        if (lp) {
+          state.profiles[peer] = {
+            username: lp.username,
+            display_name: lp.display_name,
+            avatar: lp.avatar,
+          };
+          if (lp.username) state.nameToId.set(lp.username, peer);
+        }
+      } catch (_) {}
+    }
+
     try {
       const counts = await invoke("get_unread_counts");
       const map = Object.fromEntries(counts.map(([id, n]) => [String(id), n]));
@@ -320,6 +391,7 @@ export async function setupEvents() {
 
     if (state.currentPeer === peer) {
       renderMessages(wasLoadingOlder);
+      updateChatHeader();
       if (wasLoadingOlder) {
         requestAnimationFrame(() => { state.suppressScrollLoad = false; });
       } else {

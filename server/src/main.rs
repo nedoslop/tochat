@@ -34,7 +34,17 @@ async fn main() {
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let addr = format!("0.0.0.0:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let mut listener = None;
+    for _ in 0..50 {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => {
+                listener = Some(l);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    let listener = listener.expect("failed to bind tcp listener");
     println!("server listening on {addr}");
     axum::serve(listener, app).await.unwrap();
 }

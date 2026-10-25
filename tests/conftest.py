@@ -45,24 +45,26 @@ def server():
 
     server_exe = SERVER_DIR / "target" / "debug" / "chat-server.exe"
 
+    log_file = open(Path(__file__).resolve().parent / "server_test.log", "w", encoding="utf-8")
     proc = subprocess.Popen(
         [str(server_exe)],
         cwd=SERVER_DIR,
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
     )
 
     deadline = time.time() + 30
     while time.time() < deadline:
         try:
-            requests.get(f"{BASE}/login", timeout=0.5)
+            requests.get(f"{BASE}/register", headers={"Connection": "close"}, timeout=0.5)
             break
-        except requests.ConnectionError:
+        except (requests.ConnectionError, requests.Timeout):
             time.sleep(0.2)
     else:
         proc.kill()
-        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        log_file.close()
+        out = (Path(__file__).resolve().parent / "server_test.log").read_text(errors="replace")
         raise RuntimeError(f"server did not start in time:\n{out}")
 
     yield
@@ -72,6 +74,7 @@ def server():
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+    log_file.close()
 
 
 def unique_user() -> str:
@@ -82,7 +85,8 @@ def register(username: str, password: str = "password123") -> requests.Response:
     return requests.post(
         f"{BASE}/register",
         json={"username": username, "password": password},
-        timeout=5,
+        headers={"Connection": "close"},
+        timeout=10,
     )
 
 

@@ -31,17 +31,19 @@ function updateComposerVisibility() {
   const blockedBanner = document.getElementById("blocked-banner");
   const appView = document.getElementById("app-view");
 
+  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
+
   if (appView) {
-    appView.classList.toggle("has-active-chat", state.currentPeer !== null);
+    appView.classList.toggle("has-active-chat", isValidPeer);
   }
 
-  const isBlocked = state.currentPeer !== null && state.blocked.has(state.currentPeer);
+  const isBlocked = isValidPeer && state.blocked.has(state.currentPeer);
 
   if (blockedBanner) {
     blockedBanner.hidden = !isBlocked;
   }
   if (composer) {
-    composer.hidden = isBlocked || state.currentPeer === null;
+    composer.hidden = isBlocked || !isValidPeer;
   }
 }
 
@@ -77,7 +79,11 @@ export function renderSidebar() {
   const peersEl = document.getElementById("peers");
   peersEl.innerHTML = "";
 
-  const all = new Set(state.peers);
+  const all = new Set();
+  for (const p of state.peers) {
+    const num = Number(p);
+    if (Number.isInteger(num) && num > 0) all.add(num);
+  }
   if (state.meId) all.add(NOTES_PEER);
 
   if (all.size === 0) {
@@ -163,7 +169,9 @@ export function renderSidebar() {
   const statusEl = document.getElementById("peer-status");
   const peerAvatar = document.getElementById("peer-avatar");
 
-  if (state.currentPeer !== null) {
+  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
+
+  if (isValidPeer) {
     const isNotes = state.currentPeer === NOTES_PEER;
     titleEl.textContent = isNotes ? "Notes" : displayName(state.currentPeer);
     if (isNotes) {
@@ -220,7 +228,9 @@ export function renderMessages(preserveScroll = false) {
 
   el.innerHTML = "";
 
-  if (state.currentPeer === null) {
+  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
+
+  if (!isValidPeer) {
     el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
     return;
   }

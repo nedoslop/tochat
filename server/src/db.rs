@@ -18,7 +18,9 @@ impl Database {
         conn.execute_batch(
             r#"
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
 
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +89,16 @@ CREATE TABLE IF NOT EXISTS blocks (
             "SELECT display_name, avatar FROM users WHERE id = ?1",
             [user_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    }
+
+    pub async fn get_user_profile(&self, user_id: i64) -> Option<(String, Option<String>, Option<String>)> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT username, display_name, avatar FROM users WHERE id = ?1",
+            [user_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()
     }

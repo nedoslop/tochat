@@ -474,6 +474,7 @@ async function init() {
     const el = e.target.closest("[data-peer]");
     if (!el) return;
     const peerId = Number(el.dataset.peer);
+    if (!Number.isInteger(peerId) || peerId < 0) return;
     if (peerId === NOTES_PEER) openNotes();
     else openPeer(peerId);
   });

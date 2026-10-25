@@ -445,6 +445,7 @@ async fn handle_incoming(
         json!({
             "id": id,
             "peer": from,
+            "from": from,
             "direction": "in",
             "ts": ts,
             "edit_ts": edit_ts,
@@ -453,6 +454,7 @@ async fn handle_incoming(
             "plaintext": is_plaintext,
             "read": false,
             "window_focused": window_focused,
+            "windowFocused": window_focused,
         }),
     );
 
@@ -648,5 +650,5 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
         }
     }
 
-    let _ = state.app.emit("history-received", json!({ "from": from }));
+    let _ = state.app.emit("history-received", json!({ "from": from, "peer": from }));
 }

@@ -4,7 +4,7 @@ import { toast, dataUrlBytes, extFromDataUrl } from "./utils.js";
 import { showConfirm, showPrompt } from "./dialog.js";
 import {
   renderSidebar, renderMessages, renderPendingList, renderBlockedList, showChatView,
-  latestInboundTs,
+  latestInboundTs, updateChatHeader,
 } from "./ui.js";
 import { refreshEncryptionStatus, closeEncPanel } from "./encryption.js";
 
@@ -75,13 +75,16 @@ export async function openNotes() {
     state.msgCache[NOTES_PEER] = state.msgCache[NOTES_PEER] || [];
   }
   renderSidebar();
+  updateChatHeader();
   renderMessages();
   void updateBadge();
 }
 
 export async function openPeer(peerId) {
-  if (peerId === null || peerId === undefined) return;
+  peerId = Number(peerId);
+  if (!Number.isInteger(peerId) || peerId < 0) return;
   if (peerId === state.meId) return toast("You can't chat with yourself.");
+  if (peerId === NOTES_PEER) return openNotes();
 
   state.pending.delete(peerId);
   state.currentPeer = peerId;
@@ -90,6 +93,20 @@ export async function openPeer(peerId) {
   showChatView();
   closeEncPanel();
   void refreshEncryptionStatus(peerId);
+
+  if (!state.profiles[peerId]) {
+    try {
+      const lp = await invoke("get_peer", { id: peerId });
+      if (lp) {
+        state.profiles[peerId] = {
+          username: lp.username,
+          display_name: lp.display_name,
+          avatar: lp.avatar,
+        };
+        if (lp.username) state.nameToId.set(lp.username, peerId);
+      }
+    } catch (_) {}
+  }
 
   try {
     state.msgCache[peerId] = await invoke("get_messages", {
@@ -100,6 +117,7 @@ export async function openPeer(peerId) {
   }
 
   renderSidebar();
+  updateChatHeader();
   renderMessages();
   autoPull(peerId);
   void sendReadReceipt(peerId);
@@ -109,22 +127,27 @@ export async function openPeer(peerId) {
 
 export async function openPeerByName(username) {
   if (!username) return;
+  username = username.trim();
   if (username === state.meName) return toast("You can't chat with yourself.");
   const cached = state.nameToId.get(username);
-  if (cached !== undefined) return openPeer(cached);
+  if (cached !== undefined && Number.isInteger(cached) && cached > 0) return openPeer(cached);
   try {
     const id = await invoke("resolve_user", { username });
-    if (!state.profiles[id]) {
-      state.profiles[id] = { username, display_name: null, avatar: null };
+    const numId = Number(id);
+    if (!Number.isInteger(numId) || numId <= 0) return toast("Invalid user ID");
+    if (!state.profiles[numId]) {
+      state.profiles[numId] = { username, display_name: null, avatar: null };
     }
-    state.nameToId.set(username, id);
-    await openPeer(id);
+    state.nameToId.set(username, numId);
+    await openPeer(numId);
   } catch (e) {
     toast(String(e));
   }
 }
 
 export async function acceptPending(peerId) {
+  peerId = Number(peerId);
+  if (!Number.isInteger(peerId) || peerId <= 0) return;
   state.pending.delete(peerId);
   state.peers.add(peerId);
   renderSidebar();
@@ -175,6 +198,7 @@ export async function send() {
   if (!text.trim()) return;
 
   const peer = state.currentPeer;
+  if (peer === null || !Number.isInteger(peer) || peer < 0) return;
   try {
     const msg = await invoke("send_message", { to: peer, text });
     input.value = "";
@@ -191,7 +215,7 @@ export async function send() {
 
 export async function sendMedia(kind, payload) {
   const peer = state.currentPeer;
-  if (peer === null) return;
+  if (peer === null || !Number.isInteger(peer) || peer < 0) return;
   if (state.blocked.has(peer)) {
     return toast("You cannot send messages to a blocked user. Unblock them first.");
   }
@@ -407,10 +431,14 @@ export async function refreshReadState(peer) {
 // ---------- history sync ----------
 
 export async function autoPull(peer) {
-  if (peer === null || peer === state.meId || peer === NOTES_PEER) return;
+  peer = Number(peer);
+  if (!Number.isInteger(peer) || peer <= 0 || peer === state.meId || peer === NOTES_PEER) return;
   state.syncingPeers.add(peer);
   renderSidebar();
-  if (state.currentPeer === peer) renderMessages();
+  if (state.currentPeer === peer) {
+    updateChatHeader();
+    renderMessages();
+  }
 
   try {
     if (!state.msgCache[peer]) {
@@ -425,14 +453,20 @@ export async function autoPull(peer) {
     console.warn("[autoPull] failed for", peer, e);
     state.syncingPeers.delete(peer);
     renderSidebar();
-    if (state.currentPeer === peer) renderMessages();
+    if (state.currentPeer === peer) {
+      updateChatHeader();
+      renderMessages();
+    }
   }
 
   // Safety fallback timeout if peer never replies
   setTimeout(() => {
     if (state.syncingPeers.delete(peer)) {
       renderSidebar();
-      if (state.currentPeer === peer) renderMessages();
+      if (state.currentPeer === peer) {
+        updateChatHeader();
+        renderMessages();
+      }
     }
   }, 6000);
 }
@@ -440,6 +474,7 @@ export async function autoPull(peer) {
 export function closeCurrentChat() {
   state.currentPeer = null;
   renderSidebar();
+  updateChatHeader();
   renderMessages();
 }
 

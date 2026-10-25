@@ -88,20 +88,21 @@ export function resetState() {
 }
 
 export function displayName(peerId) {
-    if (peerId === null || peerId === undefined) return "";
-    if (peerId === NOTES_PEER) return "Notes";
-    const p = state.profiles[peerId];
+    const num = Number(peerId);
+    if (!Number.isInteger(num) || num < 0) return "";
+    if (num === NOTES_PEER) return "Notes";
+    const p = state.profiles[num];
     if (p) {
-        if (p.display_name && p.display_name.trim()) return p.display_name;
-        if (p.username) return p.username;
+        if (p.display_name && p.display_name.trim()) return p.display_name.trim();
+        if (p.username && p.username.trim()) return p.username.trim();
     }
-    return `#${peerId}`;
+    return `#${num}`;
 }
 
 export function avatarFor(peerId) {
-    if (!peerId) return null;
-    if (peerId === NOTES_PEER) return null;
-    const p = state.profiles[peerId];
+    const num = Number(peerId);
+    if (!Number.isInteger(num) || num <= 0) return null;
+    const p = state.profiles[num];
     return p && p.avatar ? p.avatar : null;
 }
 

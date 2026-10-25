@@ -43,60 +43,6 @@ SERVER_DIR = PROJECT_ROOT / "server"
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures                                                                    #
-# --------------------------------------------------------------------------- #
-
-@pytest.fixture(scope="session", autouse=True)
-def server():
-    db_file = Path(__file__).resolve().parent / "test_chat.db"
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db_file) + suffix)
-        if p.exists():
-            try:
-                p.unlink()
-            except OSError:
-                pass
-
-    env = os.environ.copy()
-    env["PATH"] = r"C:\Program Files\JetBrains\CLion 2025.3.2\bin\mingw\bin;" + env.get("PATH", "")
-    env["PORT"] = str(PORT)
-    env["CHAT_DB"] = str(db_file)
-
-    # Build server binary
-    subprocess.run(["cargo", "build"], cwd=SERVER_DIR, env=env, check=True)
-
-    server_exe = SERVER_DIR / "target" / "debug" / "chat-server.exe"
-
-    proc = subprocess.Popen(
-        [str(server_exe)],
-        cwd=SERVER_DIR,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        try:
-            requests.get(f"{BASE}/login", timeout=0.5)
-            break
-        except requests.ConnectionError:
-            time.sleep(0.2)
-    else:
-        proc.kill()
-        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
-        raise RuntimeError(f"server did not start in time:\n{out}")
-
-    yield
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-# --------------------------------------------------------------------------- #
 # Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -108,7 +54,8 @@ def register(username: str, password: str = "password123") -> requests.Response:
     return requests.post(
         f"{BASE}/register",
         json={"username": username, "password": password},
-        timeout=5,
+        headers={"Connection": "close"},
+        timeout=10,
     )
 
 
@@ -123,14 +70,16 @@ def open_ws(username: str, password: str = "password123"):
 
 async def recv_type(ws, msg_type: str, timeout: float = 5.0) -> dict:
     deadline = time.time() + timeout
+    seen = []
     while True:
         remaining = deadline - time.time()
         if remaining <= 0:
-            raise asyncio.TimeoutError(f"did not see {msg_type!r}")
+            raise asyncio.TimeoutError(f"did not see {msg_type!r}. Seen: {seen}")
         raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
         if isinstance(raw, bytes):
             continue
         msg = json.loads(raw)
+        seen.append(msg.get("type"))
         if msg.get("type") == msg_type:
             return msg
 

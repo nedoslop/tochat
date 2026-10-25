@@ -289,8 +289,8 @@ class ClientNode:
                 raw = await self.ws.recv()
                 msg = json.loads(raw)
                 await self.inbox.put(msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[{self.username}] PUMP EXITED: {exc}")
 
     async def disconnect(self):
         if self._pump_task:
@@ -303,6 +303,7 @@ class ClientNode:
         if self.ws:
             await self.ws.close()
             self.ws = None
+        self.inbox = asyncio.Queue()
 
     def set_cipher(self, peer_id: int, cipher: ClientCipher):
         self.ciphers[peer_id] = cipher
@@ -405,15 +406,17 @@ class ClientNode:
         }))
 
     async def wait_for_type(self, msg_type: str, timeout: float = 5.0) -> dict:
+        messages_seen = []
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
                 msg = await asyncio.wait_for(self.inbox.get(), timeout=max(0.1, deadline - time.time()))
+                messages_seen.append(msg.get("type"))
                 if msg.get("type") == msg_type:
                     return msg
             except asyncio.TimeoutError:
                 break
-        raise asyncio.TimeoutError(f"User {self.username} timed out waiting for {msg_type!r}")
+        raise asyncio.TimeoutError(f"User {self.username} timed out waiting for {msg_type!r}. Seen: {messages_seen}")
 
 
 # =========================================================================== #
@@ -495,11 +498,22 @@ async def establish_chat(c1: ClientNode, c2: ClientNode):
     c1 sends to c2 -> c2 manually pulls history from c1 -> c1 answers -> relationship established.
     """
     await c1.send_text(c2.user_id, "Initiate chat")
-    await asyncio.sleep(0.1)
+    
+    # Wait until server has registered the pending chat for c2
+    for _ in range(30):
+        await asyncio.sleep(0.1)
+        await c2.ws.send(json.dumps({"type": "list_pending"}))
+        try:
+            pending = await c2.wait_for_type("pending_chats", timeout=0.5)
+            if any(p["id"] == c1.user_id for p in pending.get("users", [])):
+                break
+        except asyncio.TimeoutError:
+            pass
+
     await c2.request_pull(c1.user_id, since=0)
-    req = await c1.wait_for_type("pull_history_request")
+    req = await c1.wait_for_type("pull_history_request", timeout=5.0)
     await c1.answer_pull(req)
-    hist = await c2.wait_for_type("history_response")
+    hist = await c2.wait_for_type("history_response", timeout=5.0)
     c2.ingest_history(c1.user_id, hist["messages"])
 
 
@@ -517,32 +531,33 @@ async def test_client_multi_instance_concurrent_chat(tmp_path):
     c1 = ClientNode(u1, "password123", tmp_path / "c1")
     c2 = ClientNode(u2, "password123", tmp_path / "c2")
 
-    await c1.connect()
-    await c2.connect()
+    try:
+        await c1.connect()
+        await c2.connect()
 
-    # Handshake to establish direct chatting
-    await establish_chat(c1, c2)
+        # Handshake to establish direct chatting
+        await establish_chat(c1, c2)
 
-    # Client 1 messages Client 2 directly
-    msg_id = await c1.send_text(c2.user_id, "Hello from instance 1!")
-    dm = await c2.wait_for_type("message")
-    assert dm["id"] == msg_id
-    assert dm["payload"] == "Hello from instance 1!"
+        # Client 1 messages Client 2 directly
+        msg_id = await c1.send_text(c2.user_id, "Hello from instance 1!")
+        dm = await c2.wait_for_type("message")
+        assert dm["id"] == msg_id
+        assert dm["payload"] == "Hello from instance 1!"
 
-    # Client 2 replies directly
-    reply_id = await c2.send_text(c1.user_id, "Hello back from instance 2!")
-    reply = await c1.wait_for_type("message")
-    assert reply["id"] == reply_id
-    assert reply["payload"] == "Hello back from instance 2!"
+        # Client 2 replies directly
+        reply_id = await c2.send_text(c1.user_id, "Hello back from instance 2!")
+        reply = await c1.wait_for_type("message")
+        assert reply["id"] == reply_id
+        assert reply["payload"] == "Hello back from instance 2!"
 
-    # Verify both sessions remain connected and healthy
-    assert not c1.ws.closed
-    assert not c2.ws.closed
-
-    await c1.disconnect()
-    await c2.disconnect()
-    c1.db.close()
-    c2.db.close()
+        # Verify both sessions remain connected and healthy
+        assert not c1.ws.closed
+        assert not c2.ws.closed
+    finally:
+        await c1.disconnect()
+        await c2.disconnect()
+        c1.db.close()
+        c2.db.close()
 
 
 @pytest.mark.asyncio
@@ -561,52 +576,53 @@ async def test_client_first_message_manual_pull(tmp_path):
     os.makedirs(c1.data_dir, exist_ok=True)
     os.makedirs(c2.data_dir, exist_ok=True)
 
-    # Discover c2 user_id then take c2 offline
-    await c2.connect()
-    c2_id = c2.user_id
-    await c2.disconnect()
+    try:
+        # Discover c2 user_id then take c2 offline
+        await c2.connect()
+        c2_id = c2.user_id
+        await c2.disconnect()
 
-    # c1 connects and sends to offline c2
-    await c1.connect()
-    msg_id = await c1.send_text(c2_id, "Secret proposition")
+        # c1 connects and sends to offline c2
+        await c1.connect()
+        msg_id = await c1.send_text(c2_id, "Secret proposition")
 
-    # c2 comes online.
-    await c2.connect()
+        # c2 comes online.
+        await c2.connect()
 
-    # c2 must NOT receive any direct_message unprompted!
-    # Server sends pending_chats informing c2 that c1 wants to connect.
-    pending = await c2.wait_for_type("pending_chats")
-    pending_ids = [p["id"] for p in pending["users"]]
-    assert c1.user_id in pending_ids
+        # c2 must NOT receive any direct_message unprompted!
+        # Server sends pending_chats informing c2 that c1 wants to connect.
+        pending = await c2.wait_for_type("pending_chats")
+        pending_ids = [p["id"] for p in pending["users"]]
+        assert c1.user_id in pending_ids
 
-    # Verify c2 local DB still has 0 messages
-    assert len(c2.db.get_messages(c1.user_id)) == 0
+        # Verify c2 local DB still has 0 messages
+        assert len(c2.db.get_messages(c1.user_id)) == 0
 
-    # Now c2 manually pulls history from c1
-    await c2.request_pull(c1.user_id, since=0)
+        # Now c2 manually pulls history from c1
+        await c2.request_pull(c1.user_id, since=0)
 
-    # c1 receives pull_history_request
-    pull_req = await c1.wait_for_type("pull_history_request")
-    assert pull_req["from"] == c2.user_id
+        # c1 receives pull_history_request
+        pull_req = await c1.wait_for_type("pull_history_request")
+        assert pull_req["from"] == c2.user_id
 
-    # c1 answers pull request with local history
-    await c1.answer_pull(pull_req)
+        # c1 answers pull request with local history
+        await c1.answer_pull(pull_req)
 
-    # c2 receives history_response
-    hist_resp = await c2.wait_for_type("history_response")
-    c2.ingest_history(c1.user_id, hist_resp["messages"])
+        # c2 receives history_response
+        hist_resp = await c2.wait_for_type("history_response")
+        c2.ingest_history(c1.user_id, hist_resp["messages"])
 
-    # Verify message is now in c2 local DB
-    stored = c2.db.get_messages(c1.user_id)
-    assert len(stored) == 1
-    assert stored[0]["id"] == msg_id
-    assert stored[0]["payload"] == "Secret proposition"
-    assert stored[0]["direction"] == "in"
-
-    await c1.disconnect()
-    await c2.disconnect()
-    c1.db.close()
-    c2.db.close()
+        # Verify message is now in c2 local DB
+        stored = c2.db.get_messages(c1.user_id)
+        assert len(stored) == 1
+        assert stored[0]["id"] == msg_id
+        assert stored[0]["payload"] == "Secret proposition"
+        assert stored[0]["direction"] == "in"
+    finally:
+        await c1.disconnect()
+        await c2.disconnect()
+        c1.db.close()
+        c2.db.close()
 
 
 @pytest.mark.asyncio
@@ -628,73 +644,77 @@ async def test_client_critical_edge_case_offline_sync(tmp_path):
     os.makedirs(c1.data_dir, exist_ok=True)
     os.makedirs(c2.data_dir, exist_ok=True)
 
-    # Establish initial connection and relationship
-    await c1.connect()
-    await c2.connect()
-    u1_id, u2_id = c1.user_id, c2.user_id
-    await establish_chat(c1, c2)
+    try:
+        # Establish initial connection and relationship
+        await c1.connect()
+        await c2.connect()
+        u1_id, u2_id = c1.user_id, c2.user_id
+        await establish_chat(c1, c2)
 
-    # Step 1: c2 goes offline. c1 writes to offline c2
-    await c2.disconnect()
-    await asyncio.sleep(0.2)
-    m1_id = await c1.send_text(u2_id, "Message 1 from Alice while Bob is offline")
+        # Step 1: c2 goes offline. c1 writes to offline c2
+        await c2.disconnect()
+        await asyncio.sleep(0.2)
+        m1_id = await c1.send_text(u2_id, "Message 1 from Alice while Bob is offline")
 
-    # Step 2: c1 goes offline
-    await c1.disconnect()
-    await asyncio.sleep(0.2)
+        # Step 2: c1 goes offline
+        await c1.disconnect()
+        await asyncio.sleep(0.2)
 
-    # Step 3: c2 goes online. c2 writes to offline c1
-    await c2.connect()
-    m2_id = await c2.send_text(u1_id, "Message 2 from Bob while Alice is offline")
+        # Step 3: c2 goes online. c2 writes to offline c1
+        await c2.connect()
+        m2_id = await c2.send_text(u1_id, "Message 2 from Bob while Alice is offline")
 
-    # Step 4: c2 goes offline (both now offline)
-    await c2.disconnect()
-    await asyncio.sleep(0.2)
+        # Step 4: c2 goes offline (both now offline)
+        await c2.disconnect()
+        await asyncio.sleep(0.2)
 
-    # Step 5: Both come online
-    await c1.connect()
-    await c2.connect()
+        # Step 5: Both come online
+        await c1.connect()
+        await c2.connect()
+        await c1.wait_for_type("peer_online")
+        await c2.wait_for_type("peer_online")
 
-    # Both exchange history pulls:
-    # c1 pulls from c2
-    await c1.request_pull(u2_id, since=0)
-    pull_for_c2 = await c2.wait_for_type("pull_history_request")
-    await c2.answer_pull(pull_for_c2)
-    hist1 = await c1.wait_for_type("history_response")
-    c1.ingest_history(u2_id, hist1["messages"])
+        # Both exchange history pulls:
+        # c1 pulls from c2
+        await c1.request_pull(u2_id, since=0)
+        pull_for_c2 = await c2.wait_for_type("pull_history_request")
+        await c2.answer_pull(pull_for_c2)
+        hist1 = await c1.wait_for_type("history_response")
+        c1.ingest_history(u2_id, hist1["messages"])
+        await asyncio.sleep(0.1)
 
-    # c2 pulls from c1
-    await c2.request_pull(u1_id, since=0)
-    pull_for_c1 = await c1.wait_for_type("pull_history_request")
-    await c1.answer_pull(pull_for_c1)
-    hist2 = await c2.wait_for_type("history_response")
-    c2.ingest_history(u1_id, hist2["messages"])
+        # c2 pulls from c1
+        await c2.request_pull(u1_id, since=0)
+        pull_for_c1 = await c1.wait_for_type("pull_history_request")
+        await c1.answer_pull(pull_for_c1)
+        hist2 = await c2.wait_for_type("history_response")
+        c2.ingest_history(u1_id, hist2["messages"])
 
-    # Verify both local databases have all messages
-    msgs_c1 = c1.db.get_messages(u2_id)
-    msgs_c2 = c2.db.get_messages(u1_id)
+        # Verify both local databases have all messages
+        msgs_c1 = c1.db.get_messages(u2_id)
+        msgs_c2 = c2.db.get_messages(u1_id)
 
-    ids_c1 = {m["id"] for m in msgs_c1}
-    ids_c2 = {m["id"] for m in msgs_c2}
+        ids_c1 = {m["id"] for m in msgs_c1}
+        ids_c2 = {m["id"] for m in msgs_c2}
 
-    assert m1_id in ids_c1
-    assert m2_id in ids_c1
-    assert m1_id in ids_c2
-    assert m2_id in ids_c2
+        assert m1_id in ids_c1
+        assert m2_id in ids_c1
+        assert m1_id in ids_c2
+        assert m2_id in ids_c2
 
-    # Verify content match
-    m1_c2 = next(m for m in msgs_c2 if m["id"] == m1_id)
-    assert m1_c2["payload"] == "Message 1 from Alice while Bob is offline"
-    assert m1_c2["direction"] == "in"
+        # Verify content match
+        m1_c2 = next(m for m in msgs_c2 if m["id"] == m1_id)
+        assert m1_c2["payload"] == "Message 1 from Alice while Bob is offline"
+        assert m1_c2["direction"] == "in"
 
-    m2_c1 = next(m for m in msgs_c1 if m["id"] == m2_id)
-    assert m2_c1["payload"] == "Message 2 from Bob while Alice is offline"
-    assert m2_c1["direction"] == "in"
-
-    await c1.disconnect()
-    await c2.disconnect()
-    c1.db.close()
-    c2.db.close()
+        m2_c1 = next(m for m in msgs_c1 if m["id"] == m2_id)
+        assert m2_c1["payload"] == "Message 2 from Bob while Alice is offline"
+        assert m2_c1["direction"] == "in"
+    finally:
+        await c1.disconnect()
+        await c2.disconnect()
+        c1.db.close()
+        c2.db.close()
 
 
 @pytest.mark.asyncio
@@ -714,47 +734,49 @@ async def test_client_e2e_encryption_flow(tmp_path):
     os.makedirs(c1.data_dir, exist_ok=True)
     os.makedirs(c2.data_dir, exist_ok=True)
 
-    await c1.connect()
-    await c2.connect()
-    await establish_chat(c1, c2)
+    try:
+        await c1.connect()
+        await c2.connect()
+        await asyncio.sleep(0.1)
+        await establish_chat(c1, c2)
 
-    # Pre-shared key negotiated out of band
-    psk_hex = "abcdef0123456789" * 4
-    c1.set_cipher(c2.user_id, PreSharedKeyCipher(psk_hex))
-    c2.set_cipher(c1.user_id, PreSharedKeyCipher(psk_hex))
+        # Pre-shared key negotiated out of band
+        psk_hex = "abcdef0123456789" * 4
+        c1.set_cipher(c2.user_id, PreSharedKeyCipher(psk_hex))
+        c2.set_cipher(c1.user_id, PreSharedKeyCipher(psk_hex))
 
-    secret_text = "This is a strictly confidential conversation!"
-    msg_id = await c1.send_text(c2.user_id, secret_text)
+        secret_text = "This is a strictly confidential conversation!"
+        msg_id = await c1.send_text(c2.user_id, secret_text)
 
-    # c2 receives message frame
-    wire_msg = await c2.wait_for_type("message")
-    # Verify the wire payload is encrypted base64, NOT plaintext
-    assert wire_msg["payload"] != secret_text
-    assert secret_text not in wire_msg["payload"]
+        # c2 receives message frame
+        wire_msg = await c2.wait_for_type("message")
+        # Verify the wire payload is encrypted base64, NOT plaintext
+        assert wire_msg["payload"] != secret_text
+        assert secret_text not in wire_msg["payload"]
 
-    # Decrypt and store in c2 local database
-    decrypted = c2.ciphers[c1.user_id].decrypt(wire_msg["payload"])
-    assert decrypted == secret_text
+        # Decrypt and store in c2 local database
+        decrypted = c2.ciphers[c1.user_id].decrypt(wire_msg["payload"])
+        assert decrypted == secret_text
 
-    c2.db.upsert_message(
-        peer_id=c1.user_id,
-        msg_id=wire_msg["id"],
-        direction="in",
-        ts=wire_msg["ts"],
-        edit_ts=wire_msg["edit_ts"],
-        kind=wire_msg["kind"],
-        payload=decrypted,
-        plaintext=True,
-    )
+        c2.db.upsert_message(
+            peer_id=c1.user_id,
+            msg_id=wire_msg["id"],
+            direction="in",
+            ts=wire_msg["ts"],
+            edit_ts=wire_msg["edit_ts"],
+            kind=wire_msg["kind"],
+            payload=decrypted,
+            plaintext=True,
+        )
 
-    stored = c2.db.get_messages(c1.user_id)
-    assert len(stored) == 2
-    assert stored[1]["payload"] == secret_text
-
-    await c1.disconnect()
-    await c2.disconnect()
-    c1.db.close()
-    c2.db.close()
+        stored = c2.db.get_messages(c1.user_id)
+        assert len(stored) == 2
+        assert stored[1]["payload"] == secret_text
+    finally:
+        await c1.disconnect()
+        await c2.disconnect()
+        c1.db.close()
+        c2.db.close()
 
 
 @pytest.mark.asyncio
@@ -772,32 +794,34 @@ async def test_client_read_receipt_flow(tmp_path):
     os.makedirs(c1.data_dir, exist_ok=True)
     os.makedirs(c2.data_dir, exist_ok=True)
 
-    await c1.connect()
-    await c2.connect()
-    await establish_chat(c1, c2)
+    try:
+        await c1.connect()
+        await c2.connect()
+        await asyncio.sleep(0.1)
+        await establish_chat(c1, c2)
 
-    # c1 sends message
-    m_id = await c1.send_text(c2.user_id, "Notice me")
-    msg = await c2.wait_for_type("message")
+        # c1 sends message
+        m_id = await c1.send_text(c2.user_id, "Notice me")
+        msg = await c2.wait_for_type("message")
 
-    # Initially unread in c1's local database
-    c1_local = c1.db.get_messages(c2.user_id)
-    assert c1_local[0]["read"] == 0
+        # Initially unread in c1's local database
+        c1_local = c1.db.get_messages(c2.user_id)
+        assert c1_local[0]["read"] == 0
 
-    # c2 marks read and sends receipt
-    await c2.send_read_receipt(c1.user_id, up_to_ts=msg["ts"])
+        # c2 marks read and sends receipt
+        await c2.send_read_receipt(c1.user_id, up_to_ts=msg["ts"])
 
-    # c1 receives read receipt
-    receipt = await c1.wait_for_type("read_receipt")
-    assert receipt["from"] == c2.user_id
-    assert receipt["up_to_ts"] >= msg["ts"]
+        # c1 receives read receipt
+        receipt = await c1.wait_for_type("read_receipt")
+        assert receipt["from"] == c2.user_id
+        assert receipt["up_to_ts"] >= msg["ts"]
 
-    # c1 updates local database
-    c1.db.mark_read_up_to(c2.user_id, receipt["up_to_ts"])
-    c1_updated = c1.db.get_messages(c2.user_id)
-    assert c1_updated[0]["read"] == 1
-
-    await c1.disconnect()
-    await c2.disconnect()
-    c1.db.close()
-    c2.db.close()
+        # c1 updates local database
+        c1.db.mark_read_up_to(c2.user_id, receipt["up_to_ts"])
+        c1_updated = c1.db.get_messages(c2.user_id)
+        assert c1_updated[0]["read"] == 1
+    finally:
+        await c1.disconnect()
+        await c2.disconnect()
+        c1.db.close()
+        c2.db.close()
