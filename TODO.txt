@@ -3,3 +3,5 @@
  - Android/IOS support (better adaptive UI?)
  - What to do when system notifications are disabled???
  - Windows multiple instances: changing theme on the first affects the second (as needed), but it doesn't affect title bar theme
+ - Cargo: fix that rlib, cdylib, etc stuff to only be enabled when needed (Android?)
+ - Android: ensure permissions
