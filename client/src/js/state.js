@@ -5,100 +5,109 @@ const STATUS_KEY = "chat_my_status";
 const VALID_STATUS = new Set(["online", "away", "busy", "invisible"]);
 
 function loadMyStatus() {
-    try {
-        const s = localStorage.getItem(STATUS_KEY);
-        if (s && VALID_STATUS.has(s)) return s;
-    } catch (_) { /* localStorage unavailable */ }
-    return "online";
+  try {
+    const s = localStorage.getItem(STATUS_KEY);
+    if (s && VALID_STATUS.has(s)) return s;
+  } catch (_) {
+    /* localStorage unavailable */
+  }
+  return "online";
 }
 
 export function persistMyStatus(status) {
-    try { localStorage.setItem(STATUS_KEY, status); } catch (_) {}
+  try {
+    localStorage.setItem(STATUS_KEY, status);
+  } catch (_) {}
 }
 
 export const state = {
-    // Logged-in user (id + username). Populated on auth-ok.
-    meId: null,
-    meName: null,
+  // Logged-in user (id + username). Populated on auth-ok.
+  meId: null,
+  meName: null,
 
-    // Current chat peer ID (number) or NOTES_PEER (0).
-    currentPeer: null,
+  // Current chat peer ID (number) or NOTES_PEER (0).
+  currentPeer: null,
 
-    // Sets of numeric IDs.
-    peers: new Set(),
-    pending: new Set(),
-    blocked: new Set(),
-    online: new Set(),
+  // Sets of numeric IDs.
+  peers: new Set(),
+  pending: new Set(),
+  blocked: new Set(),
+  online: new Set(),
 
-    // id -> "online" | "away" | "busy" | "invisible"
-    peerStatus: {},
+  // id -> "online" | "away" | "busy" | "invisible"
+  peerStatus: {},
 
-    // id -> { username, display_name, avatar }
-    profiles: {},
+  // id -> { username, display_name, avatar }
+  profiles: {},
 
-    // username -> id (for reverse lookups of freshly typed names)
-    nameToId: new Map(),
+  // username -> id (for reverse lookups of freshly typed names)
+  nameToId: new Map(),
 
-    // id -> [LocalMsg]
-    msgCache: {},
+  // id -> [LocalMsg]
+  msgCache: {},
 
-    // id -> unread count
-    unread: {},
+  // id -> unread count
+  unread: {},
 
-    // Persisted across restarts so `busy` survives reconnects.
-    myStatus: loadMyStatus(),
+  // Persisted across restarts so `busy` survives reconnects.
+  myStatus: loadMyStatus(),
 
-    // id -> bool
-    mightHaveMore: {},
+  // id -> bool
+  mightHaveMore: {},
 
-    loadingOlder: new Set(),
-    lastPullLimit: {},
-    suppressScrollLoad: false,
+  loadingOlder: new Set(),
+  // Peers for which a `pull_history` is currently in flight (or being
+  // awaited via `history-received`). Used to drive the "syncing…"
+  // spinner in the header and the message list.
+  syncing: new Set(),
+  lastPullLimit: {},
+  suppressScrollLoad: false,
 
-    // id -> Set<msg-id>
-    seenIds: {},
+  // id -> Set<msg-id>
+  seenIds: {},
 };
 
 export function resetState() {
-    state.meId = null;
-    state.meName = null;
-    state.currentPeer = null;
-    state.peers.clear();
-    state.pending.clear();
-    state.blocked.clear();
-    state.online.clear();
-    state.peerStatus = {};
-    state.profiles = {};
-    state.nameToId.clear();
-    state.unread = {};
-    state.mightHaveMore = {};
-    state.loadingOlder.clear();
-    state.lastPullLimit = {};
-    state.suppressScrollLoad = false;
-    for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
-    for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
+  state.meId = null;
+  state.meName = null;
+  state.currentPeer = null;
+  state.peers.clear();
+  state.pending.clear();
+  state.blocked.clear();
+  state.online.clear();
+  state.peerStatus = {};
+  state.profiles = {};
+  state.nameToId.clear();
+  state.unread = {};
+  state.mightHaveMore = {};
+  state.loadingOlder.clear();
+  state.syncing.clear();
+  state.lastPullLimit = {};
+  state.suppressScrollLoad = false;
+  for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
+  for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];
 }
 
 export function displayName(peerId) {
-    if (peerId === null || peerId === undefined) return "";
-    if (peerId === NOTES_PEER) return "Notes";
-    const p = state.profiles[peerId];
-    if (p) {
-        if (p.display_name && p.display_name.trim()) return p.display_name;
-        if (p.username) return p.username;
-    }
-    return `#${peerId}`;
+  if (peerId === null || peerId === undefined) return "";
+  if (peerId === NOTES_PEER) return "Notes";
+  const p = state.profiles[peerId];
+  if (p) {
+    if (p.display_name && p.display_name.trim()) return p.display_name;
+    if (p.username) return p.username;
+  }
+  return `#${peerId}`;
 }
 
 export function avatarFor(peerId) {
-    if (!peerId) return null;
-    if (peerId === NOTES_PEER) return null;
-    const p = state.profiles[peerId];
-    return p && p.avatar ? p.avatar : null;
+  if (!peerId) return null;
+  if (peerId === NOTES_PEER) return null;
+  const p = state.profiles[peerId];
+  return p && p.avatar ? p.avatar : null;
 }
 
 export function totalUnread() {
-    let n = 0;
-    for (const k of Object.keys(state.unread)) n += state.unread[k] || 0;
-    return n;
+  let n = 0;
+  for (const k of Object.keys(state.unread)) n += state.unread[k] || 0;
+  return n;
 }

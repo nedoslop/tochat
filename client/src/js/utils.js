@@ -13,14 +13,26 @@ export function toast(text, ms = 3500) {
   t.textContent = text;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+  toastTimer = setTimeout(() => {
+    t.hidden = true;
+  }, ms);
 }
 
-export function nowMs() { return Date.now(); }
+export function nowMs() {
+  return Date.now();
+}
 
 const AVATAR_COLORS = [
-  "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e", "#f59e0b",
-  "#10b981", "#06b6d4", "#3b82f6", "#84cc16", "#ef4444",
+  "#6366f1",
+  "#8b5cf6",
+  "#ec4899",
+  "#f43f5e",
+  "#f59e0b",
+  "#10b981",
+  "#06b6d4",
+  "#3b82f6",
+  "#84cc16",
+  "#ef4444",
 ];
 
 export function avatarColor(name) {
@@ -36,7 +48,10 @@ export function initial(name) {
 }
 
 export function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export function formatDate(ts) {
@@ -48,7 +63,10 @@ export function formatBytes(n) {
   if (!n || n < 0) return "";
   const units = ["B", "KB", "MB", "GB"];
   let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
@@ -89,7 +107,7 @@ export function dataUrlBytes(dataUrl) {
   const b64 = dataUrl.slice(idx + 1);
   const len = b64.length;
   const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor(len * 3 / 4) - pad);
+  return Math.max(0, Math.floor((len * 3) / 4) - pad);
 }
 
 /**

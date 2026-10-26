@@ -3,31 +3,24 @@ import { state, NOTES_PEER, INITIAL_LIMIT, persistMyStatus } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
-  renderSidebar, renderMessages, renderPendingList, renderBlockedList,
-  renderMyStatus, showChatView, updateReadIndicators,
+  renderSidebar,
+  renderMessages,
+  renderPendingList,
+  renderBlockedList,
+  renderMyStatus,
+  renderMeBadge,
+  showChatView,
+  updateReadIndicators,
 } from "./ui.js";
 import {
-  autoPull, resetToLogin, sendReadReceipt, refreshReadState, openPeer, updateBadge,
+  autoPull,
+  resetToLogin,
+  sendReadReceipt,
+  refreshReadState,
+  openPeer,
+  updateBadge,
 } from "./actions.js";
 import { refreshEncryptionStatus } from "./encryption.js";
-
-function applyMyAvatar() {
-  const av = document.getElementById("me-avatar");
-  const mine = state.profiles[state.meId];
-  if (mine && mine.avatar) {
-    av.innerHTML = "";
-    const img = document.createElement("img");
-    img.src = mine.avatar;
-    img.alt = "";
-    img.draggable = false;
-    img.className = "avatar-img";
-    av.appendChild(img);
-    av.style.background = "var(--surface-3)";
-  } else {
-    av.textContent = initial(state.meName);
-    av.style.background = avatarColor(state.meName);
-  }
-}
 
 function mergeIntoCache(peerId, incoming) {
   const existing = state.msgCache[peerId] || [];
@@ -42,14 +35,19 @@ function mergeIntoCache(peerId, incoming) {
 
 function syncWithPeer(peerId, { delay = 0 } = {}) {
   if (!peerId || peerId === state.meId || peerId === NOTES_PEER) return;
-  const run = () => { autoPull(peerId); };
+  const run = () => {
+    autoPull(peerId);
+  };
   if (delay > 0) setTimeout(run, delay);
   else run();
 }
 
 async function windowIsFocused() {
-  try { return await invoke("is_window_focused"); }
-  catch (_) { return false; }
+  try {
+    return await invoke("is_window_focused");
+  } catch (_) {
+    return false;
+  }
 }
 
 export async function setupEvents() {
@@ -57,11 +55,8 @@ export async function setupEvents() {
     state.meId = e.payload.user_id;
     state.meName = e.payload.username;
 
-    document.getElementById("me-name").textContent = state.meName;
-    const av = document.getElementById("me-avatar");
-    av.textContent = initial(state.meName);
-    av.style.background = avatarColor(state.meName);
-
+    // The sidebar header is (re)built by renderSidebar → renderMeBadge;
+    // no need to poke individual DOM nodes here.
     document.getElementById("login-view").hidden = true;
     document.getElementById("app-view").hidden = false;
 
@@ -94,7 +89,9 @@ export async function setupEvents() {
     for (const info of e.payload) {
       try {
         const msgs = await invoke("get_messages", {
-          peer: info.id, beforeTs: null, limit: INITIAL_LIMIT,
+          peer: info.id,
+          beforeTs: null,
+          limit: INITIAL_LIMIT,
         });
         mergeIntoCache(info.id, msgs);
       } catch (_) {}
@@ -141,7 +138,8 @@ export async function setupEvents() {
     if (!user_id) return;
     state.profiles[user_id] = { username, display_name, avatar };
     state.nameToId.set(username, user_id);
-    if (user_id === state.meId) applyMyAvatar();
+    // renderSidebar already calls renderMeBadge internally, so the
+    // sidebar header picks up new nickname/avatar for "me" too.
     renderSidebar();
   });
 
@@ -171,6 +169,9 @@ export async function setupEvents() {
     const id = e.payload.user_id;
     state.online.delete(id);
     delete state.peerStatus[id];
+    // Abort any pending sync spinner for this peer.
+    const wasSyncing = state.syncing.delete(id);
+    if (wasSyncing && state.currentPeer === id) renderMessages();
     renderSidebar();
   });
 
@@ -195,6 +196,7 @@ export async function setupEvents() {
     delete state.seenIds[peer];
     delete state.mightHaveMore[peer];
     delete state.lastPullLimit[peer];
+    state.syncing.delete(peer);
     state.unread[peer] = 0;
     if (state.currentPeer === peer) {
       state.currentPeer = null;
@@ -244,7 +246,9 @@ export async function setupEvents() {
     state.peers.add(NOTES_PEER);
     try {
       state.msgCache[NOTES_PEER] = await invoke("get_messages", {
-        peer: NOTES_PEER, beforeTs: null, limit: null,
+        peer: NOTES_PEER,
+        beforeTs: null,
+        limit: null,
       });
     } catch (_) {}
     renderSidebar();
@@ -269,7 +273,9 @@ export async function setupEvents() {
 
     try {
       const latest = await invoke("get_messages", {
-        peer, beforeTs: null, limit: INITIAL_LIMIT,
+        peer,
+        beforeTs: null,
+        limit: INITIAL_LIMIT,
       });
       mergeIntoCache(peer, latest);
     } catch (_) {}
@@ -277,11 +283,16 @@ export async function setupEvents() {
     const wasLoadingOlder = state.loadingOlder.has(peer);
     delete state.lastPullLimit[peer];
     state.loadingOlder.delete(peer);
+    // Sync for this peer is complete.
+    state.syncing.delete(peer);
 
     if (wasLoadingOlder && (state.msgCache[peer] || []).length > 0) {
       const oldest = state.msgCache[peer][0].ts;
       try {
-        const hasMore = await invoke("has_messages_before", { peer, beforeTs: oldest });
+        const hasMore = await invoke("has_messages_before", {
+          peer,
+          beforeTs: oldest,
+        });
         state.mightHaveMore[peer] = hasMore;
       } catch (_) {}
     }
@@ -304,7 +315,9 @@ export async function setupEvents() {
     if (state.currentPeer === peer) {
       renderMessages(wasLoadingOlder);
       if (wasLoadingOlder) {
-        requestAnimationFrame(() => { state.suppressScrollLoad = false; });
+        requestAnimationFrame(() => {
+          state.suppressScrollLoad = false;
+        });
       } else {
         const focused = await windowIsFocused();
         if (focused) void sendReadReceipt(peer);
@@ -321,6 +334,12 @@ export async function setupEvents() {
       const id = Number(m[1]);
       state.loadingOlder.delete(id);
       state.suppressScrollLoad = false;
+      // Clear any pending sync indicator for that peer — it will be
+      // retried the next time the peer comes online.
+      if (state.syncing.delete(id)) {
+        if (state.currentPeer === id) renderMessages();
+        renderSidebar();
+      }
       return;
     }
     toast(msg);
@@ -333,8 +352,12 @@ export async function setupEvents() {
   await listen("session-closed", async (e) => {
     const reason = String(e.payload || "");
     if (reason === "account_deleted") {
-      await showAlert("Your account has been deleted.", { title: "Account deleted" });
-      try { await invoke("wipe_local_data"); } catch (_) {}
+      await showAlert("Your account has been deleted.", {
+        title: "Account deleted",
+      });
+      try {
+        await invoke("wipe_local_data");
+      } catch (_) {}
       await refreshEncryptionStatus();
     } else if (reason === "session_taken_over") {
       await showAlert(
@@ -342,9 +365,13 @@ export async function setupEvents() {
         { title: "Session closed" },
       );
     } else {
-      await showAlert("The server closed this session.", { title: "Session closed" });
+      await showAlert("The server closed this session.", {
+        title: "Session closed",
+      });
     }
-    try { await invoke("disconnect"); } catch (_) {}
+    try {
+      await invoke("disconnect");
+    } catch (_) {}
     resetToLogin();
   });
 
@@ -355,7 +382,9 @@ export async function setupEvents() {
   // -----------------------------------------------------------------
   await listen("disconnected", async () => {
     if (!state.meId) return;
-    try { await invoke("disconnect"); } catch (_) {}
+    try {
+      await invoke("disconnect");
+    } catch (_) {}
     resetToLogin();
   });
 }
@@ -365,7 +394,8 @@ export async function setupEvents() {
 let bannerTimer = null;
 function showInAppBanner(title, body, peer) {
   const el = document.getElementById("in-app-banner");
-  document.getElementById("in-app-banner-title").textContent = title || "Notification";
+  document.getElementById("in-app-banner-title").textContent =
+    title || "Notification";
   document.getElementById("in-app-banner-text").textContent = body || "";
   el.hidden = false;
   el.onclick = (ev) => {
@@ -381,7 +411,9 @@ function showInAppBanner(title, body, peer) {
     }
   };
   clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => { el.hidden = true; }, 6000);
+  bannerTimer = setTimeout(() => {
+    el.hidden = true;
+  }, 6000);
 }
 
 export { NOTES_PEER };
