@@ -189,6 +189,23 @@ CREATE TABLE IF NOT EXISTS blocks (
         );
     }
 
+    pub async fn list_all_relationships(&self, user_id: i64) -> Vec<i64> {
+        let conn = self.conn.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT CASE WHEN user_a = ?1 THEN user_b ELSE user_a END \
+             FROM relationships \
+             WHERE user_a = ?1 OR user_b = ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([user_id], |r| r.get::<_, i64>(0));
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub async fn list_peers(&self, user_id: i64) -> Vec<i64> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn.prepare(

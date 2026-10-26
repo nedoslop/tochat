@@ -173,7 +173,7 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
     drop(s.tx);
     s.reader.abort();
     let _ = s.reader.await;
-    let _ = tokio::time::timeout(Duration::from_millis(500), s.writer).await;
+    let _ = s.writer.await;
 }
 
 fn to_ws_url(base: &str) -> Result<String, String> {

@@ -221,7 +221,7 @@ async fn handle_socket(
     let now_empty = state.remove_session(user_id, session_id);
     if now_empty {
         state.db.update_last_seen(user_id, now_ms()).await;
-        let peers = state.db.list_peers(user_id).await;
+        let peers = state.db.list_all_relationships(user_id).await;
         for p in &peers {
             state.send_to_user(*p, ServerMsg::PeerOffline { user_id });
         }

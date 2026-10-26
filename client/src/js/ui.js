@@ -82,7 +82,7 @@ export function renderSidebar() {
   const all = new Set();
   for (const p of state.peers) {
     const num = Number(p);
-    if (Number.isInteger(num) && num > 0) all.add(num);
+    if (Number.isInteger(num) && num > 0 && num !== state.meId) all.add(num);
   }
   if (state.meId) all.add(NOTES_PEER);
 

@@ -90,7 +90,7 @@ export async function setupEvents() {
       const locals = await invoke("list_local_peers");
       for (const p of locals) {
         const id = Number(p.id);
-        if (Number.isInteger(id) && id > 0) {
+        if (Number.isInteger(id) && id > 0 && id !== state.meId) {
           state.peers.add(id);
           if (p.username) state.nameToId.set(p.username, id);
           if (!state.profiles[id]) {
@@ -114,7 +114,7 @@ export async function setupEvents() {
   await listen("peers", async (e) => {
     for (const info of e.payload) {
       const id = Number(info.id);
-      if (!Number.isInteger(id) || id <= 0) continue;
+      if (!Number.isInteger(id) || id <= 0 || id === state.meId) continue;
       state.peers.add(id);
       state.nameToId.set(info.username, id);
       if (!state.profiles[id]) {

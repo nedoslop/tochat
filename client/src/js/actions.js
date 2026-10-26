@@ -119,7 +119,9 @@ export async function openPeer(peerId) {
   renderSidebar();
   updateChatHeader();
   renderMessages();
-  autoPull(peerId);
+  if (!state.pending.has(peerId) && state.online.has(peerId)) {
+    autoPull(peerId);
+  }
   void sendReadReceipt(peerId);
   void updateBadge();
   closeSidebar();
@@ -433,6 +435,7 @@ export async function refreshReadState(peer) {
 export async function autoPull(peer) {
   peer = Number(peer);
   if (!Number.isInteger(peer) || peer <= 0 || peer === state.meId || peer === NOTES_PEER) return;
+  if (!state.online.has(peer)) return;
   state.syncingPeers.add(peer);
   renderSidebar();
   if (state.currentPeer === peer) {
