@@ -227,6 +227,7 @@ export async function setupEvents() {
       state.myStatus = status;
       persistMyStatus(status);
       renderMyStatus();
+      return;
     }
     state.peerStatus[id] = status;
     if (status === "invisible") state.online.delete(id);
