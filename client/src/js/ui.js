@@ -165,9 +165,15 @@ export function renderSidebar() {
     blockedCountEl.dataset.empty = state.blocked.size === 0 ? "true" : "false";
   }
 
+  updateChatHeader();
+}
+
+export function updateChatHeader() {
   const titleEl = document.getElementById("peer-title");
   const statusEl = document.getElementById("peer-status");
   const peerAvatar = document.getElementById("peer-avatar");
+  if (!titleEl || !statusEl || !peerAvatar) return;
+
 
   const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
 
