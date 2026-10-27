@@ -142,6 +142,9 @@ export async function openPeerByName(username) {
     }
     state.nameToId.set(username, numId);
     await openPeer(numId);
+    if (!state.peers.has(numId) && !state.pending.has(numId)) {
+      toast(`Started chat with @${username}. Send a message to initiate.`);
+    }
   } catch (e) {
     toast(String(e));
   }

@@ -415,6 +415,21 @@ async fn handle_client(
 /// online), which is a lie that makes the client try to pull history and
 /// get a "peer offline" error.
 async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
+    let peers_for_me = state.db.list_peers(me_id).await;
+    let _ = state.send_to_user(
+        me_id,
+        ServerMsg::Peers {
+            peers: resolve_peers(state, &peers_for_me).await,
+        },
+    );
+    let peers_for_to = state.db.list_peers(to_id).await;
+    let _ = state.send_to_user(
+        to_id,
+        ServerMsg::Peers {
+            peers: resolve_peers(state, &peers_for_to).await,
+        },
+    );
+
     if let Some((me_name, me_dn, me_av)) = state.db.get_user_profile(me_id).await {
         state.send_to_user(
             to_id,
