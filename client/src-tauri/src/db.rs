@@ -296,6 +296,13 @@ CREATE TABLE IF NOT EXISTS settings (
         let _ = conn.execute("DELETE FROM messages WHERE peer_id = ?1", [peer_id]);
     }
 
+    pub async fn delete_peer(&self, peer_id: i64) {
+        let conn = self.conn.lock().await;
+        let _ = conn.execute("DELETE FROM messages WHERE peer_id = ?1", [peer_id]);
+        let _ = conn.execute("DELETE FROM peers WHERE id = ?1", [peer_id]);
+        let _ = conn.execute("DELETE FROM peer_encryption WHERE peer_id = ?1", [peer_id]);
+    }
+
     // ---- per-chat encryption ----
 
     /// Persists the encryption config for `peer_id`. Method "none" removes

@@ -315,6 +315,9 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         }
 
         ServerMsg::ChatLeft { peer } => {
+            if let Ok(db) = state.active_db().await {
+                db.delete_peer(peer).await;
+            }
             let _ = state.app.emit("chat-left", json!({ "peer": peer }));
         }
 

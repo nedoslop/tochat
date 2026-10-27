@@ -241,6 +241,8 @@ export async function setupEvents() {
     if (!Number.isInteger(peer) || peer <= 0) return;
     state.peers.delete(peer);
     state.pending.delete(peer);
+    state.syncingPeers.delete(peer);
+    state.loadingOlder.delete(peer);
     delete state.msgCache[peer];
     delete state.seenIds[peer];
     delete state.mightHaveMore[peer];
@@ -410,6 +412,14 @@ export async function setupEvents() {
     if (m) {
       const id = Number(m[1]);
       state.loadingOlder.delete(id);
+      state.suppressScrollLoad = false;
+      return;
+    }
+    const noChat = msg.match(/^no chat with user (\d+)/);
+    if (noChat) {
+      const id = Number(noChat[1]);
+      state.loadingOlder.delete(id);
+      state.syncingPeers.delete(id);
       state.suppressScrollLoad = false;
       return;
     }

@@ -468,7 +468,7 @@ pub async fn clear_chat(peer: i64, state: State<'_, Arc<AppState>>) -> Result<()
 #[tauri::command]
 pub async fn leave_chat(peer: i64, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let db = state.active_db().await?;
-    db.clear_peer(peer).await;
+    db.delete_peer(peer).await;
     drop(db);
     let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
     if let Some(tx) = tx {
