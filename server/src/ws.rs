@@ -135,9 +135,10 @@ async fn handle_socket(
         }
     }
 
-    // Announce presence to peers on EVERY new session, with the current
+    // Announce presence to all related contacts on EVERY new session, with the current
     // status attached so peers don't flash "online" for a Busy/Away user.
-    for p in &peers {
+    let all_contacts = state.db.list_all_relationships(user_id).await;
+    for p in &all_contacts {
         state.send_to_user(
             *p,
             ServerMsg::PeerOnline {
@@ -149,7 +150,7 @@ async fn handle_socket(
 
     // Tell the newly-connected client which of its peers are online now
     // (and with which status).
-    for p in &peers {
+    for p in &all_contacts {
         if state.is_online(*p) {
             let _ = tx.send(ServerMsg::PeerOnline {
                 user_id: *p,
@@ -167,18 +168,23 @@ async fn handle_socket(
                         break;
                     }
                 }
-                Some(m) = rx.recv() => {
-                    let is_close = matches!(m, ServerMsg::Close { .. });
-                    let s = match serde_json::to_string(&m) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    if sender.send(Message::Text(s.into())).await.is_err() {
-                        break;
-                    }
-                    if is_close {
-                        let _ = sender.send(Message::Close(None)).await;
-                        break;
+                msg = rx.recv() => {
+                    match msg {
+                        Some(m) => {
+                            let is_close = matches!(m, ServerMsg::Close { .. });
+                            let s = match serde_json::to_string(&m) {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            };
+                            if sender.send(Message::Text(s.into())).await.is_err() {
+                                break;
+                            }
+                            if is_close {
+                                let _ = sender.send(Message::Close(None)).await;
+                                break;
+                            }
+                        }
+                        None => break,
                     }
                 }
                 else => break,

@@ -76,13 +76,18 @@ pub async fn connect(
                         break;
                     }
                 }
-                Some(m) = rx.recv() => {
-                    let s = match serde_json::to_string(&m) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    if sink.send(Message::Text(s.into())).await.is_err() {
-                        break;
+                msg = rx.recv() => {
+                    match msg {
+                        Some(m) => {
+                            let s = match serde_json::to_string(&m) {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            };
+                            if sink.send(Message::Text(s.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
                     }
                 }
                 _ = ping_interval.tick() => {
@@ -169,9 +174,12 @@ pub async fn disconnect(state: &Arc<AppState>) -> Result<(), String> {
 
 async fn shutdown_current_session(state: &Arc<AppState>) {
     let old = state.ws.lock().await.take();
-    let Some(s) = old else { return };
+    let Some(mut s) = old else { return };
     drop(s.tx);
     s.reader.abort();
+    if tokio::time::timeout(Duration::from_millis(500), &mut s.writer).await.is_err() {
+        s.writer.abort();
+    }
     let _ = s.reader.await;
     let _ = s.writer.await;
 }

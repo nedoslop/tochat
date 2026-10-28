@@ -102,8 +102,8 @@ export function renderSidebar() {
     for (const p of sorted) {
       const d = document.createElement("div");
       const isNotes = p === NOTES_PEER;
-      const status = state.peerStatus[p] || (state.online.has(p) ? "online" : null);
       const isOnline = isNotes || state.online.has(p);
+      const status = isOnline ? (state.peerStatus[p] || "online") : null;
       d.className =
         "peer" +
         (p === state.currentPeer ? " active" : "") +
