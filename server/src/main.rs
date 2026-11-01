@@ -12,9 +12,13 @@ use axum::{
     Router,
 };
 use dashmap::DashMap;
+use mimalloc::MiMalloc;
 
 use db::Database;
 use state::AppState;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() {
