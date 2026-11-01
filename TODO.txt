@@ -1,3 +1,8 @@
+[ ] Client: maybe move audio playback to the rust side (via rodio)?
+[ ] Client: disable text selection where it's not needed, but keep ability to select message text etc
+[ ] Client: fix theme chaging when running multiple instances on the same PC (theme changes partially) + fix selected white theme at startup when system theme is dark (win32)
+[ ] Client: thread 'tokio-rt-worker' (16752) panicked at ... src\runtime\task\core.rs:427:22: JoinHandle polled after completion
+
 (Implemented)
  [x] Add loading circle when syncing messages
      - Added SVG/CSS loading spinner in chat header when syncing (`chat-sync-indicator`).
