@@ -9,10 +9,14 @@ mod state;
 mod util;
 mod ws;
 
+use mimalloc::MiMalloc;
 use std::sync::Arc;
 use tauri::Manager;
 
 use crate::state::{read_theme, AppState};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
