@@ -452,3 +452,53 @@ async def test_delete_account_over_websocket():
     # Re-registering with the same name now works because old account is deleted
     assert register(name, "new_pw").status_code == 200
 
+
+
+@pytest.mark.asyncio
+async def test_presence_online_offline_lifecycle():
+    u1, u2 = unique_user(), unique_user()
+    register(u1, 'pw')
+    register(u2, 'pw')
+
+    # Step 1: u1 and u2 connect and establish chat relationship
+    async with open_ws(u1, 'pw') as w1:
+        id1 = (await drain_handshake(w1))['user_id']
+        async with open_ws(u2, 'pw') as w2:
+            id2 = (await drain_handshake(w2))['user_id']
+
+            await w1.send(json.dumps({'type': 'send', 'to': id2, 'id': 'm1', 'ts': 1, 'kind': 'text', 'payload': 'hi'}))
+            await asyncio.sleep(0.05)
+            await w2.send(json.dumps({'type': 'pull_history', 'from': id1, 'since': 0}))
+            await recv_type(w1, 'pull_history_request')
+            await w1.send(json.dumps({
+                'type': 'history_response', 'to': id2, 'messages': [
+                    {'id': 'm1', 'from': id1, 'to': id2, 'ts': 1, 'edit_ts': 1, 'kind': 'text', 'payload': 'hi'}
+                ]
+            }))
+            await recv_type(w2, 'history_response')
+
+    # Step 2: Now u2 stays connected. u1 connects with session 1 and session 2 (multi-device)
+    async with open_ws(u2, 'pw') as w2:
+        await drain_handshake(w2)
+
+        # u1 connects device A
+        async with open_ws(u1, 'pw') as w1_a:
+            await drain_handshake(w1_a)
+            # w2 sees u1 online
+            online_evt = await recv_type(w2, 'peer_online')
+            assert online_evt['user_id'] == id1
+
+            # u1 connects device B (e.g. Android phone)
+            async with open_ws(u1, 'pw') as w1_b:
+                await drain_handshake(w1_b)
+
+        # Now both devices of u1 are disconnected!
+        # w2 MUST receive peer_offline for u1!
+        offline_evt = await recv_type(w2, 'peer_offline')
+        assert offline_evt['user_id'] == id1
+
+        # u1 reconnects -> w2 MUST receive peer_online again!
+        async with open_ws(u1, 'pw') as w1_reconnect:
+            await drain_handshake(w1_reconnect)
+            re_online_evt = await recv_type(w2, 'peer_online')
+            assert re_online_evt['user_id'] == id1
