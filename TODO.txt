@@ -1,4 +1,4 @@
-[ ] Client: make a better icon
+[ ] Client: ensure new icon is updated everywhere
 [ ] Client: move audio playback to the rust side (via rodio) (currently music plays as WebView in volume mixer which is bad)
 [ ] Client: disable text selection where it's not needed, but keep ability to select message text etc
 [ ] Client: fix theme chaging when running multiple instances on the same PC (theme changes partially) + fix selected white theme at startup when system theme is dark (win32)
