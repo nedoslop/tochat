@@ -18,7 +18,7 @@ use db::Database;
 use state::AppState;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOCATOR: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() {

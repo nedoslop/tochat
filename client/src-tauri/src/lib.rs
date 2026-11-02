@@ -16,7 +16,7 @@ use tauri::Manager;
 use crate::state::{read_theme, AppState};
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOCATOR: MiMalloc = MiMalloc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
