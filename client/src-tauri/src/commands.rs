@@ -670,7 +670,7 @@ pub async fn get_encryption(
     let cfg = map.get_config(peer);
     Ok(EncryptionInfo {
         method: cfg.method.as_str().to_string(),
-        has_secret: cfg.secret.as_deref().map_or(false, |s| !s.is_empty()),
+        has_secret: cfg.secret.as_deref().is_some_and(|s| !s.is_empty()),
     })
 }
 

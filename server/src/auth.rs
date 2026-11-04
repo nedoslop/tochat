@@ -28,6 +28,18 @@ pub async fn register(
             "missing credentials",
         );
     }
+    // The login header is `username:password`, split on the first ':', so a
+    // username containing ':' could register but never authenticate.
+    if creds.username.contains(':')
+        || creds.username.chars().any(char::is_control)
+        || creds.username.chars().count() > 64
+    {
+        return bad(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "invalid username",
+        );
+    }
     let hash = hash_password(&creds.password);
     if state.db.create_user(&creds.username, &hash).await.is_some() {
         (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()

@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 import requests
 import websockets
+import websockets.exceptions
 
 PORT = 18080
 BASE = f"http://127.0.0.1:{PORT}"
@@ -117,21 +118,31 @@ def test_register_flow():
     r3 = register("", "")
     assert r3.status_code == 400
 
+    # A ':' in the username could never authenticate (header is user:pass)
+    assert register("bad:name", "secret").status_code == 400
+    assert register("x" * 65, "secret").status_code == 400
+    # ':' in the password is fine
+    assert register(unique_user(), "pa:ss").status_code == 200
+
 
 @pytest.mark.asyncio
 async def test_ws_auth():
     u = unique_user()
     register(u, "correct")
 
-    # Missing auth
-    with pytest.raises(Exception):
-        async with websockets.connect(WS_URL):
-            pass
-
-    # Wrong password
-    with pytest.raises(Exception):
-        async with open_ws(u, "wrong"):
-            pass
+    # Missing auth / wrong password / unknown user -> HTTP 401 on the upgrade
+    rejected = tuple(getattr(websockets.exceptions, n) for n in ("InvalidStatus", "InvalidStatusCode") if hasattr(websockets.exceptions, n))
+    for connect in (
+        lambda: websockets.connect(WS_URL),
+        lambda: open_ws(u, "wrong"),
+        lambda: open_ws(unique_user(), "correct"),
+    ):
+        with pytest.raises(rejected) as ei:
+            async with connect():
+                pass
+        e = ei.value
+        status = getattr(e, "status_code", None) or e.response.status_code
+        assert status == 401
 
     # Success
     async with open_ws(u, "correct") as ws:
@@ -502,3 +513,147 @@ async def test_presence_online_offline_lifecycle():
             await drain_handshake(w1_reconnect)
             re_online_evt = await recv_type(w2, 'peer_online')
             assert re_online_evt['user_id'] == id1
+
+
+async def establish(w1, w2, id1, id2):
+    """u1 (initiator) -> u2 pulls -> u1 answers: chat becomes established."""
+    await w1.send(json.dumps({"type": "send", "to": id2, "id": "e0", "ts": 1, "kind": "text", "payload": "hi"}))
+    for _ in range(50):  # wait until the server has recorded the pending chat
+        await w2.send(json.dumps({"type": "list_pending"}))
+        pending = await recv_type(w2, "pending_chats")
+        if any(p["id"] == id1 for p in pending["users"]):
+            break
+        await asyncio.sleep(0.05)
+    await w2.send(json.dumps({"type": "pull_history", "from": id1, "since": 0}))
+    await recv_type(w1, "pull_history_request")
+    await w1.send(json.dumps({"type": "history_response", "to": id2, "messages": [
+        {"id": "e0", "from": id1, "to": id2, "ts": 1, "edit_ts": 1, "kind": "text", "payload": "hi"}]}))
+    await recv_type(w2, "history_response")
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_history_response_is_dropped():
+    """A history_response must answer a pull; nobody can push messages or
+    force-establish a chat without the other side asking for it."""
+    u1, u2, u3 = unique_user(), unique_user(), unique_user()
+    for u in (u1, u2, u3):
+        register(u, "pw")
+
+    async with open_ws(u1, "pw") as w1, open_ws(u2, "pw") as w2, open_ws(u3, "pw") as w3:
+        id1 = (await drain_handshake(w1))["user_id"]
+        id2 = (await drain_handshake(w2))["user_id"]
+        id3 = (await drain_handshake(w3))["user_id"]
+        spam = {"type": "history_response", "messages": [
+            {"id": "x", "from": 0, "to": 0, "ts": 1, "edit_ts": 1, "kind": "text", "payload": "spam"}]}
+
+        # No relationship at all
+        await w1.send(json.dumps({**spam, "to": id3}))
+        await expect_silence(w3, timeout=0.5)
+
+        # Pending chat: initiator answers without having been asked
+        await w1.send(json.dumps({"type": "send", "to": id2, "id": "m", "ts": 1, "kind": "text", "payload": "hi"}))
+        await asyncio.sleep(0.05)
+        await w1.send(json.dumps({**spam, "to": id2}))
+        await expect_silence(w2, timeout=0.5)
+        # ...and it must not have established the chat: u2 still has it pending
+        await w2.send(json.dumps({"type": "list_pending"}))
+        pending = await recv_type(w2, "pending_chats")
+        assert any(p["id"] == id1 for p in pending["users"])
+
+        # A real pull still works afterwards, and is answered exactly once
+        await w2.send(json.dumps({"type": "pull_history", "from": id1, "since": 0}))
+        await recv_type(w1, "pull_history_request")
+        await w1.send(json.dumps({**spam, "to": id2}))
+        await recv_type(w2, "history_response")
+        await w1.send(json.dumps({**spam, "to": id2}))
+        await expect_silence(w2, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_delete_account_notifies_peers():
+    u1, u2 = unique_user(), unique_user()
+    register(u1, "pw")
+    register(u2, "pw")
+    async with open_ws(u1, "pw") as w1, open_ws(u2, "pw") as w2:
+        id1 = (await drain_handshake(w1))["user_id"]
+        id2 = (await drain_handshake(w2))["user_id"]
+        await establish(w1, w2, id1, id2)
+
+        await w1.send(json.dumps({"type": "delete_account", "password": "pw"}))
+        left = await recv_type(w2, "chat_left")
+        assert left["peer"] == id1
+
+    # The deleted account can no longer log in
+    with pytest.raises(Exception):
+        async with open_ws(u1, "pw"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_delete_account_wrong_password_keeps_account():
+    u = unique_user()
+    register(u, "pw")
+    async with open_ws(u, "pw") as ws:
+        await drain_handshake(ws)
+        await ws.send(json.dumps({"type": "delete_account", "password": "nope"}))
+        err = await recv_type(ws, "error")
+        assert "password" in err["msg"]
+    async with open_ws(u, "pw") as ws:
+        await drain_handshake(ws)
+
+
+@pytest.mark.asyncio
+async def test_leave_chat_notifies_both_sides_and_stops_delivery():
+    u1, u2 = unique_user(), unique_user()
+    register(u1, "pw")
+    register(u2, "pw")
+    async with open_ws(u1, "pw") as w1, open_ws(u2, "pw") as w2:
+        id1 = (await drain_handshake(w1))["user_id"]
+        id2 = (await drain_handshake(w2))["user_id"]
+        await establish(w1, w2, id1, id2)
+
+        await w1.send(json.dumps({"type": "leave_chat", "peer": id2}))
+        assert (await recv_type(w1, "chat_left"))["peer"] == id2
+        assert (await recv_type(w2, "chat_left"))["peer"] == id1
+
+        # Chat is gone: a new message starts a fresh pending chat, no direct delivery
+        await w1.send(json.dumps({"type": "send", "to": id2, "id": "after", "ts": 5, "kind": "text", "payload": "x"}))
+        await expect_silence(w2, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_status_is_broadcast_and_restored_on_reconnect():
+    u1, u2 = unique_user(), unique_user()
+    register(u1, "pw")
+    register(u2, "pw")
+    async with open_ws(u1, "pw") as w1, open_ws(u2, "pw") as w2:
+        id1 = (await drain_handshake(w1))["user_id"]
+        id2 = (await drain_handshake(w2))["user_id"]
+        await establish(w1, w2, id1, id2)
+
+        await w1.send(json.dumps({"type": "set_status", "status": "busy"}))
+        upd = await recv_type(w2, "status_update")
+        assert upd["user_id"] == id1 and upd["status"] == "busy"
+
+    async with open_ws(u2, "pw") as w2:
+        await drain_handshake(w2)
+        async with open_ws(u1, "pw") as w1:
+            await drain_handshake(w1)
+            ev = await recv_type(w2, "peer_online")
+            assert ev["user_id"] == id1 and ev["status"] == "busy"
+
+
+@pytest.mark.asyncio
+async def test_malformed_and_self_targeted_messages_do_not_kill_session():
+    u = unique_user()
+    register(u, "pw")
+    async with open_ws(u, "pw") as ws:
+        uid = (await drain_handshake(ws))["user_id"]
+        await ws.send("this is not json")
+        await ws.send(json.dumps({"type": "no_such_type"}))
+        await ws.send(json.dumps({"type": "send", "to": uid, "id": "s", "ts": 1, "kind": "text", "payload": "me"}))
+        assert "yourself" in (await recv_type(ws, "error"))["msg"]
+        await ws.send(json.dumps({"type": "send", "to": 999999999, "id": "s", "ts": 1, "kind": "text", "payload": "x"}))
+        assert "does not exist" in (await recv_type(ws, "error"))["msg"]
+        await ws.send(json.dumps({"type": "list_blocked"}))
+        await recv_type(ws, "blocked")

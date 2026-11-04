@@ -23,6 +23,11 @@ pub struct AppState {
     /// user who was Busy stays Busy after reconnecting — without relying on
     /// the client to re-announce it. Cleared only on process restart.
     pub user_status: Arc<DashMap<i64, UserStatus>>,
+    /// Outstanding history pulls, keyed by `(requester, responder)` with the
+    /// number of forwarded requests not yet answered. A `history_response`
+    /// is only relayed if it answers one of these, so nobody can push
+    /// messages into another user's chat unprompted.
+    pub pulls: Arc<DashMap<(i64, i64), u32>>,
 }
 
 impl AppState {
@@ -77,6 +82,24 @@ impl AppState {
             }
         }
         n
+    }
+
+    pub fn note_pull(&self, requester: i64, responder: i64) {
+        *self.pulls.entry((requester, responder)).or_insert(0) += 1;
+    }
+
+    /// Consumes one outstanding pull; `false` if the response is unsolicited.
+    pub fn take_pull(&self, requester: i64, responder: i64) -> bool {
+        let Some(mut n) = self.pulls.get_mut(&(requester, responder)) else {
+            return false;
+        };
+        *n -= 1;
+        let empty = *n == 0;
+        drop(n);
+        if empty {
+            self.pulls.remove_if(&(requester, responder), |_, n| *n == 0);
+        }
+        true
     }
 
     /// Adds a new session. Returns `true` if this is the user's first session.

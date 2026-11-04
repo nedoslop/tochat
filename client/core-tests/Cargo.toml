@@ -1,0 +1,21 @@
+# Runs the unit tests of the Tauri-independent client modules (db, crypto,
+# util) without linking Tauri. `cargo test` inside src-tauri can't be used on
+# Windows: the cdylib export table overflows on windows-gnu, and the test exe
+# lacks the comctl32 v6 manifest (STATUS_ENTRYPOINT_NOT_FOUND).
+[package]
+name = "core-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rand = "0.8"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+hex = "0.4"

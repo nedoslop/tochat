@@ -1,5 +1,10 @@
 """
-Comprehensive client-side test suite for tochat.
+Protocol-level simulation of tochat clients against the real server.
+
+NOTE: the ClientDatabase / cipher classes here are Python re-implementations,
+NOT the Rust client code. These tests exercise the *server* with
+client-shaped traffic. The real client modules (db, crypto, util) are tested
+by `cargo test` in client/core-tests.
 
 Tests cover:
 1. Client local SQLite database operations (schema, upsert, edit, delete, pagination, read receipts).
@@ -53,12 +58,13 @@ class ClientCipher:
 
 class SharedPasswordCipher(ClientCipher):
     def __init__(self, password: str):
-        # Argon2id default settings in Rust argon2 crate
+        # Argon2id defaults of the Rust `argon2` 0.5 crate (m=19456 KiB, t=2, p=1).
+        # Pinned against the real client by util::tests::derive_key_matches_known_vector.
         self.key = low_level.hash_secret_raw(
             secret=password.encode("utf-8"),
             salt=SALT,
-            time_cost=3,
-            memory_cost=65536,
+            time_cost=2,
+            memory_cost=19456,
             parallelism=1,
             hash_len=32,
             type=Type.ID,

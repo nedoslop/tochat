@@ -344,3 +344,99 @@ CREATE TABLE IF NOT EXISTS settings (
         let _ = conn.execute("DELETE FROM settings", []);
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> (Database, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "tochat_test_{}_{}_{}.db",
+            name,
+            std::process::id(),
+            crate::util::random_id().replace(['/', '+', '='], "_")
+        ));
+        (Database::open(&path).expect("open db"), path)
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_edit_and_unlimited_fetch() {
+        let (db, path) = temp_db("crud");
+        db.upsert_message(1, "m1", "out", 1000, 1000, "text", "Hello", true, false).await;
+        db.upsert_message(1, "m2", "in", 2000, 2000, "text", "World", true, false).await;
+        db.upsert_message(1, "m1", "out", 1000, 1500, "text", "Hello edited", true, false).await;
+
+        // limit = None must mean "no limit", not LIMIT 0.
+        let all = db.get_messages(1, None, None).await;
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].id, "m1");
+        assert_eq!(all[0].payload, "Hello edited");
+        assert_eq!(all[0].edit_ts, 1500);
+        assert_eq!(all[1].id, "m2");
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn pagination_is_oldest_first_and_strictly_before() {
+        let (db, path) = temp_db("page");
+        for i in 1..=5 {
+            db.upsert_message(7, &format!("m{i}"), "in", i * 100, i * 100, "text", "x", true, false)
+                .await;
+        }
+        let newest2 = db.get_messages(7, None, Some(2)).await;
+        assert_eq!(newest2.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m4", "m5"]);
+        let older = db.get_messages(7, Some(400), Some(2)).await;
+        assert_eq!(older.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m2", "m3"]);
+        assert!(db.has_messages_before(7, 200).await);
+        assert!(!db.has_messages_before(7, 100).await);
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn read_flags_never_regress_and_respect_direction() {
+        let (db, path) = temp_db("read");
+        db.upsert_message(1, "out1", "out", 100, 100, "text", "a", true, false).await;
+        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false).await;
+        assert_eq!(db.unread_counts().await, vec![(1, 1)]);
+
+        db.mark_read_up_to(1, 500).await; // only touches outgoing
+        let msgs = db.get_messages(1, None, None).await;
+        assert!(msgs.iter().find(|m| m.id == "out1").unwrap().read);
+        assert!(!msgs.iter().find(|m| m.id == "in1").unwrap().read);
+
+        db.mark_incoming_read(1, 500).await;
+        assert!(db.unread_counts().await.is_empty());
+
+        // Re-upserting (e.g. history re-sync) must not flip read back to 0.
+        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false).await;
+        assert!(db.get_messages(1, None, None).await.iter().all(|m| m.read));
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn encryption_rows_and_peer_deletion() {
+        let (db, path) = temp_db("enc");
+        db.upsert_peer(3, "bob", Some("Bob"), None).await;
+        db.upsert_message(3, "m", "in", 1, 1, "text", "x", true, false).await;
+        db.set_encryption(3, "pre_shared_key", Some("ab")).await;
+        assert_eq!(db.load_all_encryption().await.len(), 1);
+        db.set_encryption(3, "none", None).await;
+        assert!(db.load_all_encryption().await.is_empty());
+
+        db.set_encryption(3, "shared_password", Some("pw")).await;
+        db.delete_peer(3).await;
+        assert!(db.get_peer(3).await.is_none());
+        assert!(db.get_messages(3, None, None).await.is_empty());
+        assert!(db.load_all_encryption().await.is_empty());
+        drop(db);
+        cleanup(&path);
+    }
+}

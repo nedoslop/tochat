@@ -579,7 +579,7 @@ async fn handle_pull_request(
     let mut filtered: Vec<_> = msgs
         .into_iter()
         .filter(|m| m.edit_ts > since)
-        .filter(|m| before.map_or(true, |b| m.ts < b))
+        .filter(|m| before.is_none_or(|b| m.ts < b))
         .collect();
 
     if let Some(lim) = limit {
@@ -643,6 +643,11 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
 
     if let Ok(db) = state.active_db().await {
         for m in messages {
+            // A history only ever contains messages between the two of us;
+            // ignore anything a peer claims was sent by/to someone else.
+            if !((m.from == me.id && m.to == from) || (m.from == from && m.to == me.id)) {
+                continue;
+            }
             let direction = if m.from == me.id { "out" } else { "in" };
             let (stored, is_plaintext) = state.decode_from_wire(from, &m.payload).await;
             let read = direction == "out";

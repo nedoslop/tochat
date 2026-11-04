@@ -176,7 +176,7 @@ async fn handle_socket(
                                 Ok(s) => s,
                                 Err(_) => continue,
                             };
-                            if sender.send(Message::Text(s.into())).await.is_err() {
+                            if sender.send(Message::Text(s)).await.is_err() {
                                 break;
                             }
                             if is_close {
@@ -479,6 +479,7 @@ async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_send(
     me_id: i64,
     to_id: i64,
@@ -631,6 +632,7 @@ async fn handle_pull_history(
         });
         return;
     }
+    state.note_pull(me_id, from_id);
     state.send_to_user(
         from_id,
         ServerMsg::PullHistoryRequest {
@@ -657,11 +659,19 @@ async fn handle_history_response(
     if state.db.is_blocked(to_id, me_id).await || state.db.is_blocked(me_id, to_id).await {
         return;
     }
-    if let Some((_, established)) = state.db.get_relationship(me_id, to_id).await {
-        if !established {
-            state.db.establish_relationship(me_id, to_id).await;
-            notify_peer_pair(state, me_id, to_id).await;
-        }
+    // Only answer a pull the peer actually made, within an existing chat.
+    let Some((initiator_id, established)) = state.db.get_relationship(me_id, to_id).await else {
+        return;
+    };
+    if !established && initiator_id != me_id {
+        return;
+    }
+    if !state.take_pull(to_id, me_id) {
+        return;
+    }
+    if !established {
+        state.db.establish_relationship(me_id, to_id).await;
+        notify_peer_pair(state, me_id, to_id).await;
     }
     state.send_to_user(
         to_id,
@@ -685,6 +695,8 @@ async fn handle_leave_chat(
         return;
     }
     state.db.delete_relationship(me_id, peer_id).await;
+    state.pulls.remove(&(me_id, peer_id));
+    state.pulls.remove(&(peer_id, me_id));
     let _ = tx.send(ServerMsg::ChatLeft { peer: peer_id });
     state.send_to_user(peer_id, ServerMsg::ChatLeft { peer: me_id });
 }
@@ -745,12 +757,15 @@ async fn handle_delete_account(
         });
         return;
     }
-    let peers = state.db.list_peers(me_id).await;
+    let contacts = state.db.list_all_relationships(me_id).await;
     state.db.delete_user(me_id).await;
     state.online.remove(&me_id);
     state.user_status.remove(&me_id);
-    for p in peers {
+    state.pulls.retain(|(a, b), _| *a != me_id && *b != me_id);
+    // ChatLeft makes peers drop the deleted user from their sidebar/local DB.
+    for p in contacts {
         state.send_to_user(p, ServerMsg::PeerOffline { user_id: me_id });
+        state.send_to_user(p, ServerMsg::ChatLeft { peer: me_id });
     }
     let _ = tx.send(ServerMsg::Close {
         reason: "account_deleted".into(),

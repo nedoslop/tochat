@@ -196,7 +196,68 @@ pub fn validate_secret(method: EncryptionMethod, secret: &str) -> bool {
         EncryptionMethod::None => true,
         EncryptionMethod::SharedPassword => !secret.is_empty(),
         EncryptionMethod::PreSharedKey => {
-            hex::decode(secret.trim()).map_or(false, |b| b.len() == 32)
+            hex::decode(secret.trim()).is_ok_and(|b| b.len() == 32)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PSK: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn psk_round_trip_and_wrong_key() {
+        let a = PreSharedKeyCipher::from_hex(PSK).unwrap();
+        let wire = a.encrypt("секрет 🔒").unwrap();
+        assert_ne!(wire, "секрет 🔒");
+        assert_eq!(a.decrypt(&wire).as_deref(), Some("секрет 🔒"));
+
+        let other = PreSharedKeyCipher::from_hex(&"ff".repeat(32)).unwrap();
+        assert!(other.decrypt(&wire).is_none());
+    }
+
+    #[test]
+    fn nonce_is_random_per_message() {
+        let a = PreSharedKeyCipher::from_hex(PSK).unwrap();
+        assert_ne!(a.encrypt("same").unwrap(), a.encrypt("same").unwrap());
+    }
+
+    #[test]
+    fn garbage_and_tampered_input_returns_none() {
+        let a = PreSharedKeyCipher::from_hex(PSK).unwrap();
+        assert!(a.decrypt("not base64!!").is_none());
+        assert!(a.decrypt("").is_none());
+        assert!(a.decrypt("AAAA").is_none());
+        let mut wire = a.encrypt("hello").unwrap().into_bytes();
+        let last = wire.len() - 3;
+        wire[last] = if wire[last] == b'A' { b'B' } else { b'A' };
+        assert!(a.decrypt(&String::from_utf8(wire).unwrap()).is_none());
+    }
+
+    #[test]
+    fn shared_password_is_deterministic_across_instances() {
+        let a = SharedPasswordCipher::new("topsecret123");
+        let b = SharedPasswordCipher::new("topsecret123");
+        let wire = a.encrypt("hi").unwrap();
+        assert_eq!(b.decrypt(&wire).as_deref(), Some("hi"));
+        assert!(SharedPasswordCipher::new("wrong").decrypt(&wire).is_none());
+    }
+
+    #[test]
+    fn validation_and_factory() {
+        assert!(validate_secret(EncryptionMethod::PreSharedKey, PSK));
+        assert!(validate_secret(EncryptionMethod::PreSharedKey, &format!("  {PSK}\n")));
+        assert!(!validate_secret(EncryptionMethod::PreSharedKey, "abcd"));
+        assert!(!validate_secret(EncryptionMethod::PreSharedKey, &"zz".repeat(32)));
+        assert!(!validate_secret(EncryptionMethod::SharedPassword, ""));
+
+        assert!(build_cipher(EncryptionMethod::None, Some("x")).is_none());
+        assert!(build_cipher(EncryptionMethod::SharedPassword, Some("")).is_none());
+        assert!(build_cipher(EncryptionMethod::PreSharedKey, Some("short")).is_none());
+        assert!(build_cipher(EncryptionMethod::PreSharedKey, Some(PSK)).is_some());
+        assert_eq!(EncryptionMethod::parse("garbage"), EncryptionMethod::None);
+        assert_eq!(EncryptionMethod::parse("pre_shared_key").as_str(), "pre_shared_key");
     }
 }

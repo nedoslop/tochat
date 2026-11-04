@@ -28,3 +28,25 @@ pub fn derive_key(password: &str) -> [u8; 32] {
         .expect("argon2 key derivation");
     key
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the KDF output. Both peers must derive identical keys, so any
+    /// change to the salt or Argon2 parameters (including a crate upgrade
+    /// that changes `Argon2::default()`) silently breaks every existing
+    /// shared-password chat. Vector: Argon2id v19, m=19456, t=2, p=1.
+    #[test]
+    fn derive_key_matches_known_vector() {
+        assert_eq!(
+            hex::encode(derive_key("topsecret123")),
+            "08a1115d9ac7b9c468b4779a5ea2b8cdac56d5b9037958d027aac43cbabb1682"
+        );
+    }
+
+    #[test]
+    fn random_ids_are_unique() {
+        assert_ne!(random_id(), random_id());
+    }
+}
