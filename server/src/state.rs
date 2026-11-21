@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
-use dashmap::DashMap;
-use tokio::sync::mpsc;
-
 use crate::db::Database;
 use crate::protocol::{ServerMsg, UserStatus};
+use dashmap::DashMap;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// One active WebSocket session belonging to a logged-in user.
 #[derive(Clone)]
@@ -81,6 +79,16 @@ impl AppState {
 
     pub fn note_pull(&self, requester: i64, responder: i64) {
         *self.pulls.entry((requester, responder)).or_insert(0) += 1;
+    }
+
+    /// `true` if at least one pull from `requester` to `responder` is still
+    /// outstanding. Used to validate non-final parts of a multi-part history
+    /// reply without consuming the pull (the final part consumes it).
+    pub fn has_pull(&self, requester: i64, responder: i64) -> bool {
+        self.pulls
+            .get(&(requester, responder))
+            .map(|n| *n > 0)
+            .unwrap_or(false)
     }
 
     /// Consumes one outstanding pull; `false` if the response is unsolicited.

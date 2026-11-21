@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Serde default for flags that must be `true` when absent (older peers).
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -68,6 +73,11 @@ pub enum ClientMsg {
     HistoryResponse {
         to: i64,
         messages: Vec<StoredMsg>,
+        /// `false` for intermediate parts of a multi-part history reply,
+        /// `true` for the final (or only) part. Defaults to `true` so
+        /// single-response clients keep working unchanged.
+        #[serde(default = "default_true")]
+        done: bool,
     },
     ListPending,
     DeleteAccount {
@@ -169,6 +179,9 @@ pub enum ServerMsg {
     HistoryResponse {
         from: i64,
         messages: Vec<StoredMsg>,
+        /// Mirrors the responder's `done` flag so the requester knows when
+        /// a multi-part history reply is complete.
+        done: bool,
     },
     ReadReceipt {
         from: i64,

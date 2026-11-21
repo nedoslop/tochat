@@ -1,22 +1,37 @@
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::db::Database;
+use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
+use crate::sound::play_notification_chirp;
+use crate::state::{user_db_path, AppState, Me, WsSession};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::sync::Arc;
+use std::time::Duration;
 #[cfg(not(target_os = "android"))]
 use tauri::UserAttentionType;
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::db::Database;
-use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
-use crate::sound::play_notification_chirp;
-use crate::state::{user_db_path, AppState, Me, WsSession};
-
 pub const NOTES_PEER: i64 = 0;
+
+/// WebSocket message/frame ceiling — must match the server.
+///
+/// tungstenite's defaults (64 MiB message / 16 MiB frame) are smaller than
+/// a single encrypted 16 MiB attachment (~28 MiB on the wire after double
+/// base64), and a history reply carrying dozens of media messages is far
+/// bigger still. An oversized frame makes the library close the connection
+/// with a protocol error, which surfaced as "one of my two logged-in
+/// instances gets kicked" right after login (the automatic history sync
+/// between the two accounts was the oversized message).
+const MAX_WS_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
+/// Soft byte budget for one part of a multi-part history reply. Parts are
+/// kept well under `MAX_WS_MESSAGE_BYTES`; a single message larger than the
+/// budget still ships alone in its own part (it fits the ceiling above).
+const HISTORY_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 pub async fn connect(
     state: Arc<AppState>,
@@ -26,10 +41,8 @@ pub async fn connect(
     initial_status: UserStatus,
 ) -> Result<(), String> {
     shutdown_current_session(&state).await;
-
     let db_path = user_db_path(&state.data_dir, &username, &base_url);
     let db = Database::open(&db_path).map_err(|e| format!("open db: {e}"))?;
-
     let ws_url = to_ws_url(&base_url)?;
     let mut req = ws_url
         .into_client_request()
@@ -40,19 +53,18 @@ pub async fn connect(
             .parse()
             .map_err(|e| format!("bad auth header: {e}"))?,
     );
-
-    let (stream, _resp) = tokio_tungstenite::connect_async(req)
+    let ws_config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_WS_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_WS_MESSAGE_BYTES));
+    let (stream, _resp) = tokio_tungstenite::connect_async_with_config(req, Some(ws_config), false)
         .await
         .map_err(|e| format!("ws connect failed: {e}"))?;
     let (mut sink, mut source) = stream.split();
-
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
     let session_id = state
         .ws_counter
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
     *state.db.write().await = Some(Arc::new(db));
     *state.me.write().await = Some(Me {
         id: 0, // placeholder, replaced on AuthOk
@@ -60,10 +72,8 @@ pub async fn connect(
     });
     *state.server_url.write().await = Some(base_url.clone());
     *state.my_status.write().await = initial_status;
-
     // Load per-chat encryption configs from this user's local DB.
     state.load_encryption_from_db().await.ok();
-
     let writer = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
         ping_interval.tick().await;
@@ -98,7 +108,6 @@ pub async fn connect(
         }
         let _ = sink.close().await;
     });
-
     let reader_state = state.clone();
     let reader_username = username.clone();
     let reader = tokio::spawn(async move {
@@ -124,7 +133,6 @@ pub async fn connect(
                 _ => {}
             }
         }
-
         // IMPORTANT: only announce the disconnect if THIS session was the
         // currently-active one. When `connect` is called while an older
         // session is still winding down (normal re-login, or the brief
@@ -148,7 +156,6 @@ pub async fn connect(
                 .emit("disconnected", json!(reader_username));
         }
     });
-
     *state.ws.lock().await = Some(WsSession {
         id: session_id,
         tx,
@@ -175,7 +182,6 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
     let Some(mut s) = old else { return };
     drop(s.tx);
     s.reader.abort();
-
     // Give the writer up to 500 ms to drain and close the sink cleanly.
     //
     // IMPORTANT: a `JoinHandle` must never be polled again after it has
@@ -194,7 +200,6 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
         s.writer.abort();
         let _ = s.writer.await;
     }
-
     // The reader was aborted above and has never been polled to
     // completion here, so awaiting it once is safe.
     let _ = s.reader.await;
@@ -298,8 +303,12 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
-        ServerMsg::HistoryResponse { from, messages } => {
-            handle_history_response(state, from, messages).await;
+        ServerMsg::HistoryResponse {
+            from,
+            messages,
+            done,
+        } => {
+            handle_history_response(state, from, messages, done).await;
         }
         ServerMsg::ReadReceipt { from, up_to_ts } => {
             if let Ok(db) = state.active_db().await {
@@ -448,7 +457,6 @@ async fn handle_incoming(
         )
         .await;
     }
-
     let window_focused = is_window_focused(&state.app);
     let _ = state.app.emit(
         "message",
@@ -467,27 +475,22 @@ async fn handle_incoming(
             "windowFocused": window_focused,
         }),
     );
-
     if window_focused {
         return;
     }
     if !should_alert(state).await {
         return;
     }
-
     play_notification_chirp();
-
     let display = peer_display_label(state, from).await;
     let preview = preview_for(&kind, &stored);
     let title = format!("New message from {display}");
-
     // Always emit in-app-notification so webview can display in-app banner
     // if system notifications are disabled or muted by the OS.
     let _ = state.app.emit(
         "in-app-notification",
         json!({ "title": title, "body": preview, "peer": from }),
     );
-
     let _ = state
         .app
         .notification()
@@ -495,7 +498,6 @@ async fn handle_incoming(
         .title(title)
         .body(preview)
         .show();
-
     request_attention(state);
 }
 
@@ -574,13 +576,11 @@ async fn handle_pull_request(
     let Some(me) = state.me.read().await.clone() else {
         return;
     };
-
     let mut filtered: Vec<_> = msgs
         .into_iter()
         .filter(|m| m.edit_ts > since)
         .filter(|m| before.is_none_or(|b| m.ts < b))
         .collect();
-
     if let Some(lim) = limit {
         let lim = lim as usize;
         if filtered.len() > lim {
@@ -588,7 +588,6 @@ async fn handle_pull_request(
             filtered.drain(0..drop_count);
         }
     }
-
     let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
     {
         let enc = state.encryption.read().await;
@@ -622,17 +621,53 @@ async fn handle_pull_request(
             });
         }
     }
-
     let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
-    if let Some(tx) = tx {
+    let Some(tx) = tx else { return };
+
+    // Ship the reply in bounded parts. A media-heavy chat can hold hundreds
+    // of MiB of base64 payloads; sending them as ONE WebSocket message
+    // exceeded the protocol message/frame limit and got the connection
+    // killed (the "second instance gets kicked on login" bug). Each part
+    // stays under HISTORY_BATCH_BYTES, except that a single oversized
+    // message ships alone (still under MAX_WS_MESSAGE_BYTES). The final
+    // part carries done = true; the server keeps the pull open until then.
+    if wire.is_empty() {
         let _ = tx.send(ClientMsg::HistoryResponse {
             to: from,
-            messages: wire,
+            messages: Vec::new(),
+            done: true,
         });
+        return;
     }
+    let mut batch: Vec<StoredMsg> = Vec::new();
+    let mut batch_bytes: usize = 0;
+    for m in wire {
+        // Rough per-message wire cost: payload + id + JSON overhead.
+        let size = m.payload.len() + m.id.len() + 64;
+        if !batch.is_empty() && batch_bytes + size > HISTORY_BATCH_BYTES {
+            let _ = tx.send(ClientMsg::HistoryResponse {
+                to: from,
+                messages: std::mem::take(&mut batch),
+                done: false,
+            });
+            batch_bytes = 0;
+        }
+        batch_bytes += size;
+        batch.push(m);
+    }
+    let _ = tx.send(ClientMsg::HistoryResponse {
+        to: from,
+        messages: batch,
+        done: true,
+    });
 }
 
-async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec<StoredMsg>) {
+async fn handle_history_response(
+    state: &Arc<AppState>,
+    from: i64,
+    messages: Vec<StoredMsg>,
+    done: bool,
+) {
     let Some(me) = state.me.read().await.clone() else {
         return;
     };
@@ -660,7 +695,12 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
             .await;
         }
     }
-    let _ = state
-        .app
-        .emit("history-received", json!({ "from": from, "peer": from }));
+    // Every part is stored above, but the UI is only notified once the
+    // reply is complete — so the JS side keeps seeing exactly one
+    // `history-received` per pull, same as before multi-part replies.
+    if done {
+        let _ = state
+            .app
+            .emit("history-received", json!({ "from": from, "peer": from }));
+    }
 }

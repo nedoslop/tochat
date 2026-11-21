@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Serde default for flags that must be `true` when absent (older peers).
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -92,6 +97,9 @@ pub enum ClientMsg {
     HistoryResponse {
         to: i64,
         messages: Vec<StoredMsg>,
+        /// `false` for intermediate parts of a multi-part history reply,
+        /// `true` for the final (or only) part.
+        done: bool,
     },
     ListPending,
     DeleteAccount {
@@ -186,6 +194,10 @@ pub enum ServerMsg {
     HistoryResponse {
         from: i64,
         messages: Vec<StoredMsg>,
+        /// `true` when this is the final (or only) part of the reply.
+        /// Defaults to `true` for servers that don't send the flag.
+        #[serde(default = "default_true")]
+        done: bool,
     },
     ReadReceipt {
         from: i64,
