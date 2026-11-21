@@ -88,9 +88,7 @@ fn chacha_encrypt(key: &[u8; 32], plaintext: &str) -> Option<String> {
 
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce_bytes = [0u8; 12];
-    rand::rngs::SysRng
-        .try_fill_bytes(&mut nonce_bytes)
-        .ok()?;
+    rand::rngs::SysRng.try_fill_bytes(&mut nonce_bytes).ok()?;
     // chacha20poly1305 0.11: `Nonce` is a hybrid-array `Array`; build it
     // via `TryFrom` (`from_slice` is deprecated) and pass it by reference.
     let nonce = Nonce::try_from(&nonce_bytes[..]).ok()?;
