@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod commands;
 mod crypto;
 mod db;
@@ -68,6 +69,13 @@ pub fn run() {
             commands::get_peer,
             commands::list_local_peers,
             commands::save_data_url,
+            commands::audio_play,
+            commands::audio_pause,
+            commands::audio_resume,
+            commands::audio_seek,
+            commands::audio_set_volume,
+            commands::audio_stop,
+            commands::audio_stop_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

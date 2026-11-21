@@ -29,6 +29,23 @@ pub fn derive_key(password: &str) -> [u8; 32] {
     key
 }
 
+/// Decodes `data:<mime>;base64,<payload>` into raw bytes.
+/// Shared by the native file-save dialog and native audio playback.
+pub fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
+    let rest = url
+        .strip_prefix("data:")
+        .ok_or_else(|| "not a data url".to_string())?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| "malformed data url".to_string())?;
+    if !meta.ends_with(";base64") {
+        return Err("only base64 data urls are supported".to_string());
+    }
+    STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("base64 decode error: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

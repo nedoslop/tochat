@@ -7,6 +7,7 @@ use tauri::AppHandle;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+use crate::audio::AudioManager;
 use crate::crypto::{build_cipher, Cipher, EncryptionConfig, EncryptionMethod};
 use crate::db::Database;
 use crate::protocol::{ClientMsg, UserStatus};
@@ -81,6 +82,9 @@ pub struct Me {
 pub struct AppState {
     pub app: AppHandle,
     pub data_dir: PathBuf,
+    /// Native (rodio) audio-message playback. Lives for the whole app so
+    /// the OS volume mixer shows this app, never the webview.
+    pub audio: AudioManager,
     /// Base URL of the currently-connected server (used to pick DB file).
     pub server_url: RwLock<Option<String>>,
     pub db: RwLock<Option<Arc<Database>>>,
@@ -96,9 +100,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(app: AppHandle, data_dir: PathBuf) -> Self {
+        let audio = AudioManager::new(app.clone());
         Self {
             app,
             data_dir,
+            audio,
             server_url: RwLock::new(None),
             db: RwLock::new(None),
             me: RwLock::new(None),
@@ -133,11 +139,7 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn encrypt_for_wire(
-        &self,
-        peer_id: i64,
-        plaintext: &str,
-    ) -> Result<String, String> {
+    pub async fn encrypt_for_wire(&self, peer_id: i64, plaintext: &str) -> Result<String, String> {
         let map = self.encryption.read().await;
         match map.cipher(peer_id) {
             Some(c) => c

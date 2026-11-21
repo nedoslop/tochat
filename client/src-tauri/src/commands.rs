@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use serde_json::json;
 use tauri::{Manager, State};
@@ -12,7 +11,7 @@ use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
 use crate::protocol::{ClientMsg, MessageKind, UserStatus};
 use crate::state::{read_theme, theme_path, user_db_path, AppState};
-use crate::util::{now_ms, random_id};
+use crate::util::{decode_data_url, now_ms, random_id};
 use crate::ws;
 
 pub const NOTES_PEER: i64 = 0;
@@ -81,7 +80,6 @@ pub async fn resolve_user(
         let mut lookups = state.pending_lookups.lock().await;
         lookups.insert(username.clone(), tx);
     }
-
     let ws_tx = {
         let ws = state.ws.lock().await;
         ws.as_ref()
@@ -308,17 +306,14 @@ async fn send_outgoing(
 ) -> Result<(), String> {
     let db = state.active_db().await?;
     let wire_payload = state.encrypt_for_wire(to, plaintext).await?;
-
     db.upsert_message(to, id, "out", ts, edit_ts, kind.as_str(), plaintext, true, false)
         .await;
-
     let tx = {
         let ws = state.ws.lock().await;
         ws.as_ref()
             .map(|s| s.tx.clone())
             .ok_or_else(|| "not connected".to_string())?
     };
-
     let msg = if is_edit {
         ClientMsg::Edit {
             to,
@@ -337,7 +332,6 @@ async fn send_outgoing(
             payload: wire_payload,
         }
     };
-
     tx.send(msg).map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
@@ -486,7 +480,6 @@ pub async fn block_user(user_id: i64, state: State<'_, Arc<AppState>>) -> Result
     Ok(())
 }
 
-
 #[tauri::command]
 pub async fn check_notifications_enabled(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
@@ -606,22 +599,6 @@ pub async fn wipe_local_data(state: State<'_, Arc<AppState>>) -> Result<(), Stri
 
 // ---------- file saving ----------
 
-/// Decodes `data:<mime>;base64,<payload>` into raw bytes.
-fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
-    let rest = url
-        .strip_prefix("data:")
-        .ok_or_else(|| "not a data url".to_string())?;
-    let (meta, payload) = rest
-        .split_once(',')
-        .ok_or_else(|| "malformed data url".to_string())?;
-    if !meta.ends_with(";base64") {
-        return Err("only base64 data urls are supported".to_string());
-    }
-    STANDARD
-        .decode(payload.trim())
-        .map_err(|e| format!("base64 decode error: {e}"))
-}
-
 /// Opens a native "save file" dialog and writes the decoded data-URL bytes
 /// to the chosen path. Silently no-ops if the user cancels the dialog.
 #[tauri::command]
@@ -642,7 +619,6 @@ pub async fn save_data_url(
         .save_file(move |picked| {
             let _ = tx.send(picked);
         });
-
     let picked = rx.await.map_err(|_| "dialog cancelled".to_string())?;
     let Some(path) = picked else {
         // User pressed Cancel — not an error.
@@ -651,6 +627,81 @@ pub async fn save_data_url(
     let path_buf = path.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path_buf, bytes).map_err(|e| format!("write failed: {e}"))?;
     Ok(())
+}
+
+// ---------- native audio playback ----------
+//
+// Audio messages are played by rodio on a dedicated Rust thread (see
+// crate::audio), NOT by an <audio> element in the webview — otherwise the
+// OS volume mixer shows a separate "WebView" volume entry. The webview
+// only sends these commands and renders `audio-state` / `audio-progress`
+// events.
+
+#[tauri::command]
+pub async fn audio_play(
+    peer: i64,
+    id: String,
+    data_url: String,
+    volume: Option<f32>,
+    position: Option<f64>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let bytes = decode_data_url(&data_url)?;
+    state
+        .audio
+        .play(peer, id, bytes, volume.unwrap_or(1.0), position)
+}
+
+#[tauri::command]
+pub async fn audio_pause(
+    peer: i64,
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audio.pause(peer, id)
+}
+
+#[tauri::command]
+pub async fn audio_resume(
+    peer: i64,
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audio.resume(peer, id)
+}
+
+#[tauri::command]
+pub async fn audio_seek(
+    peer: i64,
+    id: String,
+    position: f64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audio.seek(peer, id, position)
+}
+
+#[tauri::command]
+pub async fn audio_set_volume(
+    peer: i64,
+    id: String,
+    volume: f32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audio.set_volume(peer, id, volume)
+}
+
+#[tauri::command]
+pub async fn audio_stop(
+    peer: i64,
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.audio.stop(peer, id)
+}
+
+#[tauri::command]
+pub async fn audio_stop_all(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.audio.stop_all()
 }
 
 // ---------- encryption ----------
@@ -683,7 +734,6 @@ pub async fn set_encryption(
 ) -> Result<(), String> {
     let m = EncryptionMethod::parse(&method);
     let mut secret = secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-
     if secret.is_none() {
         let map = state.encryption.read().await;
         let existing = map.get_config(peer);
@@ -691,7 +741,6 @@ pub async fn set_encryption(
             secret = existing.secret.clone();
         }
     }
-
     if m != EncryptionMethod::None {
         match secret.as_deref() {
             None => return Err("a secret is required for this method".into()),
@@ -706,12 +755,9 @@ pub async fn set_encryption(
             _ => {}
         }
     }
-
     let config = EncryptionConfig { method: m, secret: secret.clone() };
-
     let db = state.active_db().await?;
     db.set_encryption(peer, m.as_str(), secret.as_deref()).await;
-
     let mut map = state.encryption.write().await;
     map.set(peer, config);
     Ok(())

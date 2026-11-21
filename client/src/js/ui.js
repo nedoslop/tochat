@@ -1,8 +1,16 @@
 import { state, NOTES_PEER, displayName, avatarFor } from "./state.js";
 import {
-  avatarColor, initial, formatTime, formatDate, formatBytes, parseFilePayload,
-  formatDuration, extFromDataUrl, downloadDataUrl,
+  avatarColor,
+  initial,
+  formatTime,
+  formatDate,
+  formatBytes,
+  parseFilePayload,
+  extFromDataUrl,
+  downloadDataUrl,
+  cssEscape,
 } from "./utils.js";
+import { buildAudioPlayer } from "./audio.js";
 
 export function showChatView() {
   document.getElementById("chat-view").hidden = false;
@@ -30,15 +38,14 @@ function updateComposerVisibility() {
   const composer = document.getElementById("composer");
   const blockedBanner = document.getElementById("blocked-banner");
   const appView = document.getElementById("app-view");
-
-  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
-
+  const isValidPeer =
+    state.currentPeer !== null &&
+    Number.isInteger(state.currentPeer) &&
+    state.currentPeer >= 0;
   if (appView) {
     appView.classList.toggle("has-active-chat", isValidPeer);
   }
-
   const isBlocked = isValidPeer && state.blocked.has(state.currentPeer);
-
   if (blockedBanner) {
     blockedBanner.hidden = !isBlocked;
   }
@@ -78,7 +85,6 @@ function peerColorKey(peerId) {
 export function renderSidebar() {
   const peersEl = document.getElementById("peers");
   peersEl.innerHTML = "";
-
   const all = new Set();
   for (const p of state.peers) {
     const num = Number(p);
@@ -98,12 +104,11 @@ export function renderSidebar() {
       if (b === NOTES_PEER) return 1;
       return displayName(a).localeCompare(displayName(b));
     });
-
     for (const p of sorted) {
       const d = document.createElement("div");
       const isNotes = p === NOTES_PEER;
       const isOnline = isNotes || state.online.has(p);
-      const status = isOnline ? (state.peerStatus[p] || "online") : null;
+      const status = isOnline ? state.peerStatus[p] || "online" : null;
       d.className =
         "peer" +
         (p === state.currentPeer ? " active" : "") +
@@ -137,7 +142,6 @@ export function renderSidebar() {
         name.appendChild(tag);
       }
       body.appendChild(name);
-
       d.appendChild(av);
       d.appendChild(body);
 
@@ -148,7 +152,6 @@ export function renderSidebar() {
         b.textContent = String(unread);
         d.appendChild(b);
       }
-
       peersEl.appendChild(d);
     }
   }
@@ -158,13 +161,11 @@ export function renderSidebar() {
     pendingCountEl.textContent = String(state.pending.size);
     pendingCountEl.dataset.empty = state.pending.size === 0 ? "true" : "false";
   }
-
   const blockedCountEl = document.getElementById("blocked-count");
   if (blockedCountEl) {
     blockedCountEl.textContent = String(state.blocked.size);
     blockedCountEl.dataset.empty = state.blocked.size === 0 ? "true" : "false";
   }
-
   updateChatHeader();
 }
 
@@ -173,9 +174,10 @@ export function updateChatHeader() {
   const statusEl = document.getElementById("peer-status");
   const peerAvatar = document.getElementById("peer-avatar");
   if (!titleEl || !statusEl || !peerAvatar) return;
-
-
-  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
+  const isValidPeer =
+    state.currentPeer !== null &&
+    Number.isInteger(state.currentPeer) &&
+    state.currentPeer >= 0;
 
   if (isValidPeer) {
     const isNotes = state.currentPeer === NOTES_PEER;
@@ -184,11 +186,18 @@ export function updateChatHeader() {
       peerAvatar.innerHTML = "📝";
       peerAvatar.style.background = "#8b5cf6";
     } else if (avatarFor(state.currentPeer)) {
-      renderAvatar(peerAvatar, state.currentPeer, initial(displayName(state.currentPeer)));
+      renderAvatar(
+        peerAvatar,
+        state.currentPeer,
+        initial(displayName(state.currentPeer)),
+      );
     } else {
-      peerAvatar.style.background = avatarColor(peerColorKey(state.currentPeer));
+      peerAvatar.style.background = avatarColor(
+        peerColorKey(state.currentPeer),
+      );
       peerAvatar.textContent = initial(displayName(state.currentPeer));
     }
+
     const syncEl = document.getElementById("chat-sync-indicator");
     if (syncEl) {
       syncEl.hidden = !state.syncingPeers.has(state.currentPeer);
@@ -226,39 +235,49 @@ export function updateChatHeader() {
 export function renderMessages(preserveScroll = false) {
   const el = document.getElementById("messages");
   updateComposerVisibility();
-
   const prevHeight = el.scrollHeight;
   const prevTop = el.scrollTop;
   const prevClientHeight = el.clientHeight;
   const wasAtBottom = prevHeight - prevTop - prevClientHeight < 60;
-
   el.innerHTML = "";
 
-  const isValidPeer = state.currentPeer !== null && Number.isInteger(state.currentPeer) && state.currentPeer >= 0;
-
+  const isValidPeer =
+    state.currentPeer !== null &&
+    Number.isInteger(state.currentPeer) &&
+    state.currentPeer >= 0;
   if (!isValidPeer) {
-    el.appendChild(emptyState("💬", "No chat selected", "Pick a chat from the sidebar or start a new one."));
+    el.appendChild(
+      emptyState(
+        "💬",
+        "No chat selected",
+        "Pick a chat from the sidebar or start a new one.",
+      ),
+    );
     return;
   }
-
   const peer = state.currentPeer;
-  const msgs = (state.msgCache[peer] || []).slice().sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
+  const msgs = (state.msgCache[peer] || [])
+    .slice()
+    .sort((a, b) => a.ts - b.ts || a.edit_ts - b.edit_ts);
 
   if (msgs.length === 0) {
     if (state.syncingPeers.has(peer)) {
       const sp = document.createElement("div");
       sp.className = "empty-state-spinner";
-      sp.innerHTML = '<span class="loading-spinner lg"></span><div>Syncing messages…</div>';
+      sp.innerHTML =
+        '<span class="loading-spinner lg"></span><div>Syncing messages…</div>';
       el.appendChild(sp);
       return;
     }
-    el.appendChild(emptyState(
-      peer === NOTES_PEER ? "📝" : "📭",
-      peer === NOTES_PEER ? "No notes yet" : "No messages yet",
-      peer === NOTES_PEER
-        ? "Anything you type here stays on this device — and syncs across your sessions."
-        : `Say hi to ${displayName(peer)}.`,
-    ));
+    el.appendChild(
+      emptyState(
+        peer === NOTES_PEER ? "📝" : "📭",
+        peer === NOTES_PEER ? "No notes yet" : "No messages yet",
+        peer === NOTES_PEER
+          ? "Anything you type here stays on this device — and syncs across your sessions."
+          : `Say hi to ${displayName(peer)}.`,
+      ),
+    );
     return;
   }
 
@@ -270,7 +289,8 @@ export function renderMessages(preserveScroll = false) {
     if (loading) {
       const b = document.createElement("div");
       b.className = "load-older loading-spinner-row";
-      b.innerHTML = '<span class="loading-spinner sm"></span><span>Loading older messages…</span>';
+      b.innerHTML =
+        '<span class="loading-spinner sm"></span><span>Loading older messages…</span>';
       el.appendChild(b);
     } else if (reachedStart) {
       const b = document.createElement("div");
@@ -297,7 +317,7 @@ export function renderMessages(preserveScroll = false) {
     }
     const isFresh = !seen.has(m.id);
     seen.add(m.id);
-    el.appendChild(messageEl(m, peer === NOTES_PEER, isFresh));
+    el.appendChild(messageEl(m, peer, isFresh));
   }
 
   if (preserveScroll) {
@@ -319,25 +339,30 @@ export function updateReadIndicators(peer) {
   if (!el) return;
   for (const m of state.msgCache[peer] || []) {
     if (m.direction !== "out" || m.payload === "") continue;
-    const node = el.querySelector(`.msg[data-id="${cssEscape(m.id)}"] .msg-time`);
+    const node = el.querySelector(
+      `.msg[data-id="${cssEscape(m.id)}"] .msg-time`,
+    );
     if (!node) continue;
     const label = formatTime(m.ts) + (m.read ? "  ✓✓" : "  ✓");
     if (node.textContent !== label) node.textContent = label;
   }
 }
 
-function cssEscape(s) {
-  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(s);
-  return String(s).replace(/["\\]/g, "\\$&");
-}
-
 function emptyState(icon, title, sub) {
   const d = document.createElement("div");
   d.className = "empty-state";
-  const i = document.createElement("div"); i.className = "empty-icon"; i.textContent = icon;
-  const t = document.createElement("div"); t.className = "empty-title"; t.textContent = title;
-  const s = document.createElement("div"); s.className = "empty-sub"; s.textContent = sub;
-  d.appendChild(i); d.appendChild(t); d.appendChild(s);
+  const i = document.createElement("div");
+  i.className = "empty-icon";
+  i.textContent = icon;
+  const t = document.createElement("div");
+  t.className = "empty-title";
+  t.textContent = title;
+  const s = document.createElement("div");
+  s.className = "empty-sub";
+  s.textContent = sub;
+  d.appendChild(i);
+  d.appendChild(t);
+  d.appendChild(s);
   return d;
 }
 
@@ -345,13 +370,11 @@ function emptyState(icon, title, sub) {
 function captionEl(name, downloadFn) {
   const cap = document.createElement("div");
   cap.className = "msg-caption";
-
   const nameEl = document.createElement("span");
   nameEl.className = "caption-name";
   nameEl.textContent = name;
   nameEl.title = name;
   cap.appendChild(nameEl);
-
   if (downloadFn) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -365,94 +388,15 @@ function captionEl(name, downloadFn) {
     });
     cap.appendChild(btn);
   }
-
   return cap;
 }
 
-/** Builds the custom audio player element for a data-URL audio message. */
-function audioPlayerEl(src) {
-  const wrap = document.createElement("div");
-  wrap.className = "audio-player";
-
-  const audio = document.createElement("audio");
-  audio.src = src;
-  audio.preload = "metadata";
-
-  const playBtn = document.createElement("button");
-  playBtn.type = "button";
-  playBtn.className = "audio-play-btn";
-  playBtn.textContent = "▶";
-  playBtn.setAttribute("aria-label", "Play");
-
-  const track = document.createElement("div");
-  track.className = "audio-track";
-  const fill = document.createElement("div");
-  fill.className = "audio-progress-fill";
-  track.appendChild(fill);
-
-  const time = document.createElement("span");
-  time.className = "audio-time";
-  time.textContent = "0:00";
-
-  const vol = document.createElement("input");
-  vol.type = "range";
-  vol.min = "0";
-  vol.max = "1";
-  vol.step = "0.01";
-  vol.value = "1";
-  vol.className = "audio-volume";
-  vol.title = "Volume";
-  vol.setAttribute("aria-label", "Volume");
-
-  playBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (audio.paused) {
-      audio.play().catch(() => {});
-    } else {
-      audio.pause();
-    }
-  });
-  audio.addEventListener("play", () => { playBtn.textContent = "⏸"; });
-  audio.addEventListener("pause", () => { playBtn.textContent = "▶"; });
-  audio.addEventListener("ended", () => {
-    playBtn.textContent = "▶";
-    fill.style.width = "0%";
-    time.textContent = formatDuration(audio.duration || 0);
-  });
-  audio.addEventListener("loadedmetadata", () => {
-    time.textContent = formatDuration(audio.duration);
-  });
-  audio.addEventListener("timeupdate", () => {
-    if (audio.duration && isFinite(audio.duration)) {
-      const pct = (audio.currentTime / audio.duration) * 100;
-      fill.style.width = pct + "%";
-      time.textContent = formatDuration(audio.currentTime);
-    }
-  });
-  track.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (!audio.duration || !isFinite(audio.duration)) return;
-    const rect = track.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    audio.currentTime = pct * audio.duration;
-  });
-  vol.addEventListener("input", () => {
-    audio.volume = Number(vol.value);
-  });
-
-  wrap.appendChild(playBtn);
-  wrap.appendChild(track);
-  wrap.appendChild(time);
-  wrap.appendChild(vol);
-  wrap.appendChild(audio);
-  return wrap;
-}
-
-function messageEl(m, isNotes, isFresh = false) {
+function messageEl(m, peer, isFresh = false) {
   const div = document.createElement("div");
   const deleted = m.payload === "";
   div.className =
-    "msg " + (m.direction === "out" ? "out" : "in") +
+    "msg " +
+    (m.direction === "out" ? "out" : "in") +
     (deleted ? " deleted" : "") +
     (m.kind && m.kind !== "text" ? " kind-" + m.kind : "") +
     (isFresh ? " fresh" : "");
@@ -467,8 +411,7 @@ function messageEl(m, isNotes, isFresh = false) {
     const info = parseFilePayload(m.payload);
     const dataUrl = info.data;
     const ext = extFromDataUrl(dataUrl) || "png";
-    const name = info.name || ("image." + ext);
-
+    const name = info.name || "image." + ext;
     if (!/^data:image\//i.test(dataUrl)) {
       const err = document.createElement("div");
       err.className = "msg-image-error";
@@ -490,7 +433,6 @@ function messageEl(m, isNotes, isFresh = false) {
       });
       img.addEventListener("click", () => openImageViewer(dataUrl, name));
       body.appendChild(img);
-
       const cap = captionEl(name, () => downloadDataUrl(dataUrl, name));
       body.appendChild(cap);
     }
@@ -498,9 +440,9 @@ function messageEl(m, isNotes, isFresh = false) {
     const info = parseFilePayload(m.payload);
     const dataUrl = info.data;
     const ext = extFromDataUrl(dataUrl) || "mp3";
-    const name = info.name || ("audio." + ext);
-
-    body.appendChild(audioPlayerEl(dataUrl));
+    const name = info.name || "audio." + ext;
+    // Playback is native (rodio) — see js/audio.js + src-tauri/src/audio.rs.
+    body.appendChild(buildAudioPlayer(m, peer));
     body.appendChild(captionEl(name, () => downloadDataUrl(dataUrl, name)));
   } else if (m.kind === "file") {
     const info = parseFilePayload(m.payload);
@@ -511,11 +453,9 @@ function messageEl(m, isNotes, isFresh = false) {
     a.download = name;
     a.rel = "noopener";
     a.title = "Download " + name;
-
     const icon = document.createElement("span");
     icon.className = "file-icon";
     icon.textContent = "📎";
-
     const meta = document.createElement("span");
     meta.className = "file-meta";
     const nameEl = document.createElement("span");
@@ -528,20 +468,16 @@ function messageEl(m, isNotes, isFresh = false) {
       sizeEl.textContent = formatBytes(info.size);
       meta.appendChild(sizeEl);
     }
-
     const dl = document.createElement("span");
     dl.className = "file-download";
     dl.textContent = "⬇";
-
     a.appendChild(icon);
     a.appendChild(meta);
     a.appendChild(dl);
-
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
       downloadDataUrl(info.data, name);
     });
-
     body.appendChild(a);
   } else {
     body.textContent = m.payload;
@@ -559,7 +495,6 @@ function messageEl(m, isNotes, isFresh = false) {
   if (m.direction === "out" && !deleted) {
     const actions = document.createElement("div");
     actions.className = "msg-actions";
-
     if (m.kind === "text" || !m.kind) {
       const editBtn = document.createElement("button");
       editBtn.dataset.act = "edit";
@@ -567,17 +502,14 @@ function messageEl(m, isNotes, isFresh = false) {
       editBtn.textContent = "✏️";
       actions.appendChild(editBtn);
     }
-
     const delBtn = document.createElement("button");
     delBtn.dataset.act = "del";
     delBtn.title = "Delete";
     delBtn.textContent = "🗑";
     actions.appendChild(delBtn);
-
     div.appendChild(actions);
   }
 
-  void isNotes;
   return div;
 }
 
@@ -585,7 +517,6 @@ export function renderPendingList() {
   const el = document.getElementById("pending-list");
   if (!el) return;
   el.innerHTML = "";
-
   if (state.pending.size === 0) {
     const p = document.createElement("div");
     p.className = "hint";
@@ -593,14 +524,11 @@ export function renderPendingList() {
     el.appendChild(p);
     return;
   }
-
   for (const p of state.pending) {
     const row = document.createElement("div");
     row.className = "pending-row";
-
     const left = document.createElement("div");
     left.className = "pending-left";
-
     const av = document.createElement("div");
     av.className = "peer-avatar";
     av.style.position = "relative";
@@ -610,19 +538,15 @@ export function renderPendingList() {
       av.style.background = avatarColor(peerColorKey(p));
       av.textContent = initial(displayName(p));
     }
-
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = displayName(p);
-
     left.appendChild(av);
     left.appendChild(name);
-
     const btn = document.createElement("button");
     btn.className = "btn btn-primary btn-sm";
     btn.textContent = "Pull history";
     btn.dataset.accept = String(p);
-
     row.appendChild(left);
     row.appendChild(btn);
     el.appendChild(row);
@@ -633,7 +557,6 @@ export function renderBlockedList() {
   const el = document.getElementById("blocked-list");
   if (!el) return;
   el.innerHTML = "";
-
   if (state.blocked.size === 0) {
     const p = document.createElement("div");
     p.className = "hint";
@@ -641,14 +564,11 @@ export function renderBlockedList() {
     el.appendChild(p);
     return;
   }
-
   for (const p of state.blocked) {
     const row = document.createElement("div");
     row.className = "pending-row";
-
     const left = document.createElement("div");
     left.className = "pending-left";
-
     const av = document.createElement("div");
     av.className = "peer-avatar";
     av.style.position = "relative";
@@ -658,19 +578,15 @@ export function renderBlockedList() {
       av.style.background = avatarColor(peerColorKey(p));
       av.textContent = initial(displayName(p));
     }
-
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = displayName(p);
-
     left.appendChild(av);
     left.appendChild(name);
-
     const btn = document.createElement("button");
     btn.className = "btn btn-ghost btn-sm";
     btn.textContent = "Unblock";
     btn.dataset.unblock = String(p);
-
     row.appendChild(left);
     row.appendChild(btn);
     el.appendChild(row);
@@ -695,11 +611,9 @@ export function openImageViewer(src, name) {
   img.src = src;
   img.draggable = false;
   v.hidden = false;
-
   const ext = extFromDataUrl(src) || "png";
-  const filename = name || ("image." + ext);
+  const filename = name || "image." + ext;
   viewerDownloadFn = () => downloadDataUrl(src, filename);
-
   if (dl) {
     dl.onclick = (ev) => {
       ev.stopPropagation();

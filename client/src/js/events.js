@@ -3,13 +3,25 @@ import { state, NOTES_PEER, INITIAL_LIMIT, persistMyStatus } from "./state.js";
 import { toast, avatarColor, initial } from "./utils.js";
 import { showAlert } from "./dialog.js";
 import {
-  renderSidebar, renderMessages, renderPendingList, renderBlockedList,
-  renderMyStatus, showChatView, updateReadIndicators, updateChatHeader,
+  renderSidebar,
+  renderMessages,
+  renderPendingList,
+  renderBlockedList,
+  renderMyStatus,
+  showChatView,
+  updateReadIndicators,
+  updateChatHeader,
 } from "./ui.js";
 import {
-  autoPull, resetToLogin, sendReadReceipt, refreshReadState, openPeer, updateBadge,
+  autoPull,
+  resetToLogin,
+  sendReadReceipt,
+  refreshReadState,
+  openPeer,
+  updateBadge,
 } from "./actions.js";
 import { refreshEncryptionStatus } from "./encryption.js";
+import { setupAudioEvents, stopAllAudio } from "./audio.js";
 
 function applyMyAvatar() {
   const av = document.getElementById("me-avatar");
@@ -33,9 +45,10 @@ export function applyMyProfile() {
   const meNameEl = document.getElementById("me-name");
   const mine = state.profiles[state.meId];
   if (meNameEl) {
-    const shown = (mine && mine.display_name && mine.display_name.trim())
-      ? mine.display_name.trim()
-      : (state.meName || "—");
+    const shown =
+      mine && mine.display_name && mine.display_name.trim()
+        ? mine.display_name.trim()
+        : state.meName || "—";
     meNameEl.textContent = shown;
     meNameEl.title = state.meName ? `@${state.meName}` : "";
   }
@@ -55,21 +68,27 @@ function mergeIntoCache(peerId, incoming) {
 
 function syncWithPeer(peerId, { delay = 0 } = {}) {
   if (!peerId || peerId === state.meId || peerId === NOTES_PEER) return;
-  const run = () => { autoPull(peerId); };
+  const run = () => {
+    autoPull(peerId);
+  };
   if (delay > 0) setTimeout(run, delay);
   else run();
 }
 
 async function windowIsFocused() {
-  try { return await invoke("is_window_focused"); }
-  catch (_) { return false; }
+  try {
+    return await invoke("is_window_focused");
+  } catch (_) {
+    return false;
+  }
 }
 
 export async function setupEvents() {
+  await setupAudioEvents();
+
   await listen("auth-ok", async (e) => {
     state.meId = e.payload.user_id;
     state.meName = e.payload.username;
-
     applyMyProfile();
     try {
       const ok = await invoke("check_notifications_enabled");
@@ -77,15 +96,12 @@ export async function setupEvents() {
       const warn = document.getElementById("notif-warning");
       if (warn) warn.hidden = !!ok;
     } catch (_) {}
-
     document.getElementById("login-view").hidden = true;
     document.getElementById("app-view").hidden = false;
-
     try {
       const counts = await invoke("get_unread_counts");
       for (const [peerId, n] of counts) state.unread[peerId] = n;
     } catch (_) {}
-
     try {
       const locals = await invoke("list_local_peers");
       for (const p of locals) {
@@ -103,7 +119,6 @@ export async function setupEvents() {
         }
       }
     } catch (_) {}
-
     renderMyStatus();
     showChatView();
     renderSidebar();
@@ -126,14 +141,16 @@ export async function setupEvents() {
       }
     }
     renderSidebar();
-    if (state.currentPeer && state.peers.has(state.currentPeer)) updateChatHeader();
-
+    if (state.currentPeer && state.peers.has(state.currentPeer))
+      updateChatHeader();
     for (const info of e.payload) {
       const id = Number(info.id);
       if (!Number.isInteger(id) || id <= 0) continue;
       try {
         const msgs = await invoke("get_messages", {
-          peer: id, beforeTs: null, limit: INITIAL_LIMIT,
+          peer: id,
+          beforeTs: null,
+          limit: INITIAL_LIMIT,
         });
         mergeIntoCache(id, msgs);
       } catch (_) {}
@@ -195,11 +212,9 @@ export async function setupEvents() {
     else state.online.add(id);
     renderSidebar();
     if (state.currentPeer === id) updateChatHeader();
-
     syncWithPeer(id);
     syncWithPeer(id, { delay: 500 });
     syncWithPeer(id, { delay: 2500 });
-
     if (state.currentPeer === id) {
       refreshReadState(id).then(() => {
         if (state.currentPeer !== id) return;
@@ -249,6 +264,7 @@ export async function setupEvents() {
     delete state.lastPullLimit[peer];
     state.unread[peer] = 0;
     if (state.currentPeer === peer) {
+      void stopAllAudio();
       state.currentPeer = null;
       renderMessages();
       updateChatHeader();
@@ -263,7 +279,6 @@ export async function setupEvents() {
     if (!Number.isInteger(peerId) || peerId <= 0) return;
     state.pending.delete(peerId);
     state.peers.add(peerId);
-
     if (!state.msgCache[peerId]) state.msgCache[peerId] = [];
     const idx = state.msgCache[peerId].findIndex((x) => x.id === m.id);
     const windowFocused = !!(m.window_focused ?? m.windowFocused);
@@ -278,13 +293,11 @@ export async function setupEvents() {
     };
     if (idx >= 0) state.msgCache[peerId][idx] = entry;
     else state.msgCache[peerId].push(entry);
-
     const isOpen = state.currentPeer === peerId;
     if (!isOpen || !windowFocused) {
       state.unread[peerId] = (state.unread[peerId] || 0) + 1;
       void updateBadge();
     }
-
     if (!state.profiles[peerId]) {
       try {
         const lp = await invoke("get_peer", { id: peerId });
@@ -298,7 +311,6 @@ export async function setupEvents() {
         }
       } catch (_) {}
     }
-
     renderSidebar();
     renderPendingList();
     if (isOpen) {
@@ -314,7 +326,9 @@ export async function setupEvents() {
     state.peers.add(NOTES_PEER);
     try {
       state.msgCache[NOTES_PEER] = await invoke("get_messages", {
-        peer: NOTES_PEER, beforeTs: null, limit: null,
+        peer: NOTES_PEER,
+        beforeTs: null,
+        limit: null,
       });
     } catch (_) {}
     renderSidebar();
@@ -343,32 +357,32 @@ export async function setupEvents() {
     const peer = Number(e.payload.from ?? e.payload.peer);
     if (!Number.isInteger(peer) || peer <= 0) return;
     state.syncingPeers.delete(peer);
-
     try {
       const latest = await invoke("get_messages", {
-        peer, beforeTs: null, limit: INITIAL_LIMIT,
+        peer,
+        beforeTs: null,
+        limit: INITIAL_LIMIT,
       });
       mergeIntoCache(peer, latest);
     } catch (_) {}
-
     const wasLoadingOlder = state.loadingOlder.has(peer);
     delete state.lastPullLimit[peer];
     state.loadingOlder.delete(peer);
-
     if (wasLoadingOlder && (state.msgCache[peer] || []).length > 0) {
       const oldest = state.msgCache[peer][0].ts;
       try {
-        const hasMore = await invoke("has_messages_before", { peer, beforeTs: oldest });
+        const hasMore = await invoke("has_messages_before", {
+          peer,
+          beforeTs: oldest,
+        });
         state.mightHaveMore[peer] = hasMore;
       } catch (_) {}
     }
-
     if (state.pending.has(peer)) {
       state.pending.delete(peer);
       state.peers.add(peer);
       renderPendingList();
     }
-
     if (!state.profiles[peer]) {
       try {
         const lp = await invoke("get_peer", { id: peer });
@@ -382,21 +396,20 @@ export async function setupEvents() {
         }
       } catch (_) {}
     }
-
     try {
       const counts = await invoke("get_unread_counts");
       const map = Object.fromEntries(counts.map(([id, n]) => [String(id), n]));
       state.unread[peer] = map[String(peer)] || 0;
       void updateBadge();
     } catch (_) {}
-
     renderSidebar();
-
     if (state.currentPeer === peer) {
       renderMessages(wasLoadingOlder);
       updateChatHeader();
       if (wasLoadingOlder) {
-        requestAnimationFrame(() => { state.suppressScrollLoad = false; });
+        requestAnimationFrame(() => {
+          state.suppressScrollLoad = false;
+        });
       } else {
         const focused = await windowIsFocused();
         if (focused) void sendReadReceipt(peer);
@@ -434,8 +447,12 @@ export async function setupEvents() {
   await listen("session-closed", async (e) => {
     const reason = String(e.payload || "");
     if (reason === "account_deleted") {
-      await showAlert("Your account has been deleted.", { title: "Account deleted" });
-      try { await invoke("wipe_local_data"); } catch (_) {}
+      await showAlert("Your account has been deleted.", {
+        title: "Account deleted",
+      });
+      try {
+        await invoke("wipe_local_data");
+      } catch (_) {}
       await refreshEncryptionStatus();
     } else if (reason === "session_taken_over") {
       await showAlert(
@@ -443,9 +460,13 @@ export async function setupEvents() {
         { title: "Session closed" },
       );
     } else {
-      await showAlert("The server closed this session.", { title: "Session closed" });
+      await showAlert("The server closed this session.", {
+        title: "Session closed",
+      });
     }
-    try { await invoke("disconnect"); } catch (_) {}
+    try {
+      await invoke("disconnect");
+    } catch (_) {}
     resetToLogin();
   });
 
@@ -458,7 +479,9 @@ export async function setupEvents() {
     const username = e.payload;
     if (!state.meId) return;
     if (username && state.meName && username !== state.meName) return;
-    try { await invoke("disconnect"); } catch (_) {}
+    try {
+      await invoke("disconnect");
+    } catch (_) {}
     resetToLogin();
   });
 }
@@ -468,7 +491,8 @@ export async function setupEvents() {
 let bannerTimer = null;
 function showInAppBanner(title, body, peer) {
   const el = document.getElementById("in-app-banner");
-  document.getElementById("in-app-banner-title").textContent = title || "Notification";
+  document.getElementById("in-app-banner-title").textContent =
+    title || "Notification";
   document.getElementById("in-app-banner-text").textContent = body || "";
   el.hidden = false;
   el.onclick = (ev) => {
@@ -484,7 +508,9 @@ function showInAppBanner(title, body, peer) {
     }
   };
   clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => { el.hidden = true; }, 6000);
+  bannerTimer = setTimeout(() => {
+    el.hidden = true;
+  }, 6000);
 }
 
 export { NOTES_PEER };
