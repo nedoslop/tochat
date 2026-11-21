@@ -2,20 +2,47 @@ import { invoke } from "./api.js";
 import { state, NOTES_PEER, persistMyStatus } from "./state.js";
 import { toast } from "./utils.js";
 import {
-  register, login, send, logout, reloadUI, deleteAccount,
-  openPeer, openNotes, openPeerByName, editMessage, deleteMessage,
-  acceptPending, refreshPending, refreshBlocked, unblockUser,
-  clearChat, leaveChat, blockUser,
-  loadOlder, sendImage, sendAudio, sendFile, updateBadge,
-  openSidebar, closeSidebar, closeCurrentChat,
+  register,
+  login,
+  send,
+  logout,
+  reloadUI,
+  deleteAccount,
+  openPeer,
+  openNotes,
+  openPeerByName,
+  editMessage,
+  deleteMessage,
+  acceptPending,
+  refreshPending,
+  refreshBlocked,
+  unblockUser,
+  clearChat,
+  leaveChat,
+  blockUser,
+  loadOlder,
+  sendImage,
+  sendAudio,
+  sendFile,
+  updateBadge,
+  openSidebar,
+  closeSidebar,
+  closeCurrentChat,
 } from "./actions.js";
 import {
-  renderMessages, renderMyStatus, showChatView, showPendingView, showBlockedView,
+  renderMessages,
+  renderMyStatus,
+  showChatView,
+  showPendingView,
+  showBlockedView,
   closeImageViewer,
 } from "./ui.js";
 import {
-  refreshEncryptionStatus, openEncPanel, closeEncPanel,
-  applyEncryption, generatePsk,
+  refreshEncryptionStatus,
+  openEncPanel,
+  closeEncPanel,
+  applyEncryption,
+  generatePsk,
 } from "./encryption.js";
 import { initTheme, cycleTheme } from "./theme.js";
 import { setupEvents, applyMyProfile } from "./events.js";
@@ -74,8 +101,10 @@ async function resizeAvatar(file) {
   canvas.height = size;
   const ctx = canvas.getContext("2d");
   const scale = Math.max(size / img.width, size / img.height);
-  const dw = img.width * scale, dh = img.height * scale;
-  const dx = (size - dw) / 2, dy = (size - dh) / 2;
+  const dw = img.width * scale,
+    dh = img.height * scale;
+  const dx = (size - dw) / 2,
+    dy = (size - dh) / 2;
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, size, size);
   ctx.drawImage(img, dx, dy, dw, dh);
@@ -87,7 +116,8 @@ async function saveProfile() {
   const name = document.getElementById("profile-name").value.trim();
 
   const currentAvatar = state.profiles[state.meId]?.avatar ?? null;
-  const avatarToSend = pendingAvatar === undefined ? currentAvatar : pendingAvatar;
+  const avatarToSend =
+    pendingAvatar === undefined ? currentAvatar : pendingAvatar;
 
   const payload = {
     displayName: name || null,
@@ -115,7 +145,8 @@ async function saveProfile() {
 async function installContextMenuGuard() {
   try {
     const isRelease = await invoke("is_release");
-    if (isRelease) document.addEventListener("contextmenu", (e) => e.preventDefault());
+    if (isRelease)
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
   } catch (_) {}
 }
 
@@ -124,7 +155,8 @@ function installShortcutGuard() {
     const k = e.key;
     const ctrl = e.ctrlKey || e.metaKey;
     if (
-      k === "F5" || k === "F12" ||
+      k === "F5" ||
+      k === "F12" ||
       (ctrl && !e.shiftKey && k.toLowerCase() === "r") ||
       (ctrl && e.shiftKey && k.toLowerCase() === "r") ||
       (ctrl && k.toLowerCase() === "u") ||
@@ -135,7 +167,10 @@ function installShortcutGuard() {
       (ctrl && k.toLowerCase() === "t") ||
       (ctrl && k.toLowerCase() === "w") ||
       (ctrl && e.shiftKey && k.toLowerCase() === "w")
-    ) { e.preventDefault(); e.stopPropagation(); }
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   };
   document.addEventListener("keydown", block, true);
 }
@@ -201,7 +236,10 @@ function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
   const input = document.getElementById(inputId);
   if (!btn || !input) return;
 
-  btn.addEventListener("click", () => { input.value = ""; input.click(); });
+  btn.addEventListener("click", () => {
+    input.value = "";
+    input.click();
+  });
 
   input.addEventListener("change", async () => {
     const files = input.files;
@@ -216,7 +254,9 @@ function wireFilePicker({ buttonId, inputId, kind, onPayload }) {
       const dataUrl = await readAsDataUrl(file);
       if (!dataUrl.startsWith("data:")) return;
       onPayload(dataUrl, file.name);
-    } catch (e) { toast("Failed to read file: " + e); }
+    } catch (e) {
+      toast("Failed to read file: " + e);
+    }
   });
 }
 
@@ -224,8 +264,12 @@ function installDragDrop() {
   const overlay = document.getElementById("drop-overlay");
   let dragDepth = 0;
 
-  const showOverlay = () => { if (overlay) overlay.hidden = false; };
-  const hideOverlay = () => { if (overlay) overlay.hidden = true; };
+  const showOverlay = () => {
+    if (overlay) overlay.hidden = false;
+  };
+  const hideOverlay = () => {
+    if (overlay) overlay.hidden = true;
+  };
 
   const hasFiles = (e) => {
     const dt = e.dataTransfer;
@@ -238,7 +282,8 @@ function installDragDrop() {
     if (state.currentPeer === null) return;
     if (!hasFiles(e)) return;
     e.preventDefault();
-    dragDepth++; showOverlay();
+    dragDepth++;
+    showOverlay();
   });
   window.addEventListener("dragover", (e) => {
     if (state.currentPeer === null) return;
@@ -255,7 +300,8 @@ function installDragDrop() {
     if (state.currentPeer === null) return;
     if (!hasFiles(e)) return;
     e.preventDefault();
-    dragDepth = 0; hideOverlay();
+    dragDepth = 0;
+    hideOverlay();
     const files = e.dataTransfer && e.dataTransfer.files;
     if (!files || files.length === 0) return;
     void dispatchFiles(files);
@@ -265,13 +311,18 @@ function installDragDrop() {
 function installScrollPagination() {
   const el = document.getElementById("messages");
   if (!el) return;
-  el.addEventListener("scroll", () => {
-    if (state.suppressScrollLoad) return;
-    if (state.currentPeer === null || state.currentPeer === NOTES_PEER) return;
-    if (state.loadingOlder.has(state.currentPeer)) return;
-    if (state.mightHaveMore[state.currentPeer] === false) return;
-    if (el.scrollTop < 80) loadOlder();
-  }, { passive: true });
+  el.addEventListener(
+    "scroll",
+    () => {
+      if (state.suppressScrollLoad) return;
+      if (state.currentPeer === null || state.currentPeer === NOTES_PEER)
+        return;
+      if (state.loadingOlder.has(state.currentPeer)) return;
+      if (state.mightHaveMore[state.currentPeer] === false) return;
+      if (el.scrollTop < 80) loadOlder();
+    },
+    { passive: true },
+  );
 }
 
 async function init() {
@@ -305,23 +356,38 @@ async function init() {
   {
     const btn = document.getElementById("attach-file-btn");
     const input = document.getElementById("any-file-input");
-    btn.addEventListener("click", () => { input.value = ""; input.click(); });
+    btn.addEventListener("click", () => {
+      input.value = "";
+      input.click();
+    });
     input.addEventListener("change", async () => {
       const files = input.files;
       if (!files || files.length === 0) return;
       const file = files[0];
       if (file.size > MAX_FILE_BYTES) {
-        toast(`File too large (max ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MiB).`);
+        toast(
+          `File too large (max ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MiB).`,
+        );
         return;
       }
-      try { await sendFile(file); } catch (e) { toast("Send file error: " + e); }
+      try {
+        await sendFile(file);
+      } catch (e) {
+        toast("Send file error: " + e);
+      }
     });
   }
 
-  document.getElementById("pending-btn").onclick = () => { showPendingView(); refreshPending(); };
+  document.getElementById("pending-btn").onclick = () => {
+    showPendingView();
+    refreshPending();
+  };
   document.getElementById("pending-back-btn").onclick = () => showChatView();
 
-  document.getElementById("blocked-btn").onclick = () => { showBlockedView(); refreshBlocked(); };
+  document.getElementById("blocked-btn").onclick = () => {
+    showBlockedView();
+    refreshBlocked();
+  };
   document.getElementById("blocked-back-btn").onclick = () => showChatView();
 
   const mobileBackBtn = document.getElementById("mobile-back-btn");
@@ -357,9 +423,18 @@ async function init() {
     closeAllMenus();
     m.hidden = !wasHidden;
   };
-  document.getElementById("edit-profile-btn").onclick = () => { closeAllMenus(); openProfileModal(); };
-  document.getElementById("reload-btn").onclick = () => { closeAllMenus(); reloadUI(); };
-  document.getElementById("logout-btn").onclick = () => { closeAllMenus(); logout(); };
+  document.getElementById("edit-profile-btn").onclick = () => {
+    closeAllMenus();
+    openProfileModal();
+  };
+  document.getElementById("reload-btn").onclick = () => {
+    closeAllMenus();
+    reloadUI();
+  };
+  document.getElementById("logout-btn").onclick = () => {
+    closeAllMenus();
+    logout();
+  };
 
   document.getElementById("chat-menu-btn").onclick = (ev) => {
     ev.stopPropagation();
@@ -369,15 +444,25 @@ async function init() {
     if (state.currentPeer === null) return;
     m.hidden = !wasHidden;
   };
-  document.getElementById("clear-chat-btn").onclick = () => { closeAllMenus(); clearChat(); };
-  document.getElementById("leave-chat-btn").onclick = () => { closeAllMenus(); leaveChat(); };
-  document.getElementById("block-user-btn").onclick = () => { closeAllMenus(); blockUser(); };
+  document.getElementById("clear-chat-btn").onclick = () => {
+    closeAllMenus();
+    clearChat();
+  };
+  document.getElementById("leave-chat-btn").onclick = () => {
+    closeAllMenus();
+    leaveChat();
+  };
+  document.getElementById("block-user-btn").onclick = () => {
+    closeAllMenus();
+    blockUser();
+  };
 
   const profileModal = document.getElementById("profile-modal");
   const profileAvatarInput = document.getElementById("profile-avatar-input");
   document.getElementById("profile-cancel").onclick = closeProfileModal;
   document.getElementById("profile-save").onclick = saveProfile;
-  document.getElementById("profile-avatar-choose").onclick = () => profileAvatarInput.click();
+  document.getElementById("profile-avatar-choose").onclick = () =>
+    profileAvatarInput.click();
   document.getElementById("profile-avatar-remove").onclick = () => {
     pendingAvatar = null;
     document.getElementById("profile-avatar-img").hidden = true;
@@ -399,7 +484,9 @@ async function init() {
       imgEl.src = url;
       imgEl.hidden = false;
       document.getElementById("profile-avatar-placeholder").hidden = true;
-    } catch (e) { toast("Image error: " + e); }
+    } catch (e) {
+      toast("Image error: " + e);
+    }
   });
   profileModal.addEventListener("click", (ev) => {
     if (ev.target === profileModal) closeProfileModal();
@@ -414,7 +501,10 @@ async function init() {
     }
   });
 
-  document.getElementById("me-status").onclick = (ev) => { ev.stopPropagation(); cycleMyStatus(); };
+  document.getElementById("me-status").onclick = (ev) => {
+    ev.stopPropagation();
+    cycleMyStatus();
+  };
 
   document.getElementById("new-peer-btn").onclick = () => {
     const p = document.getElementById("new-peer").value.trim();
@@ -504,11 +594,14 @@ async function init() {
   document.getElementById("enc-btn").onclick = (ev) => {
     ev.stopPropagation();
     const panel = document.getElementById("enc-panel");
-    if (panel.hidden) openEncPanel(); else closeEncPanel();
+    if (panel.hidden) openEncPanel();
+    else closeEncPanel();
   };
   document.getElementById("enc-method").onchange = (ev) => {
-    document.getElementById("enc-secret-row").hidden = ev.target.value === "none";
-    document.getElementById("enc-gen").hidden = ev.target.value !== "pre_shared_key";
+    document.getElementById("enc-secret-row").hidden =
+      ev.target.value === "none";
+    document.getElementById("enc-gen").hidden =
+      ev.target.value !== "pre_shared_key";
   };
   document.getElementById("enc-cancel").onclick = closeEncPanel;
   document.getElementById("enc-apply").onclick = applyEncryption;
@@ -517,11 +610,16 @@ async function init() {
   document.addEventListener("click", (ev) => {
     const widget = document.getElementById("enc-widget");
     const panel = document.getElementById("enc-panel");
-    if (panel && !panel.hidden && widget && !widget.contains(ev.target)) closeEncPanel();
+    if (panel && !panel.hidden && widget && !widget.contains(ev.target))
+      closeEncPanel();
     if (!ev.target.closest(".menu-wrap")) closeAllMenus();
   });
 
-  window.addEventListener("beforeunload", () => { try { invoke("disconnect"); } catch (_) {} });
+  window.addEventListener("beforeunload", () => {
+    try {
+      invoke("disconnect");
+    } catch (_) {}
+  });
 
   window.addEventListener("focus", () => {
     const peer = state.currentPeer;
@@ -546,8 +644,11 @@ async function cycleMyStatus() {
   state.myStatus = next;
   persistMyStatus(next);
   renderMyStatus();
-  try { await invoke("set_status", { status: next }); }
-  catch (e) { toast("Status error: " + e); }
+  try {
+    await invoke("set_status", { status: next });
+  } catch (e) {
+    toast("Status error: " + e);
+  }
 }
 
 init().catch((e) => {

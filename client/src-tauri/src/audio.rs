@@ -47,11 +47,23 @@ enum Cmd {
         volume: f32,
         start: Option<f64>,
     },
-    Pause { key: Key },
-    Resume { key: Key },
-    Seek { key: Key, position: f64 },
-    Volume { key: Key, volume: f32 },
-    Stop { key: Key },
+    Pause {
+        key: Key,
+    },
+    Resume {
+        key: Key,
+    },
+    Seek {
+        key: Key,
+        position: f64,
+    },
+    Volume {
+        key: Key,
+        volume: f32,
+    },
+    Stop {
+        key: Key,
+    },
     StopAll,
 }
 
@@ -81,7 +93,11 @@ impl Track {
             return self.paused_pos;
         }
         let pos = self.base_pos + self.clock.elapsed().as_secs_f64();
-        if self.duration > 0.0 { pos.min(self.duration) } else { pos }
+        if self.duration > 0.0 {
+            pos.min(self.duration)
+        } else {
+            pos
+        }
     }
 }
 
@@ -115,7 +131,12 @@ impl AudioManager {
         volume: f32,
         start: Option<f64>,
     ) -> Result<(), String> {
-        self.send(Cmd::Play { key: (peer, id), bytes, volume, start })
+        self.send(Cmd::Play {
+            key: (peer, id),
+            bytes,
+            volume,
+            start,
+        })
     }
 
     pub fn pause(&self, peer: i64, id: String) -> Result<(), String> {
@@ -127,11 +148,17 @@ impl AudioManager {
     }
 
     pub fn seek(&self, peer: i64, id: String, position: f64) -> Result<(), String> {
-        self.send(Cmd::Seek { key: (peer, id), position })
+        self.send(Cmd::Seek {
+            key: (peer, id),
+            position,
+        })
     }
 
     pub fn set_volume(&self, peer: i64, id: String, volume: f32) -> Result<(), String> {
-        self.send(Cmd::Volume { key: (peer, id), volume })
+        self.send(Cmd::Volume {
+            key: (peer, id),
+            volume,
+        })
     }
 
     pub fn stop(&self, peer: i64, id: String) -> Result<(), String> {
@@ -181,11 +208,19 @@ fn emit_progress(app: &AppHandle, key: &Key, position: f64, duration: f64) {
 // ---------- helpers ----------
 
 fn sane_volume(v: f32) -> f32 {
-    if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 }
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 fn sane_pos(p: f64) -> f64 {
-    if p.is_finite() { p.max(0.0) } else { 0.0 }
+    if p.is_finite() {
+        p.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Total duration in seconds. Most containers report it directly; for the
@@ -275,7 +310,12 @@ fn handle_cmd(
     cmd: Cmd,
 ) {
     match cmd {
-        Cmd::Play { key, bytes, volume, start } => {
+        Cmd::Play {
+            key,
+            bytes,
+            volume,
+            start,
+        } => {
             // Restart semantics: drop any previous player for this message.
             tracks.remove(&key);
 
@@ -286,8 +326,14 @@ fn handle_cmd(
                         *sink = Some(s);
                     }
                     Err(e) => {
-                        emit_state(app, &key, "error", 0.0, 0.0,
-                            Some(&format!("no audio device: {e}")));
+                        emit_state(
+                            app,
+                            &key,
+                            "error",
+                            0.0,
+                            0.0,
+                            Some(&format!("no audio device: {e}")),
+                        );
                         return;
                     }
                 }
@@ -299,8 +345,14 @@ fn handle_cmd(
             let mut decoder = match Decoder::new(Cursor::new(bytes.clone())) {
                 Ok(d) => d,
                 Err(e) => {
-                    emit_state(app, &key, "error", 0.0, 0.0,
-                        Some(&format!("unsupported or corrupt audio: {e}")));
+                    emit_state(
+                        app,
+                        &key,
+                        "error",
+                        0.0,
+                        0.0,
+                        Some(&format!("unsupported or corrupt audio: {e}")),
+                    );
                     return;
                 }
             };
@@ -326,16 +378,19 @@ fn handle_cmd(
                 }
             }
 
-            tracks.insert(key.clone(), Track {
-                player,
-                bytes,
-                volume,
-                duration,
-                paused: false,
-                base_pos: start,
-                clock: Instant::now(),
-                paused_pos: start,
-            });
+            tracks.insert(
+                key.clone(),
+                Track {
+                    player,
+                    bytes,
+                    volume,
+                    duration,
+                    paused: false,
+                    base_pos: start,
+                    clock: Instant::now(),
+                    paused_pos: start,
+                },
+            );
             emit_state(app, &key, "playing", start, duration, None);
         }
 
@@ -364,7 +419,9 @@ fn handle_cmd(
         }
 
         Cmd::Seek { key, position } => {
-            let Some(t) = tracks.get_mut(&key) else { return };
+            let Some(t) = tracks.get_mut(&key) else {
+                return;
+            };
             let target = sane_pos(position).min(t.duration.max(0.0));
             if target < t.position() {
                 // BACKWARD: rebuild the source at the target. In-place

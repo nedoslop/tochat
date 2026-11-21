@@ -78,8 +78,8 @@ function showModal({ title, message, input, buttons, getSubmitValue }) {
         (b.danger
           ? "btn-danger-solid"
           : b.primary
-          ? "btn-primary"
-          : "btn-ghost");
+            ? "btn-primary"
+            : "btn-ghost");
       btn.textContent = b.label;
       if (!b.submit) {
         btn.addEventListener("click", () => finish(b.value));
@@ -94,8 +94,8 @@ function showModal({ title, message, input, buttons, getSubmitValue }) {
       const value = getSubmitValue
         ? getSubmitValue(modal)
         : primary
-        ? primary.value
-        : null;
+          ? primary.value
+          : null;
       finish(value);
     });
 
@@ -114,7 +114,10 @@ function showModal({ title, message, input, buttons, getSubmitValue }) {
     overlay.appendChild(modal);
     document.getElementById("modal-root").appendChild(overlay);
 
-    focusFirst(modal, inputEl ? ".modal-input" : ".btn-primary, .btn-danger-solid");
+    focusFirst(
+      modal,
+      inputEl ? ".modal-input" : ".btn-primary, .btn-danger-solid",
+    );
   });
 }
 
@@ -130,7 +133,12 @@ export function showAlert(message, { title = "Notice", okText = "OK" } = {}) {
 /** Replacement for window.confirm. Resolves true/false. */
 export function showConfirm(
   message,
-  { title = "Confirm", okText = "OK", cancelText = "Cancel", danger = false } = {},
+  {
+    title = "Confirm",
+    okText = "OK",
+    cancelText = "Cancel",
+    danger = false,
+  } = {},
 ) {
   return showModal({
     title,
@@ -166,7 +174,6 @@ export function showPrompt(
       { label: cancelText, value: null },
       { label: okText, value: null, primary: !danger, danger, submit: true },
     ],
-    getSubmitValue: (modal) =>
-      modal.querySelector(".modal-input")?.value ?? "",
+    getSubmitValue: (modal) => modal.querySelector(".modal-input")?.value ?? "",
   });
 }
