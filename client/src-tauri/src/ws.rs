@@ -3,10 +3,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-
 #[cfg(not(target_os = "android"))]
 use tauri::UserAttentionType;
-
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
@@ -46,10 +44,11 @@ pub async fn connect(
     let (stream, _resp) = tokio_tungstenite::connect_async(req)
         .await
         .map_err(|e| format!("ws connect failed: {e}"))?;
-
     let (mut sink, mut source) = stream.split();
+
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
     let session_id = state
         .ws_counter
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -68,7 +67,6 @@ pub async fn connect(
     let writer = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
         ping_interval.tick().await;
-
         loop {
             tokio::select! {
                 Some(payload) = pong_rx.recv() => {
@@ -177,11 +175,29 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
     let Some(mut s) = old else { return };
     drop(s.tx);
     s.reader.abort();
-    if tokio::time::timeout(Duration::from_millis(500), &mut s.writer).await.is_err() {
+
+    // Give the writer up to 500 ms to drain and close the sink cleanly.
+    //
+    // IMPORTANT: a `JoinHandle` must never be polled again after it has
+    // completed — tokio panics with "JoinHandle polled after completion".
+    // When the writer finishes within the timeout (the normal case on
+    // logout: dropping `tx` makes `rx.recv()` return `None`, so the task
+    // exits promptly), the `timeout` future itself polls `s.writer` to
+    // completion. Awaiting `s.writer` again afterwards would therefore
+    // panic. Only on the timeout (`Err`) path has the handle NOT been
+    // driven to completion yet, so that is the only path where we may
+    // abort and await it.
+    if tokio::time::timeout(Duration::from_millis(500), &mut s.writer)
+        .await
+        .is_err()
+    {
         s.writer.abort();
+        let _ = s.writer.await;
     }
+
+    // The reader was aborted above and has never been polled to
+    // completion here, so awaiting it once is safe.
     let _ = s.reader.await;
-    let _ = s.writer.await;
 }
 
 fn to_ws_url(base: &str) -> Result<String, String> {
@@ -217,28 +233,23 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
                 }),
             );
         }
-
         ServerMsg::Peers { peers } => {
             let _ = state.app.emit("peers", json!(peers));
         }
-
         ServerMsg::PendingChats { users } => {
             let _ = state.app.emit("pending-chats", json!(users));
         }
-
         ServerMsg::PeerOnline { user_id, status } => {
             let _ = state.app.emit(
                 "peer-online",
                 json!({ "user_id": user_id, "status": status.as_str() }),
             );
         }
-
         ServerMsg::PeerOffline { user_id } => {
             let _ = state
                 .app
                 .emit("peer-offline", json!({ "user_id": user_id }));
         }
-
         ServerMsg::StatusUpdate { user_id, status } => {
             let me = state.me.read().await.clone();
             if let Some(me) = me {
@@ -251,7 +262,6 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
                 json!({ "user_id": user_id, "status": status.as_str() }),
             );
         }
-
         ServerMsg::Message {
             id,
             from,
@@ -271,7 +281,6 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             )
             .await;
         }
-
         ServerMsg::NoteMessage {
             id,
             ts,
@@ -281,7 +290,6 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         } => {
             handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-
         ServerMsg::PullHistoryRequest {
             from,
             since,
@@ -290,11 +298,9 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
-
         ServerMsg::HistoryResponse { from, messages } => {
             handle_history_response(state, from, messages).await;
         }
-
         ServerMsg::ReadReceipt { from, up_to_ts } => {
             if let Ok(db) = state.active_db().await {
                 db.mark_read_up_to(from, up_to_ts).await;
@@ -304,7 +310,6 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
                 json!({ "peer": from, "up_to_ts": up_to_ts }),
             );
         }
-
         ServerMsg::Error { msg } => {
             if let Some(name) = msg
                 .strip_prefix("user '")
@@ -317,22 +322,18 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             }
             let _ = state.app.emit("error", json!(msg));
         }
-
         ServerMsg::Close { reason } => {
             let _ = state.app.emit("session-closed", json!(reason));
         }
-
         ServerMsg::ChatLeft { peer } => {
             if let Ok(db) = state.active_db().await {
                 db.delete_peer(peer).await;
             }
             let _ = state.app.emit("chat-left", json!({ "peer": peer }));
         }
-
         ServerMsg::Blocked { users } => {
             let _ = state.app.emit("blocked", json!(users));
         }
-
         ServerMsg::Profile {
             user_id,
             username,
@@ -433,7 +434,6 @@ async fn handle_incoming(
     payload: String,
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(from, &payload).await;
-
     if let Ok(db) = state.active_db().await {
         db.upsert_message(
             from,
@@ -450,7 +450,6 @@ async fn handle_incoming(
     }
 
     let window_focused = is_window_focused(&state.app);
-
     let _ = state.app.emit(
         "message",
         json!({
@@ -601,20 +600,17 @@ async fn handle_pull_request(
             } else {
                 m.payload.clone()
             };
-
             let (from_user, to_user) = if m.direction == "out" {
                 (me.id, from)
             } else {
                 (from, me.id)
             };
-
             let kind = match m.kind.as_str() {
                 "image" => crate::protocol::MessageKind::Image,
                 "audio" => crate::protocol::MessageKind::Audio,
                 "file" => crate::protocol::MessageKind::File,
                 _ => crate::protocol::MessageKind::Text,
             };
-
             wire.push(StoredMsg {
                 id: m.id,
                 from: from_user,
@@ -640,7 +636,6 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
     let Some(me) = state.me.read().await.clone() else {
         return;
     };
-
     if let Ok(db) = state.active_db().await {
         for m in messages {
             // A history only ever contains messages between the two of us;
@@ -665,6 +660,7 @@ async fn handle_history_response(state: &Arc<AppState>, from: i64, messages: Vec
             .await;
         }
     }
-
-    let _ = state.app.emit("history-received", json!({ "from": from, "peer": from }));
+    let _ = state
+        .app
+        .emit("history-received", json!({ "from": from, "peer": from }));
 }
