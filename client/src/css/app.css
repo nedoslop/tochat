@@ -1,12 +1,12 @@
 /* ============================================================
    App shell
-   ============================================================ */
+============================================================ */
 .view { height: 100vh; }
 .app-view { display: flex; height: 100vh; position: relative; }
 
 /* ============================================================
    Sidebar
-   ============================================================ */
+============================================================ */
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
@@ -33,7 +33,9 @@
   align-items: center;
   gap: 10px;
 }
+
 .me-info { min-width: 0; flex: 1; }
+
 .me-name {
   font-weight: 600;
   font-size: 14px;
@@ -42,6 +44,7 @@
   white-space: nowrap;
   color: var(--text);
 }
+
 .me-status {
   background: none;
   border: none;
@@ -54,6 +57,7 @@
   gap: 5px;
   cursor: pointer;
 }
+
 .status-dot {
   width: 7px;
   height: 7px;
@@ -61,6 +65,7 @@
   background: currentColor;
   display: inline-block;
 }
+
 .me-status[data-status="away"]      { color: var(--warning); }
 .me-status[data-status="busy"]      { color: var(--danger); }
 .me-status[data-status="invisible"] { color: var(--text-faint); }
@@ -94,6 +99,7 @@
   gap: 6px;
   padding: 4px 14px 8px;
 }
+
 .sidebar-tab {
   flex: 1;
   display: flex;
@@ -124,6 +130,7 @@
   font-size: 10px;
   min-width: 16px;
 }
+
 .sidebar-tab.blocked-tab {
   background: var(--surface-3);
   color: var(--text-dim);
@@ -136,6 +143,7 @@
   padding: 6px 8px 8px;
   min-height: 0;
 }
+
 .section-title {
   font-size: 11px;
   font-weight: 600;
@@ -178,6 +186,7 @@
   flex-shrink: 0;
   position: relative;
 }
+
 .peer-avatar .avatar-img {
   width: 100%;
   height: 100%;
@@ -185,6 +194,7 @@
   border-radius: 50%;
   display: block;
 }
+
 .peer-avatar::after {
   content: "";
   position: absolute;
@@ -203,6 +213,7 @@
 .peer.status-busy .peer-avatar::after { background: var(--danger); }
 
 .peer-body { flex: 1; min-width: 0; }
+
 .peer-name {
   font-size: 13.5px;
   font-weight: 500;
@@ -225,7 +236,7 @@
 
 /* ============================================================
    Main
-   ============================================================ */
+============================================================ */
 .main {
   flex: 1;
   display: flex;
@@ -261,7 +272,9 @@
   min-width: 0;
   flex: 1;
 }
+
 .chat-peer-meta { min-width: 0; }
+
 .chat-peer-name {
   font-weight: 600;
   font-size: 15px;
@@ -270,6 +283,7 @@
   white-space: nowrap;
   color: var(--text);
 }
+
 .chat-peer-status { font-size: 12px; color: var(--text-dim); }
 .chat-peer-status.online { color: var(--success); }
 .chat-peer-status.away { color: var(--warning); }
@@ -289,8 +303,9 @@
 
 /* ============================================================
    Menu (dropdown)
-   ============================================================ */
+============================================================ */
 .menu-wrap { position: relative; }
+
 .menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -306,6 +321,7 @@
   flex-direction: column;
   gap: 2px;
 }
+
 .menu-item {
   text-align: left;
   background: none;
@@ -322,7 +338,7 @@
 
 /* ============================================================
    Messages
-   ============================================================ */
+============================================================ */
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -342,6 +358,7 @@
   margin: 14px 0 6px;
   position: relative;
 }
+
 .date-sep::before,
 .date-sep::after {
   content: "";
@@ -366,6 +383,7 @@
 }
 
 .msg.fresh { animation: msg-in 0.15s ease; }
+
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -378,6 +396,7 @@
   border-bottom-left-radius: 4px;
   color: var(--text);
 }
+
 .msg.out {
   align-self: flex-end;
   background: var(--accent);
@@ -409,6 +428,7 @@
   overflow: hidden;
 }
 .msg:hover .msg-actions { display: flex; }
+
 .msg-actions button {
   background: none;
   border: none;
@@ -425,7 +445,7 @@
 
 /* ------------------------------------------------------------
    Message caption (filename strip under image / audio)
-   ------------------------------------------------------------ */
+------------------------------------------------------------ */
 .msg-caption {
   display: flex;
   align-items: center;
@@ -471,7 +491,7 @@
 
 /* ============================================================
    Media messages
-   ============================================================ */
+============================================================ */
 .msg-image {
   display: block;
   max-width: 100%;
@@ -505,7 +525,7 @@
 
 /* ------------------------------------------------------------
    Custom audio player
-   ------------------------------------------------------------ */
+------------------------------------------------------------ */
 .audio-player {
   display: flex;
   align-items: center;
@@ -591,6 +611,7 @@
   outline: none;
   cursor: pointer;
 }
+
 .audio-volume::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -609,13 +630,41 @@
   border: none;
   cursor: pointer;
 }
+
 .msg.out .audio-volume { background: rgba(255, 255, 255, 0.35); }
 .msg.out .audio-volume::-webkit-slider-thumb { background: #fff; }
 .msg.out .audio-volume::-moz-range-thumb { background: #fff; }
 
+/* Selecting / dragging the volume slider never draws an outline or
+   a halo around the widget — in any focus state, on any engine. */
+.audio-volume:focus,
+.audio-volume:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.audio-volume:focus::-webkit-slider-thumb,
+.audio-volume:focus::-moz-range-thumb {
+  outline: none;
+}
+
+/* Keyboard-only focus cue: a soft glow hugging the thumb itself,
+   never a ring around the whole slider. */
+.audio-volume:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.audio-volume:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.msg.out .audio-volume:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.28);
+}
+.msg.out .audio-volume:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.28);
+}
+
 /* ------------------------------------------------------------
    File messages
-   ------------------------------------------------------------ */
+------------------------------------------------------------ */
 .msg-file {
   display: inline-flex;
   align-items: center;
@@ -630,17 +679,20 @@
   transition: background 0.12s;
 }
 .msg-file:hover { background: rgba(0, 0, 0, 0.11); }
+
 .msg-file .file-icon {
   flex-shrink: 0;
   font-size: 20px;
   line-height: 1;
 }
+
 .msg-file .file-meta {
   display: flex;
   flex-direction: column;
   min-width: 0;
   flex: 1;
 }
+
 .msg-file .file-name {
   font-size: 13px;
   font-weight: 500;
@@ -649,17 +701,20 @@
   white-space: nowrap;
   color: inherit;
 }
+
 .msg-file .file-size {
   color: var(--text-faint);
   font-size: 11px;
   margin-top: 1px;
 }
+
 .msg-file .file-download {
   flex-shrink: 0;
   font-size: 16px;
   opacity: 0.7;
   margin-left: 4px;
 }
+
 .msg.out .msg-file {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
@@ -669,7 +724,7 @@
 
 /* ============================================================
    Empty state
-   ============================================================ */
+============================================================ */
 .empty-state {
   margin: auto;
   text-align: center;
@@ -686,7 +741,7 @@
 
 /* ============================================================
    Composer
-   ============================================================ */
+============================================================ */
 .composer {
   display: flex;
   gap: 8px;
@@ -697,6 +752,7 @@
   align-items: flex-end;
 }
 .composer[hidden] { display: none !important; }
+
 .composer textarea {
   flex: 1;
   padding: 10px 16px;
@@ -719,12 +775,14 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+
 .composer .btn-icon {
   width: 40px;
   height: 40px;
   border-radius: 50%;
   padding: 0;
 }
+
 .composer #attach-image-btn,
 .composer #attach-audio-btn,
 .composer #attach-file-btn {
@@ -733,7 +791,7 @@
 
 /* ============================================================
    Encryption widget
-   ============================================================ */
+============================================================ */
 .enc-widget { position: relative; flex-shrink: 0; }
 
 .enc-panel {
@@ -751,7 +809,9 @@
   flex-direction: column;
   gap: 10px;
 }
+
 .enc-title { font-weight: 600; font-size: 13px; color: var(--text); }
+
 .enc-actions { display: flex; gap: 6px; margin-top: 2px; }
 .enc-actions .btn { flex: 1; }
 
@@ -761,25 +821,29 @@
 
 /* ============================================================
    Pending / Blocked views
-   ============================================================ */
+============================================================ */
 .pending-view {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
+
 .pending-actions { display: flex; gap: 6px; }
+
 .pending-body {
   padding: 20px 24px;
   overflow-y: auto;
   flex: 1;
 }
+
 .pending-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin-top: 12px;
 }
+
 .pending-row {
   display: flex;
   align-items: center;
@@ -795,6 +859,7 @@
   border-color: var(--accent);
   box-shadow: var(--shadow-sm);
 }
+
 .pending-left {
   display: flex;
   align-items: center;
@@ -811,7 +876,7 @@
 
 /* ============================================================
    Load older / end-of-history
-   ============================================================ */
+============================================================ */
 .load-older {
   align-self: center;
   margin: 4px auto 12px;
@@ -839,7 +904,7 @@
 
 /* ============================================================
    Drag-and-drop overlay
-   ============================================================ */
+============================================================ */
 .drop-overlay {
   position: fixed;
   inset: 0;
@@ -851,6 +916,7 @@
   pointer-events: none;
   border: 3px dashed var(--accent);
 }
+
 .drop-overlay-inner {
   padding: 18px 28px;
   background: var(--surface);
@@ -864,7 +930,7 @@
 
 /* ============================================================
    Adaptive / mobile layout
-   ============================================================ */
+============================================================ */
 @media (max-width: 760px) {
   .sidebar {
     position: fixed;
@@ -879,19 +945,24 @@
     max-width: 320px;
   }
   .app-view.sidebar-open .sidebar { transform: translateX(0); }
+
   .hamburger { display: inline-flex; }
 
   .sidebar-search { padding: 12px 12px 8px; }
   .sidebar-tabs { padding: 4px 12px 8px; }
+
   .chat-header {
     padding: 10px 12px;
     min-height: 56px;
     gap: 8px;
   }
+
   .messages { padding: 14px 12px; }
   .composer { padding: 10px 12px 12px; }
   .composer .btn-icon { width: 36px; height: 36px; }
+
   .chat-peer .avatar { width: 32px; height: 32px; font-size: 13px; }
+
   .msg { max-width: 82%; }
 }
 
@@ -902,7 +973,7 @@
 
 /* ============================================================
    Image viewer — fullscreen lightbox
-   ============================================================ */
+============================================================ */
 .image-viewer {
   position: fixed;
   inset: 0;
@@ -919,6 +990,7 @@
   -moz-user-select: none;
   -ms-user-select: none;
 }
+
 .image-viewer img {
   max-width: 100%;
   max-height: 100%;
@@ -931,6 +1003,7 @@
   -webkit-user-drag: none;
   pointer-events: none;
 }
+
 .image-viewer-toolbar {
   position: absolute;
   top: 16px;
@@ -939,6 +1012,7 @@
   gap: 8px;
   z-index: 1;
 }
+
 .image-viewer-btn {
   width: 40px;
   height: 40px;
@@ -955,6 +1029,7 @@
   justify-content: center;
 }
 .image-viewer-btn:hover { background: rgba(255, 255, 255, 0.3); }
+
 /* Peer status and sync spinner */
 .peer-status-wrap {
   display: flex;
@@ -984,11 +1059,13 @@
   color: var(--text-dim);
   font-size: 13px;
 }
+
 .blocked-banner-info {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
 .peer-blocked-tag {
   font-size: 10px;
   font-weight: 600;
@@ -1000,6 +1077,7 @@
   margin-left: 6px;
   text-transform: uppercase;
 }
+
 .peer.is-blocked .peer-name {
   opacity: 0.8;
 }
@@ -1032,18 +1110,23 @@
   .mobile-back-btn {
     display: inline-flex;
   }
+
   .app-view.has-active-chat .hamburger {
     display: none;
   }
+
   .sidebar-head {
     padding-top: max(12px, env(safe-area-inset-top));
   }
+
   .composer {
     padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
+
   .chat-header {
     padding-top: max(10px, env(safe-area-inset-top));
   }
+
   .btn-icon {
     min-width: 40px;
     min-height: 40px;

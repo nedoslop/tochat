@@ -5,7 +5,9 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
+
 html,
 body {
   margin: 0;
@@ -13,7 +15,9 @@ body {
   height: 100%;
   overflow: hidden;
 }
+
 [hidden] { display: none !important; }
+
 body {
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;
@@ -24,6 +28,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
 button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
 
@@ -49,6 +54,7 @@ textarea,
   -webkit-user-select: text;
   user-select: text;
 }
+
 select {
   -webkit-user-select: text;
   user-select: text;
@@ -71,6 +77,7 @@ select {
   -webkit-user-select: none;
   user-select: none;
 }
+
 .msg-body .audio-player {
   cursor: default;
 }
@@ -202,20 +209,24 @@ select {
   white-space: nowrap;
   user-select: none;
 }
+
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .btn-primary {
   background: var(--accent);
   color: #fff;
   box-shadow: var(--shadow-xs);
 }
 .btn-primary:hover { background: var(--accent-hover); }
+
 .btn-ghost {
   background: transparent;
   color: var(--text);
   border-color: var(--border);
 }
 .btn-ghost:hover { background: var(--surface-3); }
+
 .btn-danger {
   background: transparent;
   color: var(--danger);
@@ -225,14 +236,17 @@ select {
   background: var(--danger-soft);
   border-color: var(--danger);
 }
+
 .btn-danger-solid {
   background: var(--danger);
   color: #fff;
   box-shadow: var(--shadow-xs);
 }
 .btn-danger-solid:hover { background: var(--danger-hover); }
+
 .btn-sm { padding: 6px 10px; font-size: 13px; }
 .btn-lg { padding: 10px 18px; font-size: 15px; }
+
 .btn-icon {
   padding: 8px;
   width: 36px;
@@ -250,6 +264,7 @@ select {
   font-weight: 500;
   color: var(--text-dim);
 }
+
 input[type="text"],
 input[type="password"],
 input[type="email"],
@@ -265,10 +280,50 @@ select {
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-input:focus, select:focus {
+
+/* Soft halo — text-entry fields only. Range sliders (audio volume),
+   file inputs and other non-text controls are deliberately excluded
+   so clicking them never draws a ring around the whole element. */
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus,
+input:not([type]):focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+
+/* ------------------------------------------------------------
+   Focus policy
+   Selecting with the pointer never draws an outline. Keyboard
+   navigation always does: text fields keep their soft halo above,
+   every other control gets a crisp accent outline.
+------------------------------------------------------------ */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Fields already draw their own halo — don't stack a second ring. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}
+
+/* Range sliders are dragged, not typed into: no outline and no
+   halo in any focus state, on the track or around the widget. */
+input[type="range"],
+input[type="range"]:focus,
+input[type="range"]:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 input::placeholder { color: var(--text-faint); }
 
 /* ============================================================
@@ -299,12 +354,14 @@ input::placeholder { color: var(--text-faint); }
   user-select: none;
   overflow: hidden;
 }
+
 .avatar-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
+
 .badge {
   background: var(--accent);
   color: #fff;
@@ -336,6 +393,7 @@ input::placeholder { color: var(--text-faint); }
   line-height: 1.4;
   animation: toast-in 0.2s ease;
 }
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -362,10 +420,12 @@ input::placeholder { color: var(--text-faint); }
   gap: 12px;
   animation: banner-in 0.2s ease;
 }
+
 @keyframes banner-in {
   from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
 .in-app-banner-body { flex: 1; min-width: 0; }
 .in-app-banner-title {
   font-weight: 600;
@@ -393,10 +453,12 @@ input::placeholder { color: var(--text-faint); }
   z-index: 2000;
   animation: modal-fade-in 0.15s ease;
 }
+
 @keyframes modal-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
 .modal {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -410,15 +472,18 @@ input::placeholder { color: var(--text-faint); }
   gap: 14px;
   animation: modal-in 0.18s ease;
 }
+
 @keyframes modal-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+
 .modal-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
 }
+
 .modal-message {
   font-size: 14px;
   color: var(--text-dim);
@@ -426,7 +491,9 @@ input::placeholder { color: var(--text-faint); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
 .modal-input { margin-top: -2px; }
+
 .modal-actions {
   display: flex;
   gap: 8px;
@@ -443,6 +510,7 @@ input::placeholder { color: var(--text-faint); }
   align-items: center;
   gap: 10px;
 }
+
 .profile-avatar-wrap {
   width: 96px;
   height: 96px;
@@ -453,17 +521,21 @@ input::placeholder { color: var(--text-faint); }
   align-items: center;
   justify-content: center;
 }
+
 .profile-avatar-wrap img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+
 .profile-avatar-fallback {
   width: 96px !important;
   height: 96px !important;
   font-size: 34px !important;
 }
+
 .profile-avatar-actions { display: flex; gap: 6px; }
+
 .profile-danger-zone {
   display: flex;
   flex-direction: column;
@@ -488,6 +560,7 @@ input::placeholder { color: var(--text-faint); }
   animation: modal-fade-in 0.15s ease;
   cursor: zoom-out;
 }
+
 .image-viewer img {
   max-width: 100%;
   max-height: 100%;
@@ -495,6 +568,7 @@ input::placeholder { color: var(--text-faint); }
   border-radius: 6px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
 }
+
 .image-viewer-close {
   position: absolute;
   top: 16px;
@@ -519,6 +593,7 @@ input::placeholder { color: var(--text-faint); }
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
@@ -532,6 +607,7 @@ html, body {
   height: 100vh;
   height: 100dvh;
 }
+
 @media (max-width: 768px) {
   input, select, textarea {
     font-size: 16px !important; /* Prevents auto-zoom on iOS */
@@ -549,16 +625,19 @@ html, body {
   animation: spinner-rotate 0.75s linear infinite;
   flex-shrink: 0;
 }
+
 .loading-spinner.sm {
   width: 12px;
   height: 12px;
   border-width: 2px;
 }
+
 .loading-spinner.lg {
   width: 32px;
   height: 32px;
   border-width: 3px;
 }
+
 @keyframes spinner-rotate {
   to { transform: rotate(360deg); }
 }
