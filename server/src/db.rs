@@ -9,7 +9,11 @@ pub struct Database {
 }
 
 fn order(a: i64, b: i64) -> (i64, i64) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 /// Everything `handle_send` / `handle_edit` / history relay need to know
@@ -60,7 +64,9 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     // ---- users ----
@@ -87,8 +93,10 @@ impl Database {
 
     pub async fn username(&self, user_id: i64) -> Option<String> {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT username FROM users WHERE id = ?1", [user_id], |r| r.get(0))
-            .ok()
+        conn.query_row("SELECT username FROM users WHERE id = ?1", [user_id], |r| {
+            r.get(0)
+        })
+        .ok()
     }
 
     /// Batch username resolution: ONE lock + a cached statement for all ids,
@@ -118,7 +126,10 @@ impl Database {
         .ok()
     }
 
-    pub async fn get_user_profile(&self, user_id: i64) -> Option<(String, Option<String>, Option<String>)> {
+    pub async fn get_user_profile(
+        &self,
+        user_id: i64,
+    ) -> Option<(String, Option<String>, Option<String>)> {
         let conn = self.conn.lock().await;
         conn.query_row(
             "SELECT username, display_name, avatar FROM users WHERE id = ?1",
@@ -129,7 +140,10 @@ impl Database {
     }
 
     /// Batch profile resolution (handshake ships every contact's profile).
-    pub async fn profiles(&self, ids: &[i64]) -> Vec<(i64, String, Option<String>, Option<String>)> {
+    pub async fn profiles(
+        &self,
+        ids: &[i64],
+    ) -> Vec<(i64, String, Option<String>, Option<String>)> {
         let conn = self.conn.lock().await;
         let mut stmt = match conn
             .prepare_cached("SELECT username, display_name, avatar FROM users WHERE id = ?1")
@@ -140,7 +154,11 @@ impl Database {
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
             if let Ok(row) = stmt.query_row([id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
             }) {
                 out.push((id, row.0, row.1, row.2));
             }
@@ -163,8 +181,12 @@ impl Database {
 
     pub async fn user_id(&self, username: &str) -> Option<i64> {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT id FROM users WHERE username = ?1", [username], |r| r.get(0))
-            .ok()
+        conn.query_row(
+            "SELECT id FROM users WHERE username = ?1",
+            [username],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Option<i64> {
@@ -175,7 +197,8 @@ impl Database {
                  VALUES (?1, ?2, 0) RETURNING id",
             )
             .ok()?;
-        stmt.query_row(params![username, password_hash], |r| r.get(0)).ok()
+        stmt.query_row(params![username, password_hash], |r| r.get(0))
+            .ok()
     }
 
     pub async fn update_last_seen(&self, user_id: i64, ts: i64) {
@@ -188,8 +211,14 @@ impl Database {
 
     pub async fn delete_user(&self, user_id: i64) {
         let conn = self.conn.lock().await;
-        let _ = conn.execute("DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1", [user_id]);
-        let _ = conn.execute("DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1", [user_id]);
+        let _ = conn.execute(
+            "DELETE FROM relationships WHERE user_a = ?1 OR user_b = ?1",
+            [user_id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1",
+            [user_id],
+        );
         let _ = conn.execute("DELETE FROM users WHERE id = ?1", [user_id]);
     }
 
@@ -356,6 +385,10 @@ impl Database {
             )
             .ok();
 
-        SendContext { exists, blocked, relationship }
+        SendContext {
+            exists,
+            blocked,
+            relationship,
+        }
     }
 }

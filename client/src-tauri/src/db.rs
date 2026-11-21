@@ -105,7 +105,9 @@ impl Database {
             );
             "#,
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     // ---- peers ----
@@ -148,18 +150,21 @@ impl Database {
 
     pub async fn peer_id_by_username(&self, username: &str) -> Option<i64> {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT id FROM peers WHERE username = ?1", [username], |r| r.get(0))
-            .ok()
+        conn.query_row(
+            "SELECT id FROM peers WHERE username = ?1",
+            [username],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
     pub async fn list_peers(&self) -> Vec<LocalPeer> {
         let conn = self.conn.lock().await;
-        let mut stmt = match conn
-            .prepare_cached("SELECT id, username, display_name, avatar FROM peers")
-        {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
+        let mut stmt =
+            match conn.prepare_cached("SELECT id, username, display_name, avatar FROM peers") {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
         let rows = stmt.query_map([], |r| {
             Ok(LocalPeer {
                 id: r.get(0)?,
@@ -192,7 +197,17 @@ impl Database {
         let conn = self.conn.lock().await;
         let _ = conn.execute(
             UPSERT_SQL,
-            params![peer_id, id, direction, ts, edit_ts, kind, payload, plaintext as i64, read as i64],
+            params![
+                peer_id,
+                id,
+                direction,
+                ts,
+                edit_ts,
+                kind,
+                payload,
+                plaintext as i64,
+                read as i64
+            ],
         );
     }
 
@@ -440,12 +455,11 @@ impl Database {
 
     pub async fn load_all_encryption(&self) -> Vec<(i64, String, Option<String>)> {
         let conn = self.conn.lock().await;
-        let mut stmt = match conn
-            .prepare_cached("SELECT peer_id, method, secret FROM peer_encryption")
-        {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
+        let mut stmt =
+            match conn.prepare_cached("SELECT peer_id, method, secret FROM peer_encryption") {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
@@ -485,9 +499,22 @@ mod tests {
     #[tokio::test]
     async fn upsert_edit_and_unlimited_fetch() {
         let (db, path) = temp_db("crud");
-        db.upsert_message(1, "m1", "out", 1000, 1000, "text", "Hello", true, false).await;
-        db.upsert_message(1, "m2", "in", 2000, 2000, "text", "World", true, false).await;
-        db.upsert_message(1, "m1", "out", 1000, 1500, "text", "Hello edited", true, false).await;
+        db.upsert_message(1, "m1", "out", 1000, 1000, "text", "Hello", true, false)
+            .await;
+        db.upsert_message(1, "m2", "in", 2000, 2000, "text", "World", true, false)
+            .await;
+        db.upsert_message(
+            1,
+            "m1",
+            "out",
+            1000,
+            1500,
+            "text",
+            "Hello edited",
+            true,
+            false,
+        )
+        .await;
 
         let all = db.get_messages(1, None, None).await;
         assert_eq!(all.len(), 2);
@@ -508,8 +535,18 @@ mod tests {
     async fn pagination_is_oldest_first_and_strictly_before() {
         let (db, path) = temp_db("page");
         for i in 1..=5 {
-            db.upsert_message(7, &format!("m{i}"), "in", i * 100, i * 100, "text", "x", true, false)
-                .await;
+            db.upsert_message(
+                7,
+                &format!("m{i}"),
+                "in",
+                i * 100,
+                i * 100,
+                "text",
+                "x",
+                true,
+                false,
+            )
+            .await;
         }
         let newest2 = db.get_messages(7, None, Some(2)).await;
         assert_eq!(
@@ -531,19 +568,26 @@ mod tests {
     async fn incremental_sync_cursor_and_since_filter() {
         let (db, path) = temp_db("sync");
         // Peer's messages (incoming) at t=100, 200; our own later reply at 900.
-        db.upsert_message(3, "a", "in", 100, 100, "text", "a", true, false).await;
-        db.upsert_message(3, "b", "in", 200, 200, "text", "b", true, false).await;
-        db.upsert_message(3, "c", "out", 900, 900, "text", "c", true, false).await;
+        db.upsert_message(3, "a", "in", 100, 100, "text", "a", true, false)
+            .await;
+        db.upsert_message(3, "b", "in", 200, 200, "text", "b", true, false)
+            .await;
+        db.upsert_message(3, "c", "out", 900, 900, "text", "c", true, false)
+            .await;
 
         // Cursor must ignore our own outgoing message (edge case: we wrote
         // while the peer was offline; their older messages must still sync).
         assert_eq!(db.max_incoming_edit_ts(3).await, 200);
 
         // Nothing changed since the cursor -> empty, instantly.
-        assert!(db.get_messages_since(3, 200, None, Some(50)).await.is_empty());
+        assert!(db
+            .get_messages_since(3, 200, None, Some(50))
+            .await
+            .is_empty());
 
         // An edit of an old message resurfaces it (edit_ts advances).
-        db.upsert_message(3, "a", "in", 100, 950, "text", "a!", true, false).await;
+        db.upsert_message(3, "a", "in", 100, 950, "text", "a!", true, false)
+            .await;
         let changed = db.get_messages_since(3, 200, None, Some(50)).await;
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].id, "a");
@@ -551,7 +595,10 @@ mod tests {
 
         // `before` pagination still works with since = 0.
         let older = db.get_messages_since(3, 0, Some(900), Some(50)).await;
-        assert_eq!(older.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(
+            older.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
 
         drop(db);
         cleanup(&path);
@@ -586,8 +633,10 @@ mod tests {
     #[tokio::test]
     async fn read_flags_never_regress_and_respect_direction() {
         let (db, path) = temp_db("read");
-        db.upsert_message(1, "out1", "out", 100, 100, "text", "a", true, false).await;
-        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false).await;
+        db.upsert_message(1, "out1", "out", 100, 100, "text", "a", true, false)
+            .await;
+        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false)
+            .await;
         assert_eq!(db.unread_counts().await, vec![(1, 1)]);
         db.mark_read_up_to(1, 500).await; // only touches outgoing
         let msgs = db.get_messages(1, None, None).await;
@@ -595,7 +644,8 @@ mod tests {
         assert!(!msgs.iter().find(|m| m.id == "in1").unwrap().read);
         db.mark_incoming_read(1, 500).await;
         assert!(db.unread_counts().await.is_empty());
-        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false).await;
+        db.upsert_message(1, "in1", "in", 200, 200, "text", "b", true, false)
+            .await;
         assert!(db.get_messages(1, None, None).await.iter().all(|m| m.read));
         drop(db);
         cleanup(&path);
@@ -605,7 +655,8 @@ mod tests {
     async fn encryption_rows_and_peer_deletion() {
         let (db, path) = temp_db("enc");
         db.upsert_peer(3, "bob", Some("Bob"), None).await;
-        db.upsert_message(3, "m", "in", 1, 1, "text", "x", true, false).await;
+        db.upsert_message(3, "m", "in", 1, 1, "text", "x", true, false)
+            .await;
         db.set_encryption(3, "pre_shared_key", Some("ab")).await;
         assert_eq!(db.load_all_encryption().await.len(), 1);
         db.set_encryption(3, "none", None).await;

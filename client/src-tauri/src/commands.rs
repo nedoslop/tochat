@@ -91,7 +91,9 @@ pub async fn resolve_user(
             .ok_or_else(|| "not connected".to_string())?
     };
     ws_tx
-        .send(ClientMsg::GetProfile { username: username.clone() })
+        .send(ClientMsg::GetProfile {
+            username: username.clone(),
+        })
         .map_err(|_| "connection closed".to_string())?;
 
     match tokio::time::timeout(Duration::from_secs(6), rx).await {
@@ -141,8 +143,18 @@ pub async fn send_media(
         let db = state.active_db().await?;
         let id = random_id();
         let ts = now_ms();
-        db.upsert_message(NOTES_PEER, &id, "out", ts, ts, k.as_str(), &payload, true, true)
-            .await;
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            ts,
+            k.as_str(),
+            &payload,
+            true,
+            true,
+        )
+        .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, &payload).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -202,8 +214,18 @@ pub async fn edit_message(
     let edit_ts = now_ms();
 
     if peer == NOTES_PEER {
-        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), &text, true, true)
-            .await;
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            k.as_str(),
+            &text,
+            true,
+            true,
+        )
+        .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, &text).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -256,8 +278,18 @@ pub async fn delete_message(
     let edit_ts = now_ms();
 
     if peer == NOTES_PEER {
-        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), "", true, true)
-            .await;
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            k.as_str(),
+            "",
+            true,
+            true,
+        )
+        .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, "").await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -307,8 +339,18 @@ async fn send_outgoing(
 ) -> Result<(), String> {
     let db = state.active_db().await?;
     let wire_payload = state.encrypt_for_wire(to, plaintext).await?;
-    db.upsert_message(to, id, "out", ts, edit_ts, kind.as_str(), plaintext, true, false)
-        .await;
+    db.upsert_message(
+        to,
+        id,
+        "out",
+        ts,
+        edit_ts,
+        kind.as_str(),
+        plaintext,
+        true,
+        false,
+    )
+    .await;
     let tx = {
         let ws = state.ws.lock().await;
         ws.as_ref()
@@ -316,9 +358,22 @@ async fn send_outgoing(
             .ok_or_else(|| "not connected".to_string())?
     };
     let msg = if is_edit {
-        ClientMsg::Edit { to, id: id.to_string(), ts, edit_ts, kind, payload: wire_payload }
+        ClientMsg::Edit {
+            to,
+            id: id.to_string(),
+            ts,
+            edit_ts,
+            kind,
+            payload: wire_payload,
+        }
     } else {
-        ClientMsg::Send { to, id: id.to_string(), ts, kind, payload: wire_payload }
+        ClientMsg::Send {
+            to,
+            id: id.to_string(),
+            ts,
+            kind,
+            payload: wire_payload,
+        }
     };
     tx.send(msg).map_err(|_| "connection closed".to_string())?;
     Ok(())
@@ -355,7 +410,12 @@ pub async fn pull_history(
             None => return Ok(()),
         }
     };
-    let _ = tx.send(ClientMsg::PullHistory { from, since, limit, before });
+    let _ = tx.send(ClientMsg::PullHistory {
+        from,
+        since,
+        limit,
+        before,
+    });
     Ok(())
 }
 
@@ -427,8 +487,11 @@ pub async fn set_profile(
             .map(|s| s.tx.clone())
             .ok_or_else(|| "not connected".to_string())?
     };
-    tx.send(ClientMsg::SetProfile { display_name, avatar })
-        .map_err(|_| "connection closed".to_string())?;
+    tx.send(ClientMsg::SetProfile {
+        display_name,
+        avatar,
+    })
+    .map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
 
@@ -477,7 +540,10 @@ pub async fn block_user(user_id: i64, state: State<'_, Arc<AppState>>) -> Result
 pub async fn check_notifications_enabled(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
     match state.app.notification().permission_state() {
-        Ok(s) => Ok(matches!(s, tauri_plugin_notification::PermissionState::Granted)),
+        Ok(s) => Ok(matches!(
+            s,
+            tauri_plugin_notification::PermissionState::Granted
+        )),
         Err(_) => Ok(true),
     }
 }
@@ -543,7 +609,11 @@ pub async fn list_local_peers(
 #[tauri::command]
 pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let title = if count > 0 { format!("Chat ({count})") } else { "Chat".to_string() };
+        let title = if count > 0 {
+            format!("Chat ({count})")
+        } else {
+            "Chat".to_string()
+        };
         let _ = window.set_title(&title);
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -556,7 +626,11 @@ pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), Strin
         }
         #[cfg(target_os = "macos")]
         {
-            let label = if count > 0 { Some(count.to_string()) } else { None };
+            let label = if count > 0 {
+                Some(count.to_string())
+            } else {
+                None
+            };
             let _ = window.set_badge_label(label);
         }
     }
@@ -631,11 +705,7 @@ pub async fn save_data_url(
 
 /// Fetches + decodes a message's audio bytes, using the shared bytes cache
 /// when possible (replays skip the DB read + JSON parse + base64 decode).
-async fn audio_bytes(
-    state: &Arc<AppState>,
-    peer: i64,
-    id: &str,
-) -> Result<Arc<Vec<u8>>, String> {
+async fn audio_bytes(state: &Arc<AppState>, peer: i64, id: &str) -> Result<Arc<Vec<u8>>, String> {
     if let Some(b) = state.audio.cached_bytes(peer, id) {
         return Ok(b);
     }
@@ -659,9 +729,14 @@ pub async fn audio_play(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let bytes = audio_bytes(&state, peer, &id).await?;
-    state
-        .audio
-        .play(peer, id, bytes, volume.unwrap_or(1.0), position, duration_hint)
+    state.audio.play(
+        peer,
+        id,
+        bytes,
+        volume.unwrap_or(1.0),
+        position,
+        duration_hint,
+    )
 }
 
 /// Duration-only probe (replaces the old webview <audio> metadata load).
@@ -784,7 +859,10 @@ pub async fn set_encryption(
         }
     }
 
-    let config = EncryptionConfig { method: m, secret: secret.clone() };
+    let config = EncryptionConfig {
+        method: m,
+        secret: secret.clone(),
+    };
     let db = state.active_db().await?;
     db.set_encryption(peer, m.as_str(), secret.as_deref()).await;
     let mut map = state.encryption.write().await;

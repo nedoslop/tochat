@@ -119,7 +119,11 @@ struct BytesCache {
 
 impl BytesCache {
     fn new() -> Self {
-        Self { map: HashMap::new(), order: VecDeque::new(), total: 0 }
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            total: 0,
+        }
     }
 
     fn get(&mut self, key: &Key) -> Option<Arc<Vec<u8>>> {
@@ -166,7 +170,10 @@ impl AudioManager {
             .name("audio-player".into())
             .spawn(move || run(app, rx, thread_tx))
             .expect("failed to spawn audio thread");
-        Self { tx, cache: Arc::new(Mutex::new(BytesCache::new())) }
+        Self {
+            tx,
+            cache: Arc::new(Mutex::new(BytesCache::new())),
+        }
     }
 
     fn send(&self, cmd: Cmd) -> Result<(), String> {
@@ -195,11 +202,20 @@ impl AudioManager {
         start: Option<f64>,
         duration_hint: Option<f64>,
     ) -> Result<(), String> {
-        self.send(Cmd::Play { key: (peer, id), bytes, volume, start, duration_hint })
+        self.send(Cmd::Play {
+            key: (peer, id),
+            bytes,
+            volume,
+            start,
+            duration_hint,
+        })
     }
 
     pub fn probe(&self, peer: i64, id: String, bytes: Arc<Vec<u8>>) -> Result<(), String> {
-        self.send(Cmd::Probe { key: (peer, id), bytes })
+        self.send(Cmd::Probe {
+            key: (peer, id),
+            bytes,
+        })
     }
 
     pub fn pause(&self, peer: i64, id: String) -> Result<(), String> {
@@ -211,11 +227,17 @@ impl AudioManager {
     }
 
     pub fn seek(&self, peer: i64, id: String, position: f64) -> Result<(), String> {
-        self.send(Cmd::Seek { key: (peer, id), position })
+        self.send(Cmd::Seek {
+            key: (peer, id),
+            position,
+        })
     }
 
     pub fn set_volume(&self, peer: i64, id: String, volume: f32) -> Result<(), String> {
-        self.send(Cmd::Volume { key: (peer, id), volume })
+        self.send(Cmd::Volume {
+            key: (peer, id),
+            volume,
+        })
     }
 
     pub fn stop(&self, peer: i64, id: String) -> Result<(), String> {
@@ -263,11 +285,19 @@ fn emit_duration(app: &AppHandle, key: &Key, duration: f64) {
 // ---------- helpers ----------
 
 fn sane_volume(v: f32) -> f32 {
-    if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 }
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 fn sane_pos(p: f64) -> f64 {
-    if p.is_finite() { p.max(0.0) } else { 0.0 }
+    if p.is_finite() {
+        p.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Positions a FRESH decoder at `target` seconds before it is appended.
@@ -346,7 +376,14 @@ impl Runtime {
                 true
             }
             Err(e) => {
-                emit_state(&self.app, key, "error", 0.0, 0.0, Some(&format!("no audio device: {e}")));
+                emit_state(
+                    &self.app,
+                    key,
+                    "error",
+                    0.0,
+                    0.0,
+                    Some(&format!("no audio device: {e}")),
+                );
                 false
             }
         }
@@ -360,7 +397,13 @@ impl Runtime {
 
     fn handle(&mut self, cmd: Cmd) {
         match cmd {
-            Cmd::Play { key, bytes, volume, start, duration_hint } => {
+            Cmd::Play {
+                key,
+                bytes,
+                volume,
+                start,
+                duration_hint,
+            } => {
                 // Restart semantics: drop any previous player for this message.
                 self.tracks.remove(&key);
 
@@ -368,7 +411,11 @@ impl Runtime {
                     Ok(d) => d,
                     Err(e) => {
                         emit_state(
-                            &self.app, &key, "error", 0.0, 0.0,
+                            &self.app,
+                            &key,
+                            "error",
+                            0.0,
+                            0.0,
                             Some(&format!("unsupported or corrupt audio: {e}")),
                         );
                         return;
@@ -429,7 +476,10 @@ impl Runtime {
                 self.tracks.insert(
                     key.clone(),
                     Track {
-                        player, bytes, volume, duration,
+                        player,
+                        bytes,
+                        volume,
+                        duration,
                         paused: false,
                         base_pos: start,
                         clock: Instant::now(),
@@ -486,7 +536,9 @@ impl Runtime {
             }
 
             Cmd::Seek { key, position } => {
-                let Some(t) = self.tracks.get_mut(&key) else { return };
+                let Some(t) = self.tracks.get_mut(&key) else {
+                    return;
+                };
                 let target = sane_pos(position).min(t.duration.max(0.0));
                 if target < t.position() {
                     if let Some(out) = self.sink.as_ref() {

@@ -150,7 +150,12 @@ pub async fn connect(
         }
     });
 
-    *state.ws.lock().await = Some(WsSession { id: session_id, tx, reader, writer });
+    *state.ws.lock().await = Some(WsSession {
+        id: session_id,
+        tx,
+        reader,
+        writer,
+    });
     Ok(())
 }
 
@@ -199,8 +204,15 @@ fn to_ws_url(base: &str) -> Result<String, String> {
 
 async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     match sm {
-        ServerMsg::AuthOk { user_id, username, last_seen } => {
-            *state.me.write().await = Some(Me { id: user_id, username: username.clone() });
+        ServerMsg::AuthOk {
+            user_id,
+            username,
+            last_seen,
+        } => {
+            *state.me.write().await = Some(Me {
+                id: user_id,
+                username: username.clone(),
+            });
             let _ = state.app.emit(
                 "auth-ok",
                 json!({ "user_id": user_id, "username": username, "last_seen": last_seen }),
@@ -219,7 +231,9 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             );
         }
         ServerMsg::PeerOffline { user_id } => {
-            let _ = state.app.emit("peer-offline", json!({ "user_id": user_id }));
+            let _ = state
+                .app
+                .emit("peer-offline", json!({ "user_id": user_id }));
         }
         ServerMsg::StatusUpdate { user_id, status } => {
             let me = state.me.read().await.clone();
@@ -233,16 +247,47 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
                 json!({ "user_id": user_id, "status": status.as_str() }),
             );
         }
-        ServerMsg::Message { id, from, ts, edit_ts, kind, payload } => {
-            handle_incoming(state, id, from, ts, edit_ts, kind.as_str().to_string(), payload).await;
+        ServerMsg::Message {
+            id,
+            from,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
+            handle_incoming(
+                state,
+                id,
+                from,
+                ts,
+                edit_ts,
+                kind.as_str().to_string(),
+                payload,
+            )
+            .await;
         }
-        ServerMsg::NoteMessage { id, ts, edit_ts, kind, payload } => {
+        ServerMsg::NoteMessage {
+            id,
+            ts,
+            edit_ts,
+            kind,
+            payload,
+        } => {
             handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-        ServerMsg::PullHistoryRequest { from, since, limit, before } => {
+        ServerMsg::PullHistoryRequest {
+            from,
+            since,
+            limit,
+            before,
+        } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
-        ServerMsg::HistoryResponse { from, messages, done } => {
+        ServerMsg::HistoryResponse {
+            from,
+            messages,
+            done,
+        } => {
             handle_history_response(state, from, messages, done).await;
         }
         ServerMsg::ReadReceipt { from, up_to_ts } => {
@@ -278,10 +323,20 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         ServerMsg::Blocked { users } => {
             let _ = state.app.emit("blocked", json!(users));
         }
-        ServerMsg::Profile { user_id, username, display_name, avatar } => {
+        ServerMsg::Profile {
+            user_id,
+            username,
+            display_name,
+            avatar,
+        } => {
             if let Ok(db) = state.active_db().await {
-                db.upsert_peer(user_id, &username, display_name.as_deref(), avatar.as_deref())
-                    .await;
+                db.upsert_peer(
+                    user_id,
+                    &username,
+                    display_name.as_deref(),
+                    avatar.as_deref(),
+                )
+                .await;
             }
             {
                 let mut lookups = state.pending_lookups.lock().await;
@@ -369,8 +424,18 @@ async fn handle_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(from, &payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext, false)
-            .await;
+        db.upsert_message(
+            from,
+            &id,
+            "in",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            false,
+        )
+        .await;
     }
 
     let window_focused = is_window_focused(&state.app);
@@ -406,7 +471,13 @@ async fn handle_incoming(
         "in-app-notification",
         json!({ "title": title, "body": preview, "peer": from }),
     );
-    let _ = state.app.notification().builder().title(title).body(preview).show();
+    let _ = state
+        .app
+        .notification()
+        .builder()
+        .title(title)
+        .body(preview)
+        .show();
     request_attention(state);
 }
 
@@ -446,8 +517,18 @@ async fn handle_note_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(NOTES_PEER, &payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, &kind, &stored, is_plaintext, true)
-            .await;
+        db.upsert_message(
+            NOTES_PEER,
+            &id,
+            "out",
+            ts,
+            edit_ts,
+            &kind,
+            &stored,
+            is_plaintext,
+            true,
+        )
+        .await;
     }
     let _ = state.app.emit(
         "note-message",
@@ -514,7 +595,11 @@ async fn handle_pull_request(
 
     // Ship the reply in bounded parts; the final part carries done = true.
     if wire.is_empty() {
-        let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: Vec::new(), done: true });
+        let _ = tx.send(ClientMsg::HistoryResponse {
+            to: from,
+            messages: Vec::new(),
+            done: true,
+        });
         return;
     }
     let mut batch: Vec<StoredMsg> = Vec::new();
@@ -532,7 +617,11 @@ async fn handle_pull_request(
         batch_bytes += size;
         batch.push(m);
     }
-    let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: batch, done: true });
+    let _ = tx.send(ClientMsg::HistoryResponse {
+        to: from,
+        messages: batch,
+        done: true,
+    });
 }
 
 async fn handle_history_response(
