@@ -195,9 +195,7 @@ pub fn validate_secret(method: EncryptionMethod, secret: &str) -> bool {
     match method {
         EncryptionMethod::None => true,
         EncryptionMethod::SharedPassword => !secret.is_empty(),
-        EncryptionMethod::PreSharedKey => {
-            hex::decode(secret.trim()).is_ok_and(|b| b.len() == 32)
-        }
+        EncryptionMethod::PreSharedKey => hex::decode(secret.trim()).is_ok_and(|b| b.len() == 32),
     }
 }
 
@@ -248,9 +246,15 @@ mod tests {
     #[test]
     fn validation_and_factory() {
         assert!(validate_secret(EncryptionMethod::PreSharedKey, PSK));
-        assert!(validate_secret(EncryptionMethod::PreSharedKey, &format!("  {PSK}\n")));
+        assert!(validate_secret(
+            EncryptionMethod::PreSharedKey,
+            &format!("  {PSK}\n")
+        ));
         assert!(!validate_secret(EncryptionMethod::PreSharedKey, "abcd"));
-        assert!(!validate_secret(EncryptionMethod::PreSharedKey, &"zz".repeat(32)));
+        assert!(!validate_secret(
+            EncryptionMethod::PreSharedKey,
+            &"zz".repeat(32)
+        ));
         assert!(!validate_secret(EncryptionMethod::SharedPassword, ""));
 
         assert!(build_cipher(EncryptionMethod::None, Some("x")).is_none());
@@ -258,6 +262,9 @@ mod tests {
         assert!(build_cipher(EncryptionMethod::PreSharedKey, Some("short")).is_none());
         assert!(build_cipher(EncryptionMethod::PreSharedKey, Some(PSK)).is_some());
         assert_eq!(EncryptionMethod::parse("garbage"), EncryptionMethod::None);
-        assert_eq!(EncryptionMethod::parse("pre_shared_key").as_str(), "pre_shared_key");
+        assert_eq!(
+            EncryptionMethod::parse("pre_shared_key").as_str(),
+            "pre_shared_key"
+        );
     }
 }
