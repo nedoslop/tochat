@@ -5,3 +5,4 @@ setlocal
 
 set RUSTFLAGS=--remap-path-prefix =/ -C link-arg=/DEBUG:NONE
 cargo tauri build %*
+set RUSTFLAGS=
