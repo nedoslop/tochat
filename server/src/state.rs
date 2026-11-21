@@ -17,15 +17,18 @@ pub struct AppState {
     pub db: Database,
     /// Per-user list of active sessions (multi-device).
     pub online: Arc<DashMap<i64, Vec<OnlineSession>>>,
-    /// Last known status per user. Persists across session disconnects so a
-    /// user who was Busy stays Busy after reconnecting — without relying on
-    /// the client to re-announce it. Cleared only on process restart.
+    /// Last known status per user; survives reconnects, cleared on restart.
     pub user_status: Arc<DashMap<i64, UserStatus>>,
-    /// Outstanding history pulls, keyed by `(requester, responder)` with the
-    /// number of forwarded requests not yet answered. A `history_response`
-    /// is only relayed if it answers one of these, so nobody can push
-    /// messages into another user's chat unprompted.
-    pub pulls: Arc<DashMap<(i64, i64), u32>>,
+    /// Outstanding history pulls, keyed by
+    /// `(requester, responder, responder_session_id)` with the number of
+    /// forwarded requests not yet answered.
+    ///
+    /// Per-SESSION accounting matters: a pull is forwarded to every session
+    /// of the responder (different devices may hold different parts of the
+    /// history), and each session's reply must consume its OWN pull. With a
+    /// single per-user counter, the second device's reply was dropped as
+    /// "unsolicited" and its messages were silently lost.
+    pub pulls: Arc<DashMap<(i64, i64, u64), u32>>,
 }
 
 impl AppState {
@@ -36,7 +39,6 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// Returns the current status for `user_id`, defaulting to Online.
     pub fn status_of(&self, user_id: i64) -> UserStatus {
         self.user_status
             .get(&user_id)
@@ -77,33 +79,65 @@ impl AppState {
         n
     }
 
-    pub fn note_pull(&self, requester: i64, responder: i64) {
-        *self.pulls.entry((requester, responder)).or_insert(0) += 1;
+    /// Like `send_to_user`, but returns the ids of the sessions reached.
+    /// Used for pull requests so each delivered copy can be accounted for.
+    pub fn send_to_user_collect(&self, user_id: i64, msg: ServerMsg) -> Vec<u64> {
+        let Some(mut sessions) = self.online.get_mut(&user_id) else {
+            return Vec::new();
+        };
+        sessions.retain(|s| !s.tx.is_closed());
+        let mut ids = Vec::new();
+        for s in sessions.iter() {
+            if s.tx.send(msg.clone()).is_ok() {
+                ids.push(s.session_id);
+            }
+        }
+        ids
     }
 
-    /// `true` if at least one pull from `requester` to `responder` is still
-    /// outstanding. Used to validate non-final parts of a multi-part history
-    /// reply without consuming the pull (the final part consumes it).
-    pub fn has_pull(&self, requester: i64, responder: i64) -> bool {
+    pub fn note_pull(&self, requester: i64, responder: i64, responder_session: u64) {
+        *self
+            .pulls
+            .entry((requester, responder, responder_session))
+            .or_insert(0) += 1;
+    }
+
+    /// `true` if a pull answered by this responder session is still open.
+    /// Used to validate non-final parts without consuming the pull.
+    pub fn has_pull(&self, requester: i64, responder: i64, responder_session: u64) -> bool {
         self.pulls
-            .get(&(requester, responder))
+            .get(&(requester, responder, responder_session))
             .map(|n| *n > 0)
             .unwrap_or(false)
     }
 
     /// Consumes one outstanding pull; `false` if the response is unsolicited.
-    pub fn take_pull(&self, requester: i64, responder: i64) -> bool {
-        let Some(mut n) = self.pulls.get_mut(&(requester, responder)) else {
+    pub fn take_pull(&self, requester: i64, responder: i64, responder_session: u64) -> bool {
+        let key = (requester, responder, responder_session);
+        let Some(mut n) = self.pulls.get_mut(&key) else {
             return false;
         };
         *n -= 1;
         let empty = *n == 0;
         drop(n);
         if empty {
-            self.pulls
-                .remove_if(&(requester, responder), |_, n| *n == 0);
+            self.pulls.remove_if(&key, |_, n| *n == 0);
         }
         true
+    }
+
+    /// A responder session went away: its unanswered pulls can never be
+    /// answered, so drop them (prevents leaks and late unsolicited pushes).
+    pub fn clear_pulls_for_session(&self, user_id: i64, session_id: u64) {
+        self.pulls
+            .retain(|&(_, responder, sid), _| !(responder == user_id && sid == session_id));
+    }
+
+    /// The user is fully gone (last session closed / account deleted):
+    /// drop every pull where they are requester OR responder.
+    pub fn clear_pulls_for_user(&self, user_id: i64) {
+        self.pulls
+            .retain(|&(requester, responder, _), _| requester != user_id && responder != user_id);
     }
 
     /// Adds a new session. Returns `true` if this is the user's first session.

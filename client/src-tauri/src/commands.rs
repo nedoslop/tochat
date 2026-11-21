@@ -11,10 +11,14 @@ use crate::crypto::{validate_secret, EncryptionConfig, EncryptionMethod};
 use crate::db::LocalMsg;
 use crate::protocol::{ClientMsg, MessageKind, UserStatus};
 use crate::state::{read_theme, theme_path, user_db_path, AppState};
-use crate::util::{decode_data_url, now_ms, random_id};
+use crate::util::{decode_data_url, decode_payload_bytes, now_ms, random_id};
 use crate::ws;
 
 pub const NOTES_PEER: i64 = 0;
+
+/// Overlap subtracted from the incremental sync cursor. Absorbs small
+/// clock skew between the two machines; re-sent messages dedupe by id.
+const SYNC_OVERLAP_MS: i64 = 10_000;
 
 // ---------- auth ----------
 
@@ -87,9 +91,7 @@ pub async fn resolve_user(
             .ok_or_else(|| "not connected".to_string())?
     };
     ws_tx
-        .send(ClientMsg::GetProfile {
-            username: username.clone(),
-        })
+        .send(ClientMsg::GetProfile { username: username.clone() })
         .map_err(|_| "connection closed".to_string())?;
 
     match tokio::time::timeout(Duration::from_secs(6), rx).await {
@@ -139,18 +141,8 @@ pub async fn send_media(
         let db = state.active_db().await?;
         let id = random_id();
         let ts = now_ms();
-        db.upsert_message(
-            NOTES_PEER,
-            &id,
-            "out",
-            ts,
-            ts,
-            k.as_str(),
-            &payload,
-            true,
-            true,
-        )
-        .await;
+        db.upsert_message(NOTES_PEER, &id, "out", ts, ts, k.as_str(), &payload, true, true)
+            .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, &payload).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -200,29 +192,18 @@ pub async fn edit_message(
         return Err("empty message".into());
     }
     let db = state.active_db().await?;
+    // Primary-key lookup, NOT a full-chat load (media chats are huge).
     let (ts, kind, read) = db
-        .get_messages(peer, None, None)
+        .get_message(peer, &id)
         .await
-        .iter()
-        .find(|m| m.id == id)
-        .map(|m| (m.ts, m.kind.clone(), m.read))
+        .map(|m| (m.ts, m.kind, m.read))
         .unwrap_or_else(|| (now_ms(), "text".into(), false));
     let k = kind_from_str(&kind);
     let edit_ts = now_ms();
 
     if peer == NOTES_PEER {
-        db.upsert_message(
-            NOTES_PEER,
-            &id,
-            "out",
-            ts,
-            edit_ts,
-            k.as_str(),
-            &text,
-            true,
-            true,
-        )
-        .await;
+        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), &text, true, true)
+            .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, &text).await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -267,28 +248,16 @@ pub async fn delete_message(
 ) -> Result<LocalMsg, String> {
     let db = state.active_db().await?;
     let (ts, kind, read) = db
-        .get_messages(peer, None, None)
+        .get_message(peer, &id)
         .await
-        .iter()
-        .find(|m| m.id == id)
-        .map(|m| (m.ts, m.kind.clone(), m.read))
+        .map(|m| (m.ts, m.kind, m.read))
         .unwrap_or_else(|| (now_ms(), "text".into(), false));
     let k = kind_from_str(&kind);
     let edit_ts = now_ms();
 
     if peer == NOTES_PEER {
-        db.upsert_message(
-            NOTES_PEER,
-            &id,
-            "out",
-            ts,
-            edit_ts,
-            k.as_str(),
-            "",
-            true,
-            true,
-        )
-        .await;
+        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, k.as_str(), "", true, true)
+            .await;
         let wire = state.encrypt_for_wire(NOTES_PEER, "").await?;
         let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
         if let Some(tx) = tx {
@@ -338,18 +307,8 @@ async fn send_outgoing(
 ) -> Result<(), String> {
     let db = state.active_db().await?;
     let wire_payload = state.encrypt_for_wire(to, plaintext).await?;
-    db.upsert_message(
-        to,
-        id,
-        "out",
-        ts,
-        edit_ts,
-        kind.as_str(),
-        plaintext,
-        true,
-        false,
-    )
-    .await;
+    db.upsert_message(to, id, "out", ts, edit_ts, kind.as_str(), plaintext, true, false)
+        .await;
     let tx = {
         let ws = state.ws.lock().await;
         ws.as_ref()
@@ -357,22 +316,9 @@ async fn send_outgoing(
             .ok_or_else(|| "not connected".to_string())?
     };
     let msg = if is_edit {
-        ClientMsg::Edit {
-            to,
-            id: id.to_string(),
-            ts,
-            edit_ts,
-            kind,
-            payload: wire_payload,
-        }
+        ClientMsg::Edit { to, id: id.to_string(), ts, edit_ts, kind, payload: wire_payload }
     } else {
-        ClientMsg::Send {
-            to,
-            id: id.to_string(),
-            ts,
-            kind,
-            payload: wire_payload,
-        }
+        ClientMsg::Send { to, id: id.to_string(), ts, kind, payload: wire_payload }
     };
     tx.send(msg).map_err(|_| "connection closed".to_string())?;
     Ok(())
@@ -381,7 +327,7 @@ async fn send_outgoing(
 #[tauri::command]
 pub async fn pull_history(
     from: i64,
-    since: i64,
+    since: Option<i64>,
     limit: Option<u32>,
     before: Option<i64>,
     state: State<'_, Arc<AppState>>,
@@ -389,25 +335,27 @@ pub async fn pull_history(
     if from == NOTES_PEER {
         return Ok(());
     }
+    // `since = null` means incremental sync: everything changed since the
+    // last message we RECEIVED from this peer (minus a small overlap for
+    // clock skew). An up-to-date chat yields an empty reply in ~ms instead
+    // of re-shipping the whole history.
+    let since = match since {
+        Some(s) => s,
+        None => {
+            let db = state.active_db().await?;
+            (db.max_incoming_edit_ts(from).await - SYNC_OVERLAP_MS).max(0)
+        }
+    };
     let tx = {
         let ws = state.ws.lock().await;
-        // A history pull is background work scheduled by the sync loop.
-        // If the socket isn't installed yet (transient during connect /
-        // reconnect), just quietly skip — the caller will retry.
+        // Background work scheduled by the sync loop: if the socket isn't
+        // installed yet, quietly skip — the caller will retry.
         match ws.as_ref() {
             Some(s) => s.tx.clone(),
             None => return Ok(()),
         }
     };
-    // A closed channel is also a soft failure: the reader task will emit
-    // `disconnected` on its own, and the sync loop will retry after the
-    // next reconnect. Don't spam the JS console with it.
-    let _ = tx.send(ClientMsg::PullHistory {
-        from,
-        since,
-        limit,
-        before,
-    });
+    let _ = tx.send(ClientMsg::PullHistory { from, since, limit, before });
     Ok(())
 }
 
@@ -479,11 +427,8 @@ pub async fn set_profile(
             .map(|s| s.tx.clone())
             .ok_or_else(|| "not connected".to_string())?
     };
-    tx.send(ClientMsg::SetProfile {
-        display_name,
-        avatar,
-    })
-    .map_err(|_| "connection closed".to_string())?;
+    tx.send(ClientMsg::SetProfile { display_name, avatar })
+        .map_err(|_| "connection closed".to_string())?;
     Ok(())
 }
 
@@ -532,10 +477,7 @@ pub async fn block_user(user_id: i64, state: State<'_, Arc<AppState>>) -> Result
 pub async fn check_notifications_enabled(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
     match state.app.notification().permission_state() {
-        Ok(s) => Ok(matches!(
-            s,
-            tauri_plugin_notification::PermissionState::Granted
-        )),
+        Ok(s) => Ok(matches!(s, tauri_plugin_notification::PermissionState::Granted)),
         Err(_) => Ok(true),
     }
 }
@@ -601,12 +543,9 @@ pub async fn list_local_peers(
 #[tauri::command]
 pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let title = if count > 0 {
-            format!("Chat ({count})")
-        } else {
-            "Chat".to_string()
-        };
+        let title = if count > 0 { format!("Chat ({count})") } else { "Chat".to_string() };
         let _ = window.set_title(&title);
+
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             if count > 0 {
@@ -617,11 +556,7 @@ pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), Strin
         }
         #[cfg(target_os = "macos")]
         {
-            let label = if count > 0 {
-                Some(count.to_string())
-            } else {
-                None
-            };
+            let label = if count > 0 { Some(count.to_string()) } else { None };
             let _ = window.set_badge_label(label);
         }
     }
@@ -680,7 +615,6 @@ pub async fn save_data_url(
         });
     let picked = rx.await.map_err(|_| "dialog cancelled".to_string())?;
     let Some(path) = picked else {
-        // User pressed Cancel — not an error.
         return Ok(());
     };
     let path_buf = path.into_path().map_err(|e| e.to_string())?;
@@ -690,25 +624,56 @@ pub async fn save_data_url(
 
 // ---------- native audio playback ----------
 //
-// Audio messages are played by rodio on a dedicated Rust thread (see
-// crate::audio), NOT by an <audio> element in the webview — otherwise the
-// OS volume mixer shows a separate "WebView" volume entry. The webview
-// only sends these commands and renders `audio-state` / `audio-progress`
-// events.
+// Audio is played by rodio on a dedicated Rust thread (crate::audio).
+// Commands take only (peer, id): the payload is read from the local DB and
+// base64-decoded HERE, so no multi-MiB string crosses the IPC boundary and
+// the webview never creates a media element / audio session.
+
+/// Fetches + decodes a message's audio bytes, using the shared bytes cache
+/// when possible (replays skip the DB read + JSON parse + base64 decode).
+async fn audio_bytes(
+    state: &Arc<AppState>,
+    peer: i64,
+    id: &str,
+) -> Result<Arc<Vec<u8>>, String> {
+    if let Some(b) = state.audio.cached_bytes(peer, id) {
+        return Ok(b);
+    }
+    let db = state.active_db().await?;
+    let msg = db
+        .get_message(peer, id)
+        .await
+        .ok_or_else(|| "message not found".to_string())?;
+    let bytes = Arc::new(decode_payload_bytes(&msg.payload)?);
+    state.audio.cache_bytes(peer, id, bytes.clone());
+    Ok(bytes)
+}
 
 #[tauri::command]
 pub async fn audio_play(
     peer: i64,
     id: String,
-    data_url: String,
     volume: Option<f32>,
     position: Option<f64>,
+    duration_hint: Option<f64>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let bytes = decode_data_url(&data_url)?;
+    let bytes = audio_bytes(&state, peer, &id).await?;
     state
         .audio
-        .play(peer, id, bytes, volume.unwrap_or(1.0), position)
+        .play(peer, id, bytes, volume.unwrap_or(1.0), position, duration_hint)
+}
+
+/// Duration-only probe (replaces the old webview <audio> metadata load).
+/// Emits `audio-duration`; long headerless files are scanned in background.
+#[tauri::command]
+pub async fn audio_probe(
+    peer: i64,
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let bytes = audio_bytes(&state, peer, &id).await?;
+    state.audio.probe(peer, id, bytes)
 }
 
 #[tauri::command]
@@ -795,6 +760,7 @@ pub async fn set_encryption(
     let mut secret = secret
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+
     if secret.is_none() {
         let map = state.encryption.read().await;
         let existing = map.get_config(peer);
@@ -802,6 +768,7 @@ pub async fn set_encryption(
             secret = existing.secret.clone();
         }
     }
+
     if m != EncryptionMethod::None {
         match secret.as_deref() {
             None => return Err("a secret is required for this method".into()),
@@ -816,10 +783,8 @@ pub async fn set_encryption(
             _ => {}
         }
     }
-    let config = EncryptionConfig {
-        method: m,
-        secret: secret.clone(),
-    };
+
+    let config = EncryptionConfig { method: m, secret: secret.clone() };
     let db = state.active_db().await?;
     db.set_encryption(peer, m.as_str(), secret.as_deref()).await;
     let mut map = state.encryption.write().await;

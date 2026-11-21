@@ -14,6 +14,8 @@ import {
 } from "./ui.js";
 import {
   autoPull,
+  clearSync,
+  markReadIfViewing,
   resetToLogin,
   sendReadReceipt,
   refreshReadState,
@@ -66,13 +68,11 @@ function mergeIntoCache(peerId, incoming) {
   state.msgCache[peerId] = merged;
 }
 
-function syncWithPeer(peerId, { delay = 0 } = {}) {
+// ONE incremental sync per presence event. autoPull dedupes overlapping
+// triggers.
+function syncWithPeer(peerId) {
   if (!peerId || peerId === state.meId || peerId === NOTES_PEER) return;
-  const run = () => {
-    autoPull(peerId);
-  };
-  if (delay > 0) setTimeout(run, delay);
-  else run();
+  autoPull(peerId);
 }
 
 async function windowIsFocused() {
@@ -90,18 +90,22 @@ export async function setupEvents() {
     state.meId = e.payload.user_id;
     state.meName = e.payload.username;
     applyMyProfile();
+
     try {
       const ok = await invoke("check_notifications_enabled");
       state.notificationsEnabled = !!ok;
       const warn = document.getElementById("notif-warning");
       if (warn) warn.hidden = !!ok;
     } catch (_) {}
+
     document.getElementById("login-view").hidden = true;
     document.getElementById("app-view").hidden = false;
+
     try {
       const counts = await invoke("get_unread_counts");
       for (const [peerId, n] of counts) state.unread[peerId] = n;
     } catch (_) {}
+
     try {
       const locals = await invoke("list_local_peers");
       for (const p of locals) {
@@ -119,6 +123,7 @@ export async function setupEvents() {
         }
       }
     } catch (_) {}
+
     renderMyStatus();
     showChatView();
     renderSidebar();
@@ -143,6 +148,7 @@ export async function setupEvents() {
     renderSidebar();
     if (state.currentPeer && state.peers.has(state.currentPeer))
       updateChatHeader();
+
     for (const info of e.payload) {
       const id = Number(info.id);
       if (!Number.isInteger(id) || id <= 0) continue;
@@ -212,15 +218,12 @@ export async function setupEvents() {
     else state.online.add(id);
     renderSidebar();
     if (state.currentPeer === id) updateChatHeader();
+
     syncWithPeer(id);
-    syncWithPeer(id, { delay: 500 });
-    syncWithPeer(id, { delay: 2500 });
+
     if (state.currentPeer === id) {
       refreshReadState(id).then(() => {
-        if (state.currentPeer !== id) return;
-        windowIsFocused().then((focused) => {
-          if (focused && state.currentPeer === id) void sendReadReceipt(id);
-        });
+        if (state.currentPeer === id) void markReadIfViewing(id);
       });
     }
   });
@@ -230,8 +233,13 @@ export async function setupEvents() {
     if (!Number.isInteger(id) || id <= 0) return;
     state.online.delete(id);
     delete state.peerStatus[id];
+    const wasSyncing = state.syncingPeers.has(id);
+    clearSync(id);
     renderSidebar();
-    if (state.currentPeer === id) updateChatHeader();
+    if (state.currentPeer === id) {
+      updateChatHeader();
+      if (wasSyncing) renderMessages();
+    }
   });
 
   await listen("status-update", (e) => {
@@ -256,7 +264,7 @@ export async function setupEvents() {
     if (!Number.isInteger(peer) || peer <= 0) return;
     state.peers.delete(peer);
     state.pending.delete(peer);
-    state.syncingPeers.delete(peer);
+    clearSync(peer);
     state.loadingOlder.delete(peer);
     delete state.msgCache[peer];
     delete state.seenIds[peer];
@@ -277,9 +285,11 @@ export async function setupEvents() {
     const m = e.payload;
     const peerId = Number(m.from ?? m.peer);
     if (!Number.isInteger(peerId) || peerId <= 0) return;
+
     state.pending.delete(peerId);
     state.peers.add(peerId);
     if (!state.msgCache[peerId]) state.msgCache[peerId] = [];
+
     const idx = state.msgCache[peerId].findIndex((x) => x.id === m.id);
     const windowFocused = !!(m.window_focused ?? m.windowFocused);
     const entry = {
@@ -293,11 +303,13 @@ export async function setupEvents() {
     };
     if (idx >= 0) state.msgCache[peerId][idx] = entry;
     else state.msgCache[peerId].push(entry);
+
     const isOpen = state.currentPeer === peerId;
     if (!isOpen || !windowFocused) {
       state.unread[peerId] = (state.unread[peerId] || 0) + 1;
       void updateBadge();
     }
+
     if (!state.profiles[peerId]) {
       try {
         const lp = await invoke("get_peer", { id: peerId });
@@ -311,14 +323,15 @@ export async function setupEvents() {
         }
       } catch (_) {}
     }
+
     renderSidebar();
     renderPendingList();
     if (isOpen) {
       renderMessages();
       updateChatHeader();
-      if (windowFocused) {
-        void sendReadReceipt(peerId);
-      }
+      // Re-check LIVE focus rather than trusting the delivery-time snapshot
+      // (which can be stale/false and leave both sides stuck "unread").
+      void markReadIfViewing(peerId);
     }
   });
 
@@ -356,7 +369,8 @@ export async function setupEvents() {
   await listen("history-received", async (e) => {
     const peer = Number(e.payload.from ?? e.payload.peer);
     if (!Number.isInteger(peer) || peer <= 0) return;
-    state.syncingPeers.delete(peer);
+    clearSync(peer);
+
     try {
       const latest = await invoke("get_messages", {
         peer,
@@ -365,9 +379,11 @@ export async function setupEvents() {
       });
       mergeIntoCache(peer, latest);
     } catch (_) {}
+
     const wasLoadingOlder = state.loadingOlder.has(peer);
     delete state.lastPullLimit[peer];
     state.loadingOlder.delete(peer);
+
     if (wasLoadingOlder && (state.msgCache[peer] || []).length > 0) {
       const oldest = state.msgCache[peer][0].ts;
       try {
@@ -378,11 +394,13 @@ export async function setupEvents() {
         state.mightHaveMore[peer] = hasMore;
       } catch (_) {}
     }
+
     if (state.pending.has(peer)) {
       state.pending.delete(peer);
       state.peers.add(peer);
       renderPendingList();
     }
+
     if (!state.profiles[peer]) {
       try {
         const lp = await invoke("get_peer", { id: peer });
@@ -396,12 +414,14 @@ export async function setupEvents() {
         }
       } catch (_) {}
     }
+
     try {
       const counts = await invoke("get_unread_counts");
       const map = Object.fromEntries(counts.map(([id, n]) => [String(id), n]));
       state.unread[peer] = map[String(peer)] || 0;
       void updateBadge();
     } catch (_) {}
+
     renderSidebar();
     if (state.currentPeer === peer) {
       renderMessages(wasLoadingOlder);
@@ -410,10 +430,11 @@ export async function setupEvents() {
         requestAnimationFrame(() => {
           state.suppressScrollLoad = false;
         });
-      } else {
-        const focused = await windowIsFocused();
-        if (focused) void sendReadReceipt(peer);
       }
+      // Always attempt to mark read once history lands while viewing.
+      // (latestInboundTs is the newest visible message, so this is correct
+      // and idempotent even for a load-older reply.)
+      void markReadIfViewing(peer);
     } else {
       state.suppressScrollLoad = false;
     }
@@ -424,15 +445,24 @@ export async function setupEvents() {
     const m = msg.match(/^peer (\d+) is offline/);
     if (m) {
       const id = Number(m[1]);
+      const wasSyncing = state.syncingPeers.has(id);
+      clearSync(id);
       state.loadingOlder.delete(id);
       state.suppressScrollLoad = false;
+      if (wasSyncing) {
+        renderSidebar();
+        if (state.currentPeer === id) {
+          updateChatHeader();
+          renderMessages();
+        }
+      }
       return;
     }
     const noChat = msg.match(/^no chat with user (\d+)/);
     if (noChat) {
       const id = Number(noChat[1]);
       state.loadingOlder.delete(id);
-      state.syncingPeers.delete(id);
+      clearSync(id);
       state.suppressScrollLoad = false;
       return;
     }
@@ -470,11 +500,6 @@ export async function setupEvents() {
     resetToLogin();
   });
 
-  // -----------------------------------------------------------------
-  // `disconnected` fires from Rust only when the *currently active*
-  // session's reader exits. Stale readers from prior sessions are
-  // silent, which is why we can safely treat this as a real drop.
-  // -----------------------------------------------------------------
   await listen("disconnected", async (e) => {
     const username = e.payload;
     if (!state.meId) return;
@@ -484,11 +509,22 @@ export async function setupEvents() {
     } catch (_) {}
     resetToLogin();
   });
+
+  // Recover read-marking whenever the user returns to the window/tab.
+  // These are the safety net for the one-shot focus check at sync time.
+  const recheckRead = () => {
+    void markReadIfViewing(state.currentPeer);
+  };
+  window.addEventListener("focus", recheckRead);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recheckRead();
+  });
 }
 
 // ---------- In-app notification banner ----------
 
 let bannerTimer = null;
+
 function showInAppBanner(title, body, peer) {
   const el = document.getElementById("in-app-banner");
   document.getElementById("in-app-banner-title").textContent =

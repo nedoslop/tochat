@@ -54,7 +54,6 @@ export const state = {
 
   // id -> bool
   mightHaveMore: {},
-
   loadingOlder: new Set(),
   lastPullLimit: {},
   suppressScrollLoad: false,
@@ -62,8 +61,10 @@ export const state = {
   // id -> Set<msg-id>
   seenIds: {},
 
-  // Set of peer IDs currently syncing messages
+  // Set of peer IDs with an in-flight incremental sync.
   syncingPeers: new Set(),
+  // id -> fallback timeout handle for the in-flight sync (one per peer).
+  syncTimers: {},
 
   // OS notification permission state
   notificationsEnabled: true,
@@ -86,6 +87,10 @@ export function resetState() {
   state.lastPullLimit = {};
   state.suppressScrollLoad = false;
   state.syncingPeers.clear();
+  for (const k of Object.keys(state.syncTimers)) {
+    clearTimeout(state.syncTimers[k]);
+  }
+  state.syncTimers = {};
   state.notificationsEnabled = true;
   for (const k of Object.keys(state.msgCache)) delete state.msgCache[k];
   for (const k of Object.keys(state.seenIds)) delete state.seenIds[k];

@@ -70,6 +70,7 @@ pub fn run() {
             commands::list_local_peers,
             commands::save_data_url,
             commands::audio_play,
+            commands::audio_probe,
             commands::audio_pause,
             commands::audio_resume,
             commands::audio_seek,

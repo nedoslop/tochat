@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 /// Serde default for flags that must be `true` when absent (older peers).
 fn default_true() -> bool {
@@ -26,8 +27,6 @@ pub enum UserStatus {
 }
 
 /// A peer as sent to a client: stable ID + current username.
-/// `username` never changes, but is included so the client can render it
-/// without a second lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub id: i64,
@@ -70,15 +69,10 @@ pub enum ClientMsg {
         #[serde(default)]
         before: Option<i64>,
     },
-    HistoryResponse {
-        to: i64,
-        messages: Vec<StoredMsg>,
-        /// `false` for intermediate parts of a multi-part history reply,
-        /// `true` for the final (or only) part. Defaults to `true` so
-        /// single-response clients keep working unchanged.
-        #[serde(default = "default_true")]
-        done: bool,
-    },
+    // NOTE: `history_response` is deliberately NOT part of this enum.
+    // It is parsed separately as `HistoryResponseMsg` so the message
+    // bodies stay as raw JSON (see below). Internally-tagged enums
+    // buffer content during deserialization, which breaks RawValue.
     ListPending,
     DeleteAccount {
         password: String,
@@ -100,8 +94,6 @@ pub enum ClientMsg {
         to: i64,
         up_to_ts: i64,
     },
-    /// Resolve a username to a user id (plus profile info). Used when the
-    /// user types a new peer name into the "start chat" box.
     GetProfile {
         username: String,
     },
@@ -113,16 +105,21 @@ pub enum ClientMsg {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredMsg {
-    pub id: String,
-    pub from: i64,
+/// A history reply, parsed as a PLAIN struct (not via the tagged enum).
+///
+/// The server never inspects message bodies — it only routes them — so
+/// they are kept as `RawValue`: no deserialization of up-to-8-MiB base64
+/// strings per part, and no re-serialization on relay. The requester's
+/// client validates `from`/`to` of every message anyway, which is why
+/// the server needs no typed `StoredMsg` at all.
+#[derive(Debug, Deserialize)]
+pub struct HistoryResponseMsg {
     pub to: i64,
-    pub ts: i64,
-    pub edit_ts: i64,
-    #[serde(default)]
-    pub kind: MessageKind,
-    pub payload: String,
+    pub messages: Vec<Box<RawValue>>,
+    /// `false` for intermediate parts of a multi-part history reply,
+    /// `true` for the final (or only) part.
+    #[serde(default = "default_true")]
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,9 +136,6 @@ pub enum ServerMsg {
     PendingChats {
         users: Vec<PeerInfo>,
     },
-    /// Peer became reachable. `status` carries the peer's current status so
-    /// the receiver can render `busy` / `away` correctly right away instead
-    /// of assuming `online`.
     PeerOnline {
         user_id: i64,
         status: UserStatus,
@@ -178,9 +172,8 @@ pub enum ServerMsg {
     },
     HistoryResponse {
         from: i64,
-        messages: Vec<StoredMsg>,
-        /// Mirrors the responder's `done` flag so the requester knows when
-        /// a multi-part history reply is complete.
+        /// Raw JSON bodies, relayed verbatim (zero parse / zero re-encode).
+        messages: Vec<Box<RawValue>>,
         done: bool,
     },
     ReadReceipt {

@@ -30,7 +30,6 @@ pub fn derive_key(password: &str) -> [u8; 32] {
 }
 
 /// Decodes `data:<mime>;base64,<payload>` into raw bytes.
-/// Shared by the native file-save dialog and native audio playback.
 pub fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
     let rest = url
         .strip_prefix("data:")
@@ -44,6 +43,20 @@ pub fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
     STANDARD
         .decode(payload.trim())
         .map_err(|e| format!("base64 decode error: {e}"))
+}
+
+/// Decodes the bytes of a stored media/file payload.
+///
+/// New payloads are JSON `{"name": "...", "size": 123, "data": "data:..."}`;
+/// plain data URLs are accepted directly. Used by native audio playback so
+/// the huge base64 string never has to cross the Tauri IPC boundary.
+pub fn decode_payload_bytes(payload: &str) -> Result<Vec<u8>, String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+        if let Some(data) = v.get("data").and_then(|d| d.as_str()) {
+            return decode_data_url(data);
+        }
+    }
+    decode_data_url(payload)
 }
 
 #[cfg(test)]
@@ -65,5 +78,14 @@ mod tests {
     #[test]
     fn random_ids_are_unique() {
         assert_ne!(random_id(), random_id());
+    }
+
+    #[test]
+    fn payload_bytes_json_and_plain() {
+        let url = "data:audio/mpeg;base64,aGVsbG8=";
+        let json = format!(r#"{{"name":"a.mp3","data":"{url}"}}"#);
+        assert_eq!(decode_payload_bytes(&json).unwrap(), b"hello");
+        assert_eq!(decode_payload_bytes(url).unwrap(), b"hello");
+        assert!(decode_payload_bytes("ciphertext-garbage").is_err());
     }
 }

@@ -1,4 +1,4 @@
-use crate::db::Database;
+use crate::db::{Database, MsgRow};
 use crate::protocol::{ClientMsg, ServerMsg, StoredMsg, UserStatus};
 use crate::sound::play_notification_chirp;
 use crate::state::{user_db_path, AppState, Me, WsSession};
@@ -18,19 +18,9 @@ use tokio_tungstenite::tungstenite::Message;
 pub const NOTES_PEER: i64 = 0;
 
 /// WebSocket message/frame ceiling — must match the server.
-///
-/// tungstenite's defaults (64 MiB message / 16 MiB frame) are smaller than
-/// a single encrypted 16 MiB attachment (~28 MiB on the wire after double
-/// base64), and a history reply carrying dozens of media messages is far
-/// bigger still. An oversized frame makes the library close the connection
-/// with a protocol error, which surfaced as "one of my two logged-in
-/// instances gets kicked" right after login (the automatic history sync
-/// between the two accounts was the oversized message).
 const MAX_WS_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
-/// Soft byte budget for one part of a multi-part history reply. Parts are
-/// kept well under `MAX_WS_MESSAGE_BYTES`; a single message larger than the
-/// budget still ships alone in its own part (it fits the ceiling above).
+/// Soft byte budget for one part of a multi-part history reply.
 const HISTORY_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 pub async fn connect(
@@ -41,8 +31,10 @@ pub async fn connect(
     initial_status: UserStatus,
 ) -> Result<(), String> {
     shutdown_current_session(&state).await;
+
     let db_path = user_db_path(&state.data_dir, &username, &base_url);
     let db = Database::open(&db_path).map_err(|e| format!("open db: {e}"))?;
+
     let ws_url = to_ws_url(&base_url)?;
     let mut req = ws_url
         .into_client_request()
@@ -53,18 +45,22 @@ pub async fn connect(
             .parse()
             .map_err(|e| format!("bad auth header: {e}"))?,
     );
+
     let ws_config = WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_WS_MESSAGE_BYTES));
+
     let (stream, _resp) = tokio_tungstenite::connect_async_with_config(req, Some(ws_config), false)
         .await
         .map_err(|e| format!("ws connect failed: {e}"))?;
+
     let (mut sink, mut source) = stream.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
     let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let session_id = state
         .ws_counter
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     *state.db.write().await = Some(Arc::new(db));
     *state.me.write().await = Some(Me {
         id: 0, // placeholder, replaced on AuthOk
@@ -72,8 +68,9 @@ pub async fn connect(
     });
     *state.server_url.write().await = Some(base_url.clone());
     *state.my_status.write().await = initial_status;
-    // Load per-chat encryption configs from this user's local DB.
+
     state.load_encryption_from_db().await.ok();
+
     let writer = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
         ping_interval.tick().await;
@@ -108,6 +105,7 @@ pub async fn connect(
         }
         let _ = sink.close().await;
     });
+
     let reader_state = state.clone();
     let reader_username = username.clone();
     let reader = tokio::spawn(async move {
@@ -133,14 +131,9 @@ pub async fn connect(
                 _ => {}
             }
         }
-        // IMPORTANT: only announce the disconnect if THIS session was the
-        // currently-active one. When `connect` is called while an older
-        // session is still winding down (normal re-login, or the brief
-        // window during shutdown), that older reader exits here *after*
-        // `state.ws` has already been replaced with the new session. If
-        // we blindly emitted `disconnected`, the JS side would call
-        // `resetToLogin()` and kick the user straight back to the login
-        // screen — the "sign in, then 1 s later signed out" symptom.
+
+        // Only announce the disconnect if THIS session was the active one
+        // (stale readers from prior sessions must not kick the UI to login).
         let was_current = {
             let mut ws = reader_state.ws.lock().await;
             if ws.as_ref().map(|s| s.id == session_id).unwrap_or(false) {
@@ -156,12 +149,8 @@ pub async fn connect(
                 .emit("disconnected", json!(reader_username));
         }
     });
-    *state.ws.lock().await = Some(WsSession {
-        id: session_id,
-        tx,
-        reader,
-        writer,
-    });
+
+    *state.ws.lock().await = Some(WsSession { id: session_id, tx, reader, writer });
     Ok(())
 }
 
@@ -182,17 +171,9 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
     let Some(mut s) = old else { return };
     drop(s.tx);
     s.reader.abort();
-    // Give the writer up to 500 ms to drain and close the sink cleanly.
-    //
-    // IMPORTANT: a `JoinHandle` must never be polled again after it has
-    // completed — tokio panics with "JoinHandle polled after completion".
-    // When the writer finishes within the timeout (the normal case on
-    // logout: dropping `tx` makes `rx.recv()` return `None`, so the task
-    // exits promptly), the `timeout` future itself polls `s.writer` to
-    // completion. Awaiting `s.writer` again afterwards would therefore
-    // panic. Only on the timeout (`Err`) path has the handle NOT been
-    // driven to completion yet, so that is the only path where we may
-    // abort and await it.
+    // A JoinHandle must never be polled again after completion. Only on
+    // the timeout path has the writer NOT been driven to completion, so
+    // that is the only path where we may abort + await it.
     if tokio::time::timeout(Duration::from_millis(500), &mut s.writer)
         .await
         .is_err()
@@ -200,8 +181,6 @@ async fn shutdown_current_session(state: &Arc<AppState>) {
         s.writer.abort();
         let _ = s.writer.await;
     }
-    // The reader was aborted above and has never been polled to
-    // completion here, so awaiting it once is safe.
     let _ = s.reader.await;
 }
 
@@ -220,22 +199,11 @@ fn to_ws_url(base: &str) -> Result<String, String> {
 
 async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
     match sm {
-        ServerMsg::AuthOk {
-            user_id,
-            username,
-            last_seen,
-        } => {
-            *state.me.write().await = Some(Me {
-                id: user_id,
-                username: username.clone(),
-            });
+        ServerMsg::AuthOk { user_id, username, last_seen } => {
+            *state.me.write().await = Some(Me { id: user_id, username: username.clone() });
             let _ = state.app.emit(
                 "auth-ok",
-                json!({
-                    "user_id": user_id,
-                    "username": username,
-                    "last_seen": last_seen,
-                }),
+                json!({ "user_id": user_id, "username": username, "last_seen": last_seen }),
             );
         }
         ServerMsg::Peers { peers } => {
@@ -251,9 +219,7 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
             );
         }
         ServerMsg::PeerOffline { user_id } => {
-            let _ = state
-                .app
-                .emit("peer-offline", json!({ "user_id": user_id }));
+            let _ = state.app.emit("peer-offline", json!({ "user_id": user_id }));
         }
         ServerMsg::StatusUpdate { user_id, status } => {
             let me = state.me.read().await.clone();
@@ -267,47 +233,16 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
                 json!({ "user_id": user_id, "status": status.as_str() }),
             );
         }
-        ServerMsg::Message {
-            id,
-            from,
-            ts,
-            edit_ts,
-            kind,
-            payload,
-        } => {
-            handle_incoming(
-                state,
-                id,
-                from,
-                ts,
-                edit_ts,
-                kind.as_str().to_string(),
-                payload,
-            )
-            .await;
+        ServerMsg::Message { id, from, ts, edit_ts, kind, payload } => {
+            handle_incoming(state, id, from, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-        ServerMsg::NoteMessage {
-            id,
-            ts,
-            edit_ts,
-            kind,
-            payload,
-        } => {
+        ServerMsg::NoteMessage { id, ts, edit_ts, kind, payload } => {
             handle_note_incoming(state, id, ts, edit_ts, kind.as_str().to_string(), payload).await;
         }
-        ServerMsg::PullHistoryRequest {
-            from,
-            since,
-            limit,
-            before,
-        } => {
+        ServerMsg::PullHistoryRequest { from, since, limit, before } => {
             handle_pull_request(state, from, since, limit, before).await;
         }
-        ServerMsg::HistoryResponse {
-            from,
-            messages,
-            done,
-        } => {
+        ServerMsg::HistoryResponse { from, messages, done } => {
             handle_history_response(state, from, messages, done).await;
         }
         ServerMsg::ReadReceipt { from, up_to_ts } => {
@@ -343,20 +278,10 @@ async fn handle_server_msg(state: &Arc<AppState>, sm: ServerMsg) {
         ServerMsg::Blocked { users } => {
             let _ = state.app.emit("blocked", json!(users));
         }
-        ServerMsg::Profile {
-            user_id,
-            username,
-            display_name,
-            avatar,
-        } => {
+        ServerMsg::Profile { user_id, username, display_name, avatar } => {
             if let Ok(db) = state.active_db().await {
-                db.upsert_peer(
-                    user_id,
-                    &username,
-                    display_name.as_deref(),
-                    avatar.as_deref(),
-                )
-                .await;
+                db.upsert_peer(user_id, &username, display_name.as_deref(), avatar.as_deref())
+                    .await;
             }
             {
                 let mut lookups = state.pending_lookups.lock().await;
@@ -444,19 +369,10 @@ async fn handle_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(from, &payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(
-            from,
-            &id,
-            "in",
-            ts,
-            edit_ts,
-            &kind,
-            &stored,
-            is_plaintext,
-            false,
-        )
-        .await;
+        db.upsert_message(from, &id, "in", ts, edit_ts, &kind, &stored, is_plaintext, false)
+            .await;
     }
+
     let window_focused = is_window_focused(&state.app);
     let _ = state.app.emit(
         "message",
@@ -475,6 +391,7 @@ async fn handle_incoming(
             "windowFocused": window_focused,
         }),
     );
+
     if window_focused {
         return;
     }
@@ -485,19 +402,11 @@ async fn handle_incoming(
     let display = peer_display_label(state, from).await;
     let preview = preview_for(&kind, &stored);
     let title = format!("New message from {display}");
-    // Always emit in-app-notification so webview can display in-app banner
-    // if system notifications are disabled or muted by the OS.
     let _ = state.app.emit(
         "in-app-notification",
         json!({ "title": title, "body": preview, "peer": from }),
     );
-    let _ = state
-        .app
-        .notification()
-        .builder()
-        .title(title)
-        .body(preview)
-        .show();
+    let _ = state.app.notification().builder().title(title).body(preview).show();
     request_attention(state);
 }
 
@@ -537,28 +446,12 @@ async fn handle_note_incoming(
 ) {
     let (stored, is_plaintext) = state.decode_from_wire(NOTES_PEER, &payload).await;
     if let Ok(db) = state.active_db().await {
-        db.upsert_message(
-            NOTES_PEER,
-            &id,
-            "out",
-            ts,
-            edit_ts,
-            &kind,
-            &stored,
-            is_plaintext,
-            true,
-        )
-        .await;
+        db.upsert_message(NOTES_PEER, &id, "out", ts, edit_ts, &kind, &stored, is_plaintext, true)
+            .await;
     }
     let _ = state.app.emit(
         "note-message",
-        json!({
-            "id": id,
-            "ts": ts,
-            "edit_ts": edit_ts,
-            "kind": kind,
-            "payload": stored,
-        }),
+        json!({ "id": id, "ts": ts, "edit_ts": edit_ts, "kind": kind, "payload": stored }),
     );
 }
 
@@ -572,32 +465,26 @@ async fn handle_pull_request(
     let Ok(db) = state.active_db().await else {
         return;
     };
-    let msgs = db.get_messages(from, None, None).await;
+    // Filter IN SQL (indexed by edit_ts) with the limit applied there too.
+    // The old code loaded the ENTIRE chat — every base64 media payload —
+    // into memory on every pull, even when nothing had changed. An
+    // up-to-date chat now answers with an empty list in ~milliseconds.
+    let msgs = db.get_messages_since(from, since, before, limit).await;
     let Some(me) = state.me.read().await.clone() else {
         return;
     };
-    let mut filtered: Vec<_> = msgs
-        .into_iter()
-        .filter(|m| m.edit_ts > since)
-        .filter(|m| before.is_none_or(|b| m.ts < b))
-        .collect();
-    if let Some(lim) = limit {
-        let lim = lim as usize;
-        if filtered.len() > lim {
-            let drop_count = filtered.len() - lim;
-            filtered.drain(0..drop_count);
-        }
-    }
-    let mut wire: Vec<StoredMsg> = Vec::with_capacity(filtered.len());
+
+    let mut wire: Vec<StoredMsg> = Vec::with_capacity(msgs.len());
     {
         let enc = state.encryption.read().await;
-        for m in filtered {
+        let cipher = enc.cipher(from);
+        for m in msgs {
             let payload = if !m.plaintext {
-                m.payload.clone()
-            } else if let Some(c) = enc.cipher(from) {
-                c.encrypt(&m.payload).unwrap_or_else(|| m.payload.clone())
+                m.payload
+            } else if let Some(c) = cipher {
+                c.encrypt(&m.payload).unwrap_or(m.payload)
             } else {
-                m.payload.clone()
+                m.payload
             };
             let (from_user, to_user) = if m.direction == "out" {
                 (me.id, from)
@@ -621,28 +508,18 @@ async fn handle_pull_request(
             });
         }
     }
+
     let tx = { state.ws.lock().await.as_ref().map(|s| s.tx.clone()) };
     let Some(tx) = tx else { return };
 
-    // Ship the reply in bounded parts. A media-heavy chat can hold hundreds
-    // of MiB of base64 payloads; sending them as ONE WebSocket message
-    // exceeded the protocol message/frame limit and got the connection
-    // killed (the "second instance gets kicked on login" bug). Each part
-    // stays under HISTORY_BATCH_BYTES, except that a single oversized
-    // message ships alone (still under MAX_WS_MESSAGE_BYTES). The final
-    // part carries done = true; the server keeps the pull open until then.
+    // Ship the reply in bounded parts; the final part carries done = true.
     if wire.is_empty() {
-        let _ = tx.send(ClientMsg::HistoryResponse {
-            to: from,
-            messages: Vec::new(),
-            done: true,
-        });
+        let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: Vec::new(), done: true });
         return;
     }
     let mut batch: Vec<StoredMsg> = Vec::new();
     let mut batch_bytes: usize = 0;
     for m in wire {
-        // Rough per-message wire cost: payload + id + JSON overhead.
         let size = m.payload.len() + m.id.len() + 64;
         if !batch.is_empty() && batch_bytes + size > HISTORY_BATCH_BYTES {
             let _ = tx.send(ClientMsg::HistoryResponse {
@@ -655,11 +532,7 @@ async fn handle_pull_request(
         batch_bytes += size;
         batch.push(m);
     }
-    let _ = tx.send(ClientMsg::HistoryResponse {
-        to: from,
-        messages: batch,
-        done: true,
-    });
+    let _ = tx.send(ClientMsg::HistoryResponse { to: from, messages: batch, done: true });
 }
 
 async fn handle_history_response(
@@ -672,32 +545,41 @@ async fn handle_history_response(
         return;
     };
     if let Ok(db) = state.active_db().await {
+        // One cipher-lock for the whole part, one SQLite transaction for
+        // all rows (was: 50 lock round-trips + 50 separate commits).
+        let enc = state.encryption.read().await;
+        let cipher = enc.cipher(from);
+        let mut rows: Vec<MsgRow> = Vec::with_capacity(messages.len());
         for m in messages {
-            // A history only ever contains messages between the two of us;
-            // ignore anything a peer claims was sent by/to someone else.
+            // A history only ever contains messages between the two of us.
             if !((m.from == me.id && m.to == from) || (m.from == from && m.to == me.id)) {
                 continue;
             }
             let direction = if m.from == me.id { "out" } else { "in" };
-            let (stored, is_plaintext) = state.decode_from_wire(from, &m.payload).await;
-            let read = direction == "out";
-            db.upsert_message(
-                from,
-                &m.id,
-                direction,
-                m.ts,
-                m.edit_ts,
-                m.kind.as_str(),
-                &stored,
-                is_plaintext,
-                read,
-            )
-            .await;
+            let (stored, is_plaintext) = match cipher {
+                Some(c) => match c.decrypt(&m.payload) {
+                    Some(pt) => (pt, true),
+                    None => (m.payload, false),
+                },
+                None => (m.payload, false),
+            };
+            rows.push(MsgRow {
+                peer_id: from,
+                id: m.id,
+                direction: direction.to_string(),
+                ts: m.ts,
+                edit_ts: m.edit_ts,
+                kind: m.kind.as_str().to_string(),
+                payload: stored,
+                plaintext: is_plaintext,
+                read: direction == "out",
+            });
         }
+        drop(enc);
+        db.upsert_many(&rows).await;
     }
-    // Every part is stored above, but the UI is only notified once the
-    // reply is complete — so the JS side keeps seeing exactly one
-    // `history-received` per pull, same as before multi-part replies.
+
+    // Notify the UI once per pull (final part), same as before multi-part.
     if done {
         let _ = state
             .app

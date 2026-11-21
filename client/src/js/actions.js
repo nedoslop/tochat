@@ -118,6 +118,7 @@ export async function openPeer(peerId) {
   if (!Number.isInteger(peerId) || peerId < 0) return;
   if (peerId === state.meId) return toast("You can't chat with yourself.");
   if (peerId === NOTES_PEER) return openNotes();
+
   void stopAllAudio();
   state.pending.delete(peerId);
   state.currentPeer = peerId;
@@ -126,6 +127,7 @@ export async function openPeer(peerId) {
   showChatView();
   closeEncPanel();
   void refreshEncryptionStatus(peerId);
+
   if (!state.profiles[peerId]) {
     try {
       const lp = await invoke("get_peer", { id: peerId });
@@ -139,6 +141,7 @@ export async function openPeer(peerId) {
       }
     } catch (_) {}
   }
+
   try {
     state.msgCache[peerId] = await invoke("get_messages", {
       peer: peerId,
@@ -148,12 +151,20 @@ export async function openPeer(peerId) {
   } catch (_) {
     state.msgCache[peerId] = state.msgCache[peerId] || [];
   }
+
   renderSidebar();
   updateChatHeader();
   renderMessages();
-  if (!state.pending.has(peerId) && state.online.has(peerId)) {
-    autoPull(peerId);
-  }
+
+  // Opening/accepting a chat is an explicit user action: ALWAYS attempt a
+  // sync, even if we have no cached presence for the peer. The initiator
+  // of a pending chat never sent us a PeerOnline (by design), so gating on
+  // state.online here meant the acceptor's first pull was silently skipped
+  // and the first message never arrived until they replied. If the peer is
+  // truly offline the server replies "peer offline" (handled silently) and
+  // we recover on the next peer-online event.
+  autoPull(peerId, { force: true });
+
   void sendReadReceipt(peerId);
   void updateBadge();
   closeSidebar();
@@ -163,9 +174,11 @@ export async function openPeerByName(username) {
   if (!username) return;
   username = username.trim();
   if (username === state.meName) return toast("You can't chat with yourself.");
+
   const cached = state.nameToId.get(username);
   if (cached !== undefined && Number.isInteger(cached) && cached > 0)
     return openPeer(cached);
+
   try {
     const id = await invoke("resolve_user", { username });
     const numId = Number(id);
@@ -246,6 +259,7 @@ export async function send() {
   if (!text.trim()) return;
   const peer = state.currentPeer;
   if (peer === null || !Number.isInteger(peer) || peer < 0) return;
+
   try {
     const msg = await invoke("send_message", { to: peer, text });
     input.value = "";
@@ -295,6 +309,7 @@ async function compressImage(dataUrl, maxDim = 1280, quality = 0.85) {
     const needResize = img.width > maxDim || img.height > maxDim;
     const needReencode = dataUrl.length > 400_000;
     if (!needResize && !needReencode) return dataUrl;
+
     const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
     const w = Math.max(1, Math.round(img.width * scale));
     const h = Math.max(1, Math.round(img.height * scale));
@@ -395,6 +410,7 @@ export async function deleteMessage(id) {
 export async function clearChat() {
   const peer = state.currentPeer;
   if (peer === null) return;
+
   if (peer === NOTES_PEER) {
     const ok = await showConfirm("Clear all notes on this device?", {
       title: "Clear notes",
@@ -413,6 +429,7 @@ export async function clearChat() {
     }
     return;
   }
+
   const ok = await showConfirm(
     `Delete all local messages with ${displayName(peer)}? The other side keeps their copy.`,
     { title: "Clear chat", okText: "Clear", danger: true },
@@ -483,6 +500,30 @@ export async function sendReadReceipt(peer) {
   } catch (_) {}
 }
 
+/**
+ * Mark the open chat read IF the user is actually looking at it.
+ *
+ * Read-marking used to depend on a single native-focus snapshot taken at
+ * sync completion. With sync now deduped to one pull, a stale/false focus
+ * result meant the receipt was never sent and both sides stayed "unread"
+ * until relogin. This re-checks live focus (with a DOM fallback for
+ * WebView2 focus-flag lag) and is safe to call from many triggers; it is
+ * idempotent and never loops (mark_read emits nothing back to us).
+ */
+export async function markReadIfViewing(peer) {
+  if (peer === null || peer === undefined || peer === NOTES_PEER) return;
+  if (state.currentPeer !== peer) return;
+  if (!state.meId) return;
+  let focused = false;
+  try {
+    focused = await invoke("is_window_focused");
+  } catch (_) {}
+  if (!focused && typeof document !== "undefined") {
+    focused = document.visibilityState === "visible" && document.hasFocus();
+  }
+  if (focused) await sendReadReceipt(peer);
+}
+
 export async function refreshReadState(peer) {
   if (peer === null || peer === NOTES_PEER) return;
   try {
@@ -504,7 +545,37 @@ export async function refreshReadState(peer) {
 
 // ---------- history sync ----------
 
-export async function autoPull(peer) {
+/** Clears the in-flight sync flag AND its fallback timer for a peer. */
+export function clearSync(peer) {
+  state.syncingPeers.delete(peer);
+  const t = state.syncTimers[peer];
+  if (t !== undefined) {
+    clearTimeout(t);
+    delete state.syncTimers[peer];
+  }
+}
+
+function repaintSync(peer) {
+  renderSidebar();
+  if (state.currentPeer === peer) {
+    updateChatHeader();
+    renderMessages();
+  }
+}
+
+/**
+ * One incremental sync per peer at a time.
+ *
+ * `since: null` lets Rust compute the cursor from the local DB (newest
+ * edit_ts among INCOMING messages, minus a small clock-skew overlap), so
+ * an up-to-date chat gets an empty reply in milliseconds.
+ *
+ * `force` skips the cached-presence gate. Background syncs (peer-online /
+ * peers events) only run for peers we know are online; an explicit open /
+ * accept forces a pull regardless, because the acceptor of a pending chat
+ * has no cached presence for the initiator yet.
+ */
+export async function autoPull(peer, { force = false } = {}) {
   peer = Number(peer);
   if (
     !Number.isInteger(peer) ||
@@ -513,13 +584,12 @@ export async function autoPull(peer) {
     peer === NOTES_PEER
   )
     return;
-  if (!state.online.has(peer)) return;
+  if (!force && !state.online.has(peer)) return;
+  if (state.syncingPeers.has(peer)) return; // dedupe overlapping triggers
+
   state.syncingPeers.add(peer);
-  renderSidebar();
-  if (state.currentPeer === peer) {
-    updateChatHeader();
-    renderMessages();
-  }
+  repaintSync(peer);
+
   try {
     if (!state.msgCache[peer]) {
       state.msgCache[peer] = await invoke("get_messages", {
@@ -530,29 +600,25 @@ export async function autoPull(peer) {
     }
     await invoke("pull_history", {
       from: peer,
-      since: 0,
+      since: null,
       limit: INITIAL_LIMIT,
       before: null,
     });
   } catch (e) {
     console.warn("[autoPull] failed for", peer, e);
-    state.syncingPeers.delete(peer);
-    renderSidebar();
-    if (state.currentPeer === peer) {
-      updateChatHeader();
-      renderMessages();
-    }
+    clearSync(peer);
+    repaintSync(peer);
+    return;
   }
-  // Safety fallback timeout if peer never replies
-  setTimeout(() => {
-    if (state.syncingPeers.delete(peer)) {
-      renderSidebar();
-      if (state.currentPeer === peer) {
-        updateChatHeader();
-        renderMessages();
-      }
-    }
-  }, 6000);
+
+  // Single fallback timer: if the peer never replies (went offline mid-
+  // pull, dropped reply), release the flag so the next presence event can
+  // retry. `history-received` / `peer-offline` clear it much sooner.
+  const t = setTimeout(() => {
+    delete state.syncTimers[peer];
+    if (state.syncingPeers.delete(peer)) repaintSync(peer);
+  }, 8000);
+  state.syncTimers[peer] = t;
 }
 
 export function closeCurrentChat() {
@@ -570,12 +636,14 @@ export async function loadOlder() {
   if (state.mightHaveMore[peer] === false) return;
   const msgs = state.msgCache[peer] || [];
   if (msgs.length === 0) return;
+
   const oldestTs = msgs.reduce(
     (min, m) => (m.ts < min ? m.ts : min),
     msgs[0].ts,
   );
   state.loadingOlder.add(peer);
   state.suppressScrollLoad = true;
+
   try {
     const older = await invoke("get_messages", {
       peer,
@@ -598,6 +666,7 @@ export async function loadOlder() {
       return;
     }
     state.lastPullLimit[peer] = INITIAL_LIMIT;
+    // Backwards pagination is a FULL pull (since 0) bounded by `before`.
     await invoke("pull_history", {
       from: peer,
       since: 0,
