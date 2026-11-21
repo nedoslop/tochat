@@ -1,4 +1,3 @@
-[ ] Server: configure via args (host, port etc)
 [ ] Client: ensure new icon is updated everywhere
 [ ] Client: move audio playback to the rust side (via rodio) (currently music plays as WebView in volume mixer which is bad)
 [ ] Client: disable text selection where it's not needed, but keep ability to select message text etc
