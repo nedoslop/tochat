@@ -1,6 +1,8 @@
 use argon2::Argon2;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use rand::RngCore;
+// rand 0.10: `RngCore` was renamed to `Rng` and `TryRngCore` to `TryRng`;
+// the OS entropy source is now `rand::rngs::SysRng` (a `TryRng`).
+use rand::TryRng;
 
 /// Fixed salt for the shared-password KDF. Both peers must derive the same
 /// key from the same password, so the salt is a compile-time constant.
@@ -16,7 +18,9 @@ pub fn now_ms() -> i64 {
 /// Random 16-byte id, base64-encoded.
 pub fn random_id() -> String {
     let mut bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut bytes)
+        .expect("system RNG failed");
     STANDARD.encode(bytes)
 }
 

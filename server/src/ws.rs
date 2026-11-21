@@ -86,7 +86,9 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
-    let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    // axum 0.8 wraps ping/pong payloads in `Bytes` (text in `Utf8Bytes`).
+    // Carry `Bytes` end-to-end so pong replies need no copy.
+    let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<axum::body::Bytes>();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Inherit the last known status for this user ("was Busy, reopened app").
@@ -118,7 +120,6 @@ async fn handle_socket(
             avatar: av,
         });
     }
-
     let peers = state.db.list_peers(user_id).await;
     let pending = state.db.list_pending_chats(user_id).await;
     let blocked = state.db.list_blocks(user_id).await;
@@ -161,6 +162,7 @@ async fn handle_socket(
             },
         );
     }
+
     // Tell the newly-connected client which of its peers are online now.
     for p in &all_contacts {
         if state.is_online(*p) {
@@ -188,7 +190,7 @@ async fn handle_socket(
                                 Ok(s) => s,
                                 Err(_) => continue,
                             };
-                            if sender.send(Message::Text(s)).await.is_err() {
+                            if sender.send(Message::Text(s.into())).await.is_err() {
                                 break;
                             }
                             if is_close {
@@ -259,7 +261,6 @@ async fn handle_socket(
     // --- Teardown ----------------------------------------------------------
     // This session can no longer answer pulls addressed to it.
     state.clear_pulls_for_session(user_id, session_id);
-
     let now_empty = state.remove_session(user_id, session_id);
     if now_empty {
         state.clear_pulls_for_user(user_id);
@@ -448,7 +449,6 @@ async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
             peers: resolve_peers(state, &peers_for_to).await,
         },
     );
-
     if let Some((me_name, me_dn, me_av)) = state.db.get_user_profile(me_id).await {
         state.send_to_user(
             to_id,
@@ -471,7 +471,6 @@ async fn notify_peer_pair(state: &AppState, me_id: i64, to_id: i64) {
             },
         );
     }
-
     if state.is_online(me_id) {
         state.send_to_user(
             to_id,
@@ -640,7 +639,6 @@ async fn handle_pull_history(
         });
         return;
     }
-
     // Forward to EVERY responder session (devices may hold different parts
     // of the history) and account one pull per delivered copy, so each
     // session's reply is accepted exactly once.
@@ -685,7 +683,6 @@ async fn handle_history_response(
     if !established && initiator_id != me_id {
         return;
     }
-
     // Non-final parts only require an open pull; the final part consumes it.
     if done {
         if !state.take_pull(to_id, me_id, session_id) {
@@ -694,7 +691,6 @@ async fn handle_history_response(
     } else if !state.has_pull(to_id, me_id, session_id) {
         return;
     }
-
     if !established {
         state.db.establish_relationship(me_id, to_id).await;
         notify_peer_pair(state, me_id, to_id).await;

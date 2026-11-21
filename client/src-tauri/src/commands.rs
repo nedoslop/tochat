@@ -78,7 +78,6 @@ pub async fn resolve_user(
         return Ok(id);
     }
     drop(db);
-
     let (tx, rx) = oneshot::channel();
     {
         let mut lookups = state.pending_lookups.lock().await;
@@ -95,7 +94,6 @@ pub async fn resolve_user(
             username: username.clone(),
         })
         .map_err(|_| "connection closed".to_string())?;
-
     match tokio::time::timeout(Duration::from_secs(6), rx).await {
         Ok(Ok(Some(id))) => Ok(id),
         Ok(Ok(None)) => Err(format!("user '{username}' does not exist")),
@@ -138,7 +136,6 @@ pub async fn send_media(
         return Err("empty message".into());
     }
     let k = kind_from_str(&kind);
-
     if to == NOTES_PEER {
         let db = state.active_db().await?;
         let id = random_id();
@@ -177,7 +174,6 @@ pub async fn send_media(
             read: true,
         });
     }
-
     let id = random_id();
     let ts = now_ms();
     send_outgoing(&state, to, &id, ts, ts, k, &payload, false).await?;
@@ -212,7 +208,6 @@ pub async fn edit_message(
         .unwrap_or_else(|| (now_ms(), "text".into(), false));
     let k = kind_from_str(&kind);
     let edit_ts = now_ms();
-
     if peer == NOTES_PEER {
         db.upsert_message(
             NOTES_PEER,
@@ -248,7 +243,6 @@ pub async fn edit_message(
             read: true,
         });
     }
-
     send_outgoing(&state, peer, &id, ts, edit_ts, k, &text, true).await?;
     Ok(LocalMsg {
         id,
@@ -276,7 +270,6 @@ pub async fn delete_message(
         .unwrap_or_else(|| (now_ms(), "text".into(), false));
     let k = kind_from_str(&kind);
     let edit_ts = now_ms();
-
     if peer == NOTES_PEER {
         db.upsert_message(
             NOTES_PEER,
@@ -312,7 +305,6 @@ pub async fn delete_message(
             read: true,
         });
     }
-
     send_outgoing(&state, peer, &id, ts, edit_ts, k, "", true).await?;
     Ok(LocalMsg {
         id,
@@ -615,7 +607,6 @@ pub async fn update_badge(count: i64, app: tauri::AppHandle) -> Result<(), Strin
             "Chat".to_string()
         };
         let _ = window.set_title(&title);
-
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             if count > 0 {
@@ -679,7 +670,6 @@ pub async fn save_data_url(
     let name = suggested_name
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "download".to_string());
-
     let (tx, rx) = oneshot::channel();
     app.dialog()
         .file()
@@ -835,7 +825,6 @@ pub async fn set_encryption(
     let mut secret = secret
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-
     if secret.is_none() {
         let map = state.encryption.read().await;
         let existing = map.get_config(peer);
@@ -843,7 +832,6 @@ pub async fn set_encryption(
             secret = existing.secret.clone();
         }
     }
-
     if m != EncryptionMethod::None {
         match secret.as_deref() {
             None => return Err("a secret is required for this method".into()),
@@ -858,7 +846,6 @@ pub async fn set_encryption(
             _ => {}
         }
     }
-
     let config = EncryptionConfig {
         method: m,
         secret: secret.clone(),
@@ -872,9 +859,13 @@ pub async fn set_encryption(
 
 #[tauri::command]
 pub fn generate_psk() -> String {
-    use rand::RngCore;
+    // rand 0.10: OS entropy comes from `SysRng` (a `TryRng`); the old
+    // `rand::rngs::OsRng` / `RngCore` names no longer exist.
+    use rand::TryRng;
     let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut bytes)
+        .expect("system RNG failed");
     hex::encode(bytes)
 }
 

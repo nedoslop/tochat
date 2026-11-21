@@ -82,14 +82,19 @@ fn chacha_encrypt(key: &[u8; 32], plaintext: &str) -> Option<String> {
         aead::{Aead, KeyInit},
         ChaCha20Poly1305, Nonce,
     };
-    use rand::RngCore;
+    // rand 0.10: `RngCore`/`OsRng` are gone; the OS entropy source is
+    // `SysRng`, a `TryRng` (fallible `try_fill_bytes`).
+    use rand::TryRng;
 
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce_bytes = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut nonce_bytes)
         .ok()?;
+    // chacha20poly1305 0.11: `Nonce` is a hybrid-array `Array`; build it
+    // via `TryFrom` (`from_slice` is deprecated) and pass it by reference.
+    let nonce = Nonce::try_from(&nonce_bytes[..]).ok()?;
+    let ct = cipher.encrypt(&nonce, plaintext.as_bytes()).ok()?;
     let mut out = Vec::with_capacity(12 + ct.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ct);
@@ -109,7 +114,8 @@ fn chacha_decrypt(key: &[u8; 32], wire: &str) -> Option<String> {
     }
     let (nonce_bytes, ct) = data.split_at(12);
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
-    let pt = cipher.decrypt(Nonce::from_slice(nonce_bytes), ct).ok()?;
+    let nonce = Nonce::try_from(nonce_bytes).ok()?;
+    let pt = cipher.decrypt(&nonce, ct).ok()?;
     String::from_utf8(pt).ok()
 }
 
@@ -131,6 +137,7 @@ impl Cipher for SharedPasswordCipher {
     fn encrypt(&self, plaintext: &str) -> Option<String> {
         chacha_encrypt(&self.key, plaintext)
     }
+
     fn decrypt(&self, wire: &str) -> Option<String> {
         chacha_decrypt(&self.key, wire)
     }
@@ -158,6 +165,7 @@ impl Cipher for PreSharedKeyCipher {
     fn encrypt(&self, plaintext: &str) -> Option<String> {
         chacha_encrypt(&self.key, plaintext)
     }
+
     fn decrypt(&self, wire: &str) -> Option<String> {
         chacha_decrypt(&self.key, wire)
     }
@@ -208,10 +216,9 @@ mod tests {
     #[test]
     fn psk_round_trip_and_wrong_key() {
         let a = PreSharedKeyCipher::from_hex(PSK).unwrap();
-        let wire = a.encrypt("секрет 🔒").unwrap();
-        assert_ne!(wire, "секрет 🔒");
-        assert_eq!(a.decrypt(&wire).as_deref(), Some("секрет 🔒"));
-
+        let wire = a.encrypt("Секрет 🔒").unwrap();
+        assert_ne!(wire, "Секрет 🔒");
+        assert_eq!(a.decrypt(&wire).as_deref(), Some("Секрет 🔒"));
         let other = PreSharedKeyCipher::from_hex(&"ff".repeat(32)).unwrap();
         assert!(other.decrypt(&wire).is_none());
     }
@@ -256,7 +263,6 @@ mod tests {
             &"zz".repeat(32)
         ));
         assert!(!validate_secret(EncryptionMethod::SharedPassword, ""));
-
         assert!(build_cipher(EncryptionMethod::None, Some("x")).is_none());
         assert!(build_cipher(EncryptionMethod::SharedPassword, Some("")).is_none());
         assert!(build_cipher(EncryptionMethod::PreSharedKey, Some("short")).is_none());
