@@ -771,4 +771,3 @@ async fn handle_delete_account(
         reason: "account_deleted".into(),
     });
 }
-

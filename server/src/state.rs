@@ -62,12 +62,7 @@ impl AppState {
     }
 
     /// Send `msg` to every session of `user_id` EXCEPT `except_session`.
-    pub fn send_to_user_except(
-        &self,
-        user_id: i64,
-        except_session: u64,
-        msg: ServerMsg,
-    ) -> usize {
+    pub fn send_to_user_except(&self, user_id: i64, except_session: u64, msg: ServerMsg) -> usize {
         let Some(mut sessions) = self.online.get_mut(&user_id) else {
             return 0;
         };
@@ -97,7 +92,8 @@ impl AppState {
         let empty = *n == 0;
         drop(n);
         if empty {
-            self.pulls.remove_if(&(requester, responder), |_, n| *n == 0);
+            self.pulls
+                .remove_if(&(requester, responder), |_, n| *n == 0);
         }
         true
     }
